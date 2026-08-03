@@ -61,7 +61,7 @@ python3 run_evalscope.py \
     --tasks mmlu_pro,gpqa_diamond \
     --examples 50 \
     --temperature 0.6 \
-    --max-tokens 30000
+    --max-tokens 32768
 ```
 
 `run_evalscope.py` 会:
@@ -103,7 +103,7 @@ evalscope eval \
     --api-key "${API_KEY}" \
     --eval-type openai_api \
     --datasets "${dataset}" \
-    --generation-config '{"max_tokens":30000,"temperature":0.6,"top_p":0.95,"top_k":20,"MinP":0,"chat_template_kwargs":{"enable_thinking":false}}' \
+    --generation-config '{"max_tokens":32768,"temperature":0.6,"top_p":0.95,"top_k":20,"MinP":0,"chat_template_kwargs":{"enable_thinking":false}}' \
     --timeout ${TIMEOUT} \
     --eval-batch-size ${BS} \
     --work-dir "${OUTPUT_DIR}"
@@ -151,7 +151,7 @@ JSON(需求 #1、#2)。`run_evalscope.py` 负责把 Jenkins 参数翻译为环�
 | `REPEATS` | `--repeats` | 空 | 重复次数(k-metrics),空 = 默认 1 |
 | `EVAL_BATCH_SIZE` | `--eval-batch-size` | `1` | 并发批大小 |
 | `TEMPERATURE` | `--generation-config temperature` | `0.6` | 注入 generation-config |
-| `MAX_TOKENS` | `--generation-config max_tokens` | `30000` | 注入 generation-config |
+| `MAX_TOKENS` | `--generation-config max_tokens` | `32768` | 注入 generation-config |
 | `TOP_P` | `--generation-config top_p` | `0.95` | 注入 generation-config |
 | `TOP_K` | `--generation-config top_k` | `20` | 注入 generation-config |
 | `MIN_P` | `--generation-config MinP` | `0` | 注入 generation-config |

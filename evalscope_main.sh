@@ -53,7 +53,7 @@ TEMPERATURE=${TEMPERATURE:-0.6}
 TOP_P=${TOP_P:-0.95}
 TOP_K=${TOP_K:-20}
 MIN_P=${MIN_P:-0}
-MAX_TOKENS=${MAX_TOKENS:-30000}
+MAX_TOKENS=${MAX_TOKENS:-32768}
 ENABLE_THINKING=${ENABLE_THINKING:-false}
 REPEATS=${REPEATS:-}
 SEED=${SEED:-42}
@@ -106,7 +106,7 @@ _build_generation_config() {
     python3 -c "
 import json
 cfg = {
-    'max_tokens': ${max_tokens:-30000},
+    'max_tokens': ${max_tokens:-32768},
     'temperature': ${temperature:-0.6},
     'top_p': ${TOP_P},
     'top_k': ${TOP_K},

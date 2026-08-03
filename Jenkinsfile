@@ -11,15 +11,18 @@ pipeline {
         string(name: 'BASE_URL', defaultValue: 'http://10.201.149.37:8080', description: 'OpenAI 兼容端点根 URL(必填,不带 /v1 后缀,流水线会自动拼接)')
         password(name: 'API_KEY', defaultValue: '', description: 'API Key(可选,无需认证时留空)')
 
-        // 各基准一个 boolean(需求 #9:先支持 mmlu_pro 和 gpqa_diamond)
+        // 各基准一个 boolean(按需勾选;默认全开)
         booleanParam(name: 'TASK_MMLU_PRO',     defaultValue: true,  description: '运行 mmlu_pro (10 选项多学科多选,5-shot,accuracy)')
         booleanParam(name: 'TASK_GPQA_DIAMOND', defaultValue: true,  description: '运行 gpqa_diamond (博士级 4 选择,0-shot,accuracy)')
+        booleanParam(name: 'TASK_CEVAL',        defaultValue: true,  description: '运行 ceval (中文多学科多选,52 学科,5-shot,accuracy)')
+        booleanParam(name: 'TASK_CMMLU',        defaultValue: true,  description: '运行 cmmlu (中文多学科多选,67 学科,0-shot,accuracy)')
+        booleanParam(name: 'TASK_MATH_500',     defaultValue: true,  description: '运行 math_500 (数学推理,500 题,0-shot,accuracy)')
 
         string(name: 'EXAMPLES',        defaultValue: '',      description: '样本数限制(空 = 不限制;传给 evalscope --limit。int=数量,float=比例)')
         string(name: 'REPEATS',         defaultValue: '',      description: '重复次数(k-metrics,传给 evalscope --repeats。空 = 默认 1)')
         string(name: 'EVAL_BATCH_SIZE', defaultValue: '1',     description: '并发批大小(对应 evalscope --eval-batch-size,默认 1)')
-        string(name: 'TEMPERATURE',     defaultValue: '0.6',   description: '采样温度(默认 0.6;instruction 模型可调 0.0)')
-        string(name: 'MAX_TOKENS',      defaultValue: '30000', description: '生成最大 token 数(默认 30000;清空 = 不指定)')
+        string(name: 'TEMPERATURE',     defaultValue: '0.0',   description: '采样温度(默认 0.0 = greedy,保证精度评测可复现)')
+        string(name: 'MAX_TOKENS',      defaultValue: '32768', description: '生成最大 token 数(默认 32768;清空 = 不指定)')
         string(name: 'TOP_P',           defaultValue: '0.95',  description: 'nucleus top_p(默认 0.95)')
         string(name: 'TOP_K',           defaultValue: '20',    description: 'top-k 采样(默认 20)')
         string(name: 'MIN_P',           defaultValue: '0',     description: 'min-p 采样(默认 0)')
@@ -28,7 +31,7 @@ pipeline {
         string(name: 'SEED',            defaultValue: '42',    description: '随机种子(默认 42)')
         choice(name: 'JUDGE_STRATEGY',  choices: ['auto', 'rule', 'llm', 'llm_recall'], description: '评分策略(默认 auto;多选题用 rule,主观题用 llm)')
         string(name: 'USE_CACHE',       defaultValue: '',      description: '复用缓存路径(空 = 不复用;填 outputs/<timestamp> 路径可断点续跑)')
-        text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '',   description: '按任务覆盖 max_tokens 的 JSON,例: {"mmlu_pro":32768,"gpqa_diamond":32768}')
+        text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '', description: '按任务覆盖 max_tokens 的 JSON,例: {"mmlu_pro":4096,"gpqa_diamond":4096}')
         text(name: 'DATASET_ARGS',      defaultValue: '',      description: '数据集参数 JSON,例: {"mmlu_pro":{"subset_list":["math","physics"]}}')
 
         string(name: 'DESCRIPTION', defaultValue: '', description: '模型服务描述信息(仅用于邮件展示)')
@@ -58,8 +61,11 @@ pipeline {
                     println("PD分离模式:      ${params.PD}")
                     println("模型名称:        ${params.MODEL}")
                     println("BASE_URL:        ${params.BASE_URL}  (→ ${env.BASE_URL_V1})")
-                    println("任务 MMLU_PRO:   ${params.TASK_MMLU_PRO}")
+                    println("任务 MMLU_PRO:     ${params.TASK_MMLU_PRO}")
                     println("任务 GPQA_DIAMOND: ${params.TASK_GPQA_DIAMOND}")
+                    println("任务 CEVAL:        ${params.TASK_CEVAL}")
+                    println("任务 CMMLU:        ${params.TASK_CMMLU}")
+                    println("任务 MATH_500:     ${params.TASK_MATH_500}")
                     println("样本限制:        ${params.EXAMPLES ?: '无限制'}")
                     println("repeats:         ${params.REPEATS ?: 'default 1'}")
                     println("eval-batch-size: ${params.EVAL_BATCH_SIZE}")
@@ -202,6 +208,9 @@ ENDSSH
                     def taskList = []
                     if (params.TASK_MMLU_PRO)     taskList.add('mmlu_pro')
                     if (params.TASK_GPQA_DIAMOND) taskList.add('gpqa_diamond')
+                    if (params.TASK_CEVAL)        taskList.add('ceval')
+                    if (params.TASK_CMMLU)        taskList.add('cmmlu')
+                    if (params.TASK_MATH_500)     taskList.add('math_500')
                     if (taskList.isEmpty()) {
                         error '至少需要选择一个测试任务'
                     }
