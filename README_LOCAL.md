@@ -5,8 +5,8 @@ Jenkins 流水线与远程执行约定。evalscope 上游 README 讲的是单机
 本文件讲的是 **如何在 Jenkins 上参数化触发、远程 ssh 到 GPU 主机跑、把结果/mail
 发回**。
 
-设计参照 [`sgl-eval-test`](https://github.com/maas/sgl-eval-test) 仓库(其
-`Jenkinsfile` / `sgl_eval_main.sh` / `run_eval.py` 三件套),命名、目录层级、
+设计参照 `sgl-eval-test` 仓库(其
+`Jenkinsfile` / `sgl_eval_main.sh` / `run_sgleval.py` 三件套),命名、目录层级、
 邮件渲染逻辑保持一致,仅按 evalscope 的参数面和 report 结构做适配。
 
 ---
@@ -16,11 +16,11 @@ Jenkins 流水线与远程执行约定。evalscope 上游 README 讲的是单机
 | 文件 | 角色 | 对应 sgl-eval-test |
 |------|------|---------------------|
 | `evalscope_main.sh` | shell 主入口,定义 `run_task` 函数 | `sgl_eval_main.sh` |
-| `run_eval.py` | Python 编排器,Jenkins → shell 的桥 | `run_eval.py` |
+| `run_evalscope.py` | Python 编排器,Jenkins → shell 的桥 | `run_sgleval.py` |
 | `Jenkinsfile` | Jenkins 声明式流水线 | `Jenkinsfile` |
 
 `evalscope_main.sh` 不会自己读 Jenkins 参数;它通过环境变量接收所有配置,
-由 `run_eval.py` 统一注入——与 sgl-eval-test 完全相同的分层。
+由 `run_evalscope.py` 统一注入——与 sgl-eval-test 完全相同的分层。
 
 ---
 
@@ -73,10 +73,10 @@ OUTPUT_BASE=./output/smoke \
 bash evalscope_main.sh
 ```
 
-### 3.2 通过 run_eval.py 编排(本地复现 Jenkins 行为)
+### 3.2 通过 run_evalscope.py 编排(本地复现 Jenkins 行为)
 
 ```bash
-python3 run_eval.py \
+python3 run_evalscope.py \
     --tester liwt \
     --build-number manual001 \
     --chip nvidia-h100 \
@@ -89,7 +89,7 @@ python3 run_eval.py \
     --enable-thinking false
 ```
 
-`run_eval.py` 会:
+`run_evalscope.py` 会:
 1. 创建 `./output/liwt/manual001/nvidia-h100/glm-5.2/<timestamp>/`
 2. 设置环境变量(`MODEL_NAME` / `DATASETS` / `LLM_ADDR` / `OUTPUT_BASE` / ...)
 3. 调 `bash evalscope_main.sh`,透传退出码
@@ -98,7 +98,7 @@ python3 run_eval.py \
 
 打开 Jenkins job → Build with Parameters → 勾选任务、填端点 → 构建。
 Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR` 下
-跑 `run_eval.py`,完成后 scp 拉回结果、归档、发邮件。
+跑 `run_evalscope.py`,完成后 scp 拉回结果、归档、发邮件。
 
 ---
 

@@ -3,7 +3,7 @@
 #
 # 设计参照 sgl-eval-test/sgl_eval_main.sh 与 lm-evaluation-harness/lm_eval_test.sh:
 #   - 顶层定义 run_task 函数,每个任务调用一次
-#   - 通过环境变量接收运行期参数(由 run_eval.py 设置)
+#   - 通过环境变量接收运行期参数(由 run_evalscope.py 设置)
 #   - 所有输出 tee 到统一日志文件,便于 Jenkins 邮件解析
 #
 # run_task 函数签名(需求 #1):
@@ -94,6 +94,15 @@ print(v if v is not None else '')
 _build_generation_config() {
     local max_tokens="$1"
     local temperature="$2"
+
+    # shell 使用小写 true/false,Python 需要 True/False,在此转换避免 NameError。
+    local enable_thinking_py
+    if [ "${ENABLE_THINKING}" = 'true' ]; then
+        enable_thinking_py=True
+    else
+        enable_thinking_py=False
+    fi
+
     python3 -c "
 import json
 cfg = {
@@ -102,7 +111,7 @@ cfg = {
     'top_p': ${TOP_P},
     'top_k': ${TOP_K},
     'MinP': ${MIN_P},
-    'chat_template_kwargs': {'enable_thinking': ${ENABLE_THINKING}}
+    'chat_template_kwargs': {'enable_thinking': ${enable_thinking_py}}
 }
 print(json.dumps(cfg, ensure_ascii=False))
 "

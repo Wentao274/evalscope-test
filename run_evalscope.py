@@ -8,7 +8,9 @@
 3. 设置环境变量并通过 bash 调用 evalscope_main.sh
 4. 透传退出码
 
-与 sgl-eval-test/run_eval.py 的差异:
+与 sgl-eval-test/run_sgleval.py 的差异:
+   - 本仓库编排脚本命名为 run_evalscope.py(避免与其他测试框架的 run_eval.py 混淆,
+     Jenkinsfile 清理残留进程时按全字符串 run_evalscope.py 匹配,不会误杀其他框架)
    - evalscope 的 generation-config 是单个 JSON 字符串,拆分为 max_tokens /
      temperature / top_p / top_k / min_p / enable_thinking 等独立参数后注入
    - 多任务由 --tasks 逗号分隔,在一次 bash 调用里串行执行

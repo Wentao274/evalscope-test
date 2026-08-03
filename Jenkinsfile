@@ -7,8 +7,8 @@ pipeline {
         string(name: 'CHIP', defaultValue: 'nvidia-h100', description: '芯片平台名称(必填)')
         choice(name: 'ENGINE', choices: ['vllm', 'sglang'], description: '推理框架(必填,仅用于邮件展示)')
         choice(name: 'PD', choices: ['agg', 'disagg'], description: 'PD分离模式(agg=非PD分离,disagg=PD分离,仅用于邮件展示)')
-        string(name: 'MODEL', defaultValue: 'glm-5.2', description: '模型服务名称(必填,对应 evalscope eval --model)')
-        string(name: 'BASE_URL', defaultValue: 'http://10.201.149.34:8000', description: 'OpenAI 兼容端点根 URL(必填,不带 /v1 后缀,流水线会自动拼接)')
+        string(name: 'MODEL', defaultValue: 'deepseek-v4-flash', description: '模型服务名称(必填,对应 evalscope eval --model)')
+        string(name: 'BASE_URL', defaultValue: 'http://10.201.149.37:8080', description: 'OpenAI 兼容端点根 URL(必填,不带 /v1 后缀,流水线会自动拼接)')
         password(name: 'API_KEY', defaultValue: '', description: 'API Key(可选,无需认证时留空)')
 
         // 各基准一个 boolean(需求 #9:先支持 mmlu_pro 和 gpqa_diamond)
@@ -137,25 +137,26 @@ cd ${params.WORK_DIR}
 echo "工作目录: \$(pwd)"
 ls -la
 
-echo "=== 清理残留进程 (evalscope / run_eval) ==="
-# 用更精确的模式避免误杀 Jenkins 内部进程:
-#   - "evalscope eval"  :真正的 evalscope 运行命令
-#   - "run_eval.py"     :我们的编排脚本
+echo "=== 清理残留进程 (evalscope / run_evalscope) ==="
+# 用更精确的"全字符串"匹配避免误杀其他测试框架同名脚本与 Jenkins 内部进程:
+#   - "evalscope eval"       :真正的 evalscope 运行命令
+#   - "run_evalscope.py"     :我们的编排脚本(改用全字符串,避免命中其他框架的 run_eval.py / run_eval_xxx.py)
 #   - 排除含 "jenkins" / "durable" / "@tmp" 的 Jenkins 内部进程
-RESIDUAL=\$(pgrep -af "evalscope eval|run_eval\\.py" 2>/dev/null | grep -vE "jenkins|durable|@tmp" || true)
+# pgrep -f 的 pattern 默认做正则匹配,转义为普通字符串以确保整串相等而非子串正则。
+RESIDUAL=\$(pgrep -af "evalscope eval|run_evalscope\\.py" 2>/dev/null | grep -vE "jenkins|durable|@tmp" || true)
 if [ -n "\${RESIDUAL}" ]; then
     echo "发现残留进程:"
     echo "\${RESIDUAL}"
     echo "发送 SIGTERM..."
     echo "\${RESIDUAL}" | awk '{print \$1}' | xargs -r kill -TERM 2>/dev/null || true
     sleep 3
-    REMAINING=\$(pgrep -af "evalscope eval|run_eval\\.py" 2>/dev/null | grep -vE "jenkins|durable|@tmp" || true)
+    REMAINING=\$(pgrep -af "evalscope eval|run_evalscope\\.py" 2>/dev/null | grep -vE "jenkins|durable|@tmp" || true)
     if [ -n "\${REMAINING}" ]; then
         echo "残留进程未响应 SIGTERM,发送 SIGKILL..."
         echo "\${REMAINING}" | awk '{print \$1}' | xargs -r kill -KILL 2>/dev/null || true
         sleep 1
     fi
-    FINAL=\$(pgrep -af "evalscope eval|run_eval\\.py" 2>/dev/null | grep -vE "jenkins|durable|@tmp" || true)
+    FINAL=\$(pgrep -af "evalscope eval|run_evalscope\\.py" 2>/dev/null | grep -vE "jenkins|durable|@tmp" || true)
     if [ -n "\${FINAL}" ]; then
         echo "WARN: 以下残留进程仍存在,需人工介入:"
         echo "\${FINAL}"
@@ -168,7 +169,7 @@ fi
 
 echo "=== 设置权限 ==="
 chmod +x evalscope_main.sh
-chmod +x run_eval.py
+chmod +x run_evalscope.py
 
 echo "=== 检查并创建虚拟环境 ==="
 if [ ! -d "${params.WORK_DIR}/.venv" ]; then
@@ -221,7 +222,7 @@ export LC_ALL=en_US.UTF-8
 cd ${params.WORK_DIR}
 source .venv/bin/activate
 echo "=== 执行Python测试脚本 ==="
-python3 run_eval.py \\
+python3 run_evalscope.py \\
     --tester ${params.TESTER} \\
     --build-number ${BUILD_NUMBER} \\
     --chip ${params.CHIP} \\
@@ -236,7 +237,7 @@ python3 run_eval.py \\
     --top-p "${params.TOP_P}" \\
     --top-k "${params.TOP_K}" \\
     --min-p "${params.MIN_P}" \\
-    --enable-thinking "${params.ENABLE_THINKING}" \\
+    --enable-thinking "${params.ENABLE_THINKING?.toString()?.toLowerCase()}" \\
     --repeats "${params.REPEATS}" \\
     --timeout "${params.TIMEOUT}" \\
     --seed "${params.SEED}" \\
@@ -374,7 +375,7 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                                     for (def c : categories) {
                                         def catName = c.name
                                         if (catName instanceof List) {
-                                            catName = catName.join(' / ')
+                                            catName = catName.collect { it.toString() }.join(' / ')
                                         }
                                         def catScore = c.score
                                         def catScoreStr = catScore != null ? String.format("%.2f%%", (catScore as Double) * 100) : "N/A"

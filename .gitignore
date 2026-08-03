@@ -137,6 +137,7 @@ outreach/
 
 # others
 *.tokenization
+nul
 
 # outputs
 outputs/

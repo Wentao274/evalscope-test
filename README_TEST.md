@@ -15,11 +15,11 @@ OpenAI 兼容推理服务,提供 Jenkins 流水线 + 远程执行 + 自动邮件
 | 文件 | 角色 |
 |------|------|
 | `evalscope_main.sh` | shell 主入口,定义 `run_task` 函数,串行跑多个数据集 |
-| `run_eval.py` | Python 编排器,Jenkins → shell 的桥 |
+| `run_evalscope.py` | Python 编排器,Jenkins → shell 的桥 |
 | `Jenkinsfile` | Jenkins 声明式流水线:远程 ssh 执行、拉取结果、发邮件 |
 
-设计参照 [sgl-eval-test](https://github.com/maas/sgl-eval-test) 仓库的
-`sgl_eval_main.sh` / `run_eval.py` / `Jenkinsfile` 三件套,命名、目录层级、
+设计参照 sgl-eval-test 仓库的
+`sgl_eval_main.sh` / `run_sgleval.py` / `Jenkinsfile` 三件套,命名、目录层级、
 邮件渲染逻辑保持一致,仅按 evalscope 的参数面和 report 结构做适配。
 
 ---
@@ -49,10 +49,10 @@ OUTPUT_BASE=./output/smoke \
 bash evalscope_main.sh
 ```
 
-### 3. 通过 run_eval.py 编排(复现 Jenkins 行为)
+### 3. 通过 run_evalscope.py 编排(复现 Jenkins 行为)
 
 ```bash
-python3 run_eval.py \
+python3 run_evalscope.py \
     --tester liwt \
     --build-number manual001 \
     --chip nvidia-h100 \
@@ -64,7 +64,7 @@ python3 run_eval.py \
     --max-tokens 30000
 ```
 
-`run_eval.py` 会:
+`run_evalscope.py` 会:
 1. 创建 `./output/liwt/manual001/nvidia-h100/glm-5.2/<timestamp>/`
 2. 设置环境变量(`MODEL_NAME` / `DATASETS` / `LLM_ADDR` / `OUTPUT_BASE` / ...)
 3. 调 `bash evalscope_main.sh`,透传退出码
@@ -73,7 +73,7 @@ python3 run_eval.py \
 
 打开 Jenkins job → Build with Parameters → 勾选任务、填端点 → 构建。
 Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR` 下
-跑 `run_eval.py`,完成后 scp 拉回结果、归档、发邮件。
+跑 `run_evalscope.py`,完成后 scp 拉回结果、归档、发邮件。
 
 ---
 
@@ -110,7 +110,7 @@ evalscope eval \
 ```
 
 其中 `max_tokens` / `temperature` 等通过环境变量参数化注入 `generation-config`
-JSON(需求 #1、#2)。`run_eval.py` 负责把 Jenkins 参数翻译为环境变量,
+JSON(需求 #1、#2)。`run_evalscope.py` 负责把 Jenkins 参数翻译为环境变量,
 `evalscope_main.sh` 负责把环境变量组装成最终命令。
 
 ---
@@ -202,9 +202,9 @@ evalscope 还支持但未在 Jenkins 暴露的参数(留作扩展):
 ```
 Jenkinsfile (Jenkins master, ssh 触发)
     │
-    │  ssh → python3 run_eval.py <params>
+    │  ssh → python3 run_evalscope.py <params>
     ▼
-run_eval.py (远程 GPU 主机,参数 → 环境变量)
+run_evalscope.py (远程 GPU 主机,参数 → 环境变量)
     │
     │  bash evalscope_main.sh
     ▼
@@ -216,7 +216,7 @@ evalscope (Python 库,下载数据集 → 推理 → 评分 → 写 report.json)
 ```
 
 `evalscope_main.sh` 不读 Jenkins 参数;它通过环境变量接收所有配置,由
-`run_eval.py` 统一注入——与 sgl-eval-test 完全相同的分层。
+`run_evalscope.py` 统一注入——与 sgl-eval-test 完全相同的分层。
 
 ---
 
