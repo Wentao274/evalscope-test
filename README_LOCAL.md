@@ -116,7 +116,7 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `TASK_GPQA_DIAMOND` | `--datasets gpqa_diamond` | true | 勾选后逗号拼接 |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 空 = 默认 1 |
-| `EVAL_BATCH_SIZE` | `--eval-batch-size` | `1` | 并发批大小 |
+| `EVAL_BATCH_SIZE` | `--eval-batch-size` | `8` | 并发批大小 |
 | `TEMPERATURE` | `--generation-config temperature` | `0.6` | 注入 generation-config |
 | `MAX_TOKENS` | `--generation-config max_tokens` | `32768` | 注入 generation-config |
 | `TOP_P` | `--generation-config top_p` | `0.95` | 注入 generation-config |

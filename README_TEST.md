@@ -149,7 +149,7 @@ JSON(需求 #1、#2)。`run_evalscope.py` 负责把 Jenkins 参数翻译为环�
 | `TASK_MMLU_PRO` / `TASK_GPQA_DIAMOND` | `--datasets` | 见 checkbox | 勾选后逗号拼接 |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 重复次数(k-metrics),空 = 默认 1 |
-| `EVAL_BATCH_SIZE` | `--eval-batch-size` | `1` | 并发批大小 |
+| `EVAL_BATCH_SIZE` | `--eval-batch-size` | `8` | 并发批大小 |
 | `TEMPERATURE` | `--generation-config temperature` | `0.6` | 注入 generation-config |
 | `MAX_TOKENS` | `--generation-config max_tokens` | `32768` | 注入 generation-config |
 | `TOP_P` | `--generation-config top_p` | `0.95` | 注入 generation-config |

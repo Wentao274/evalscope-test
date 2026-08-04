@@ -20,7 +20,7 @@ pipeline {
 
         string(name: 'EXAMPLES',        defaultValue: '',      description: '样本数限制(空 = 不限制;传给 evalscope --limit。int=数量,float=比例)')
         string(name: 'REPEATS',         defaultValue: '',      description: '重复次数(k-metrics,传给 evalscope --repeats。空 = 默认 1)')
-        string(name: 'EVAL_BATCH_SIZE', defaultValue: '1',     description: '并发批大小(对应 evalscope --eval-batch-size,默认 1)')
+        string(name: 'EVAL_BATCH_SIZE', defaultValue: '8',     description: '并发批大小(对应 evalscope --eval-batch-size,默认 8)')
         string(name: 'TEMPERATURE',     defaultValue: '0.0',   description: '采样温度(默认 0.0 = greedy,保证精度评测可复现)')
         string(name: 'MAX_TOKENS',      defaultValue: '32768', description: '生成最大 token 数(默认 32768;清空 = 不指定)')
         string(name: 'TOP_P',           defaultValue: '0.95',  description: 'nucleus top_p(默认 0.95)')
