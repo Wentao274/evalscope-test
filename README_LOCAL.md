@@ -118,6 +118,7 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `TASK_CMMLU` | `--datasets cmmlu` | true | 勾选后逗号拼接 |
 | `TASK_MATH_500` | `--datasets math_500` | true | 勾选后逗号拼接 |
 | `TASK_HELLASWAG` | `--datasets hellaswag` | true | 勾选后逗号拼接 |
+| `TASK_HUMANEVAL` | `--datasets humaneval` | true | 勾选后逗号拼接(Python 代码生成,需执行模型生成代码,建议 sandbox) |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 空 = 默认 1 |
 | `EVAL_BATCH_SIZE` | `--eval-batch-size` | `32` | 并发批大小 |
@@ -128,6 +129,7 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `TOP_K` | `--generation-config top_k` | `20` | 注入 generation-config |
 | `ENABLE_THINKING` | `--generation-config chat_template_kwargs.enable_thinking` | `false` | 注入 generation-config |
 | `JUDGE_STRATEGY` | `--judge-strategy` | `auto` | auto/rule/llm/llm_recall |
+| `ENABLE_SANDBOX` | `--sandbox {"enabled": true}` | `false` | 仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效;启用需 runner 上 Docker + evalscope[sandbox] |
 | `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | 空 | 例 `{"mmlu_pro":32768}` |
 | `DATASET_ARGS` | `--dataset-args` | 空 | 数据集参数 JSON |
 | `DESCRIPTION` / `RECIPIENTS` / `WORK_DIR` | — | — | 元信息/邮件收件人/远程目录 |
@@ -145,6 +147,7 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 |------|----------|------|
 | `mmlu_pro` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` | `0.0` | 多选题/常识题,greedy 解码保证可复现、最大化准确率 |
 | `math_500` | `0.6` | 数学推理,带 thinking 时略带随机有助模型发散推理路径 |
+| `humaneval` | `0.2` | 代码生成,略带随机有助 pass@1 多样性(HumanEval 论文常用值) |
 
 按模型族微调:DSv3.2/V4 reasoning 系可整体提高到 `1.0`,R1 系用 `0.6`,
 通用 instruct(非 thinking)用 `0.0`。
@@ -159,6 +162,7 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `cmmlu` | `evalscope/cmmlu` | 0-shot | `acc` | 中文多学科多选,67 学科 |
 | `math_500` | `AI-ModelScope/MATH-500` | 0-shot | `acc` | 数学推理,500 题,5 个难度等级 |
 | `hellaswag` | `evalscope/hellaswag` | 0-shot | `acc` | 常识推理,4 选择句补全 |
+| `humaneval` | `opencompass/humaneval` (openai_humaneval) | 0-shot | `acc` / pass@k | Python 代码生成,164 题,执行模型生成代码判 pass;建议 `ENABLE_SANDBOX=true`(否则本地子进程执行,仅 reliability_guard 非真沙箱) |
 
 这些默认值不传任何 flag 时生效;Jenkins 任一对应参数填了非空值就覆盖默认。
 

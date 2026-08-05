@@ -33,6 +33,10 @@
 #                          按任务指定采样温度(若未命中则用 TEMPERATURE_FALLBACK)
 #   DATASET_ARGS     数据集参数 JSON 字符串
 #   JUDGE_STRATEGY   评分策略,默认 auto
+#   ENABLE_SANDBOX   true / false,默认 false。true 时给所有任务拼
+#                    --sandbox {"enabled": true}(仅对 CodeExecutionSandboxMixin
+#                    任务如 humaneval 生效,其他任务被 evalscope 忽略)。
+#                    启用前需确保 runner 上 Docker 可用且装了 evalscope[sandbox]。
 #
 # 注:Jenkinsfile 未暴露的 evalscope knob(min_p / seed / timeout / use_cache)
 #   不再透传,统一用 evalscope 自身默认值。
@@ -58,6 +62,7 @@ ENABLE_THINKING=${ENABLE_THINKING:-false}
 REPEATS=${REPEATS:-}
 DATASET_ARGS=${DATASET_ARGS:-}
 JUDGE_STRATEGY=${JUDGE_STRATEGY:-auto}
+ENABLE_SANDBOX=${ENABLE_SANDBOX:-false}
 TASK_MAX_TOKENS_JSON=${TASK_MAX_TOKENS_JSON:-}
 TASK_TEMPERATURE_JSON=${TASK_TEMPERATURE_JSON:-}
 TEMPERATURE_FALLBACK=${TEMPERATURE_FALLBACK:-0.0}
@@ -179,6 +184,11 @@ run_task() {
     # ---- 需求 #2:样本数为空则不指定 --limit ----
     [ -n "$EXAMPLES" ] && cmd_args+=(--limit "$EXAMPLES")
 
+    # ---- sandbox:全局开关,仅对 CodeExecutionSandboxMixin 任务生效 ----
+    if [ "${ENABLE_SANDBOX}" = 'true' ]; then
+        cmd_args+=(--sandbox '{"enabled": true}')
+    fi
+
     # ---- 扩展参数:repeats ----
     if [ -n "$REPEATS" ]; then
         cmd_args+=(--repeats "$REPEATS")
@@ -207,6 +217,7 @@ run_task() {
     echo "  ENABLE_THINKING  : $ENABLE_THINKING"     | tee -a "$LOG_FILE"
     echo "  REPEATS          : ${REPEATS:-<default 1>}"   | tee -a "$LOG_FILE"
     echo "  JUDGE_STRATEGY   : $JUDGE_STRATEGY"      | tee -a "$LOG_FILE"
+    echo "  ENABLE_SANDBOX   : $ENABLE_SANDBOX"      | tee -a "$LOG_FILE"
     echo "  DATASET_ARGS     : ${DATASET_ARGS:-<none>}"  | tee -a "$LOG_FILE"
     echo "  WORK_DIR         : ${OUTPUT_BASE}"       | tee -a "$LOG_FILE"
     echo "  generation-config: $gen_config"          | tee -a "$LOG_FILE"
@@ -241,6 +252,7 @@ run_task() {
     echo "  ENABLE_THINKING   : $ENABLE_THINKING"
     echo "  REPEATS           : ${REPEATS:-<default 1>}"
     echo "  JUDGE_STRATEGY    : $JUDGE_STRATEGY"
+    echo "  ENABLE_SANDBOX    : $ENABLE_SANDBOX"
     echo "  DATASET_ARGS      : ${DATASET_ARGS:-<none>}"
     echo "  OUTPUT_BASE       : $OUTPUT_BASE"
     echo "  LOG_FILE          : $LOG_FILE"

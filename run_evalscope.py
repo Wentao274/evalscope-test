@@ -88,6 +88,14 @@ def parse_args():
         help="评分策略(默认 auto)",
     )
     parser.add_argument(
+        "--enable-sandbox",
+        default="false",
+        choices=["true", "false"],
+        help="启用 sandbox 执行(默认 false)。true 时给所有任务拼 --sandbox "
+        '{"enabled": true},仅对 CodeExecutionSandboxMixin 任务(如 humaneval)'
+        "生效;需 runner 上 Docker 可用且装了 evalscope[sandbox]",
+    )
+    parser.add_argument(
         "--dataset-args", default="", help="数据集参数 JSON 字符串(空 = 不指定)"
     )
     parser.add_argument(
@@ -140,6 +148,7 @@ def main():
     if args.repeats:
         env["REPEATS"] = args.repeats
     env["JUDGE_STRATEGY"] = args.judge_strategy
+    env["ENABLE_SANDBOX"] = args.enable_sandbox
     if args.dataset_args:
         env["DATASET_ARGS"] = args.dataset_args
     if args.task_max_tokens_json:
@@ -166,6 +175,7 @@ def main():
         "ENABLE_THINKING",
         "REPEATS",
         "JUDGE_STRATEGY",
+        "ENABLE_SANDBOX",
         "DATASET_ARGS",
         "TASK_MAX_TOKENS_JSON",
     ]:

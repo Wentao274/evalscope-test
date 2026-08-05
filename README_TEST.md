@@ -150,7 +150,7 @@ JSON(需求 #1、#2)。`temperature` 不再有全局参数,改由 `TASK_TEMPERAT
 | `MODEL` | `--model` | `deepseek-v4-flash` | 模型服务名 |
 | `BASE_URL` | `--api-url` | `http://10.201.149.37:8080/v1` | 端点(自动拼 /v1) |
 | `API_KEY` | `--api-key` | 空 → `EMPTY` | 鉴权 |
-| `TASK_MMLU_PRO` / `TASK_GPQA_DIAMOND` / `TASK_CEVAL` / `TASK_CMMLU` / `TASK_MATH_500` / `TASK_HELLASWAG` | `--datasets` | 见 checkbox | 勾选后逗号拼接 |
+| `TASK_MMLU_PRO` / `TASK_GPQA_DIAMOND` / `TASK_CEVAL` / `TASK_CMMLU` / `TASK_MATH_500` / `TASK_HELLASWAG` / `TASK_HUMANEVAL` | `--datasets` | 见 checkbox | 勾选后逗号拼接 |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 重复次数(k-metrics),空 = 默认 1 |
 | `EVAL_BATCH_SIZE` | `--eval-batch-size` | `32` | 并发批大小 |
@@ -161,6 +161,7 @@ JSON(需求 #1、#2)。`temperature` 不再有全局参数,改由 `TASK_TEMPERAT
 | `TOP_K` | `--generation-config top_k` | `20` | 注入 generation-config |
 | `ENABLE_THINKING` | `--generation-config chat_template_kwargs.enable_thinking` | `false` | 注入 generation-config |
 | `JUDGE_STRATEGY` | `--judge-strategy` | `auto` | auto/rule/llm/llm_recall |
+| `ENABLE_SANDBOX` | `--sandbox {"enabled": true}` | `false` | 仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效;启用需 runner 上 Docker + evalscope[sandbox] |
 | `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | 空 | 例 `{"mmlu_pro":32768}` |
 | `DATASET_ARGS` | `--dataset-args` | 空 | 数据集参数 JSON |
 
@@ -195,6 +196,7 @@ evalscope 还支持但未在 Jenkins 暴露的参数(留作扩展):
 > |------|----------|------|
 > | `mmlu_pro` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` | `0.0` | 多选题/常识题,greedy 解码保证可复现、最大化准确率 |
 > | `math_500` | `0.6` | 数学推理,带思考(thinking)时略带随机有助模型发散推理路径 |
+> | `humaneval` | `0.2` | 代码生成,略带随机有助 pass@1 多样性(HumanEval 论文常用值) |
 >
 > 按模型族微调:DSv3.2/V4 reasoning 系可整体提高到 `1.0`,R1 系用 `0.6`,
 > 通用 instruct(非 thinking)用 `0.0`。

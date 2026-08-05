@@ -18,6 +18,7 @@ pipeline {
         booleanParam(name: 'TASK_CMMLU',        defaultValue: true,  description: '运行 cmmlu (中文多学科多选,67 学科,0-shot,accuracy)')
         booleanParam(name: 'TASK_MATH_500',     defaultValue: true,  description: '运行 math_500 (数学推理,500 题,0-shot,accuracy)')
         booleanParam(name: 'TASK_HELLASWAG',   defaultValue: true,  description: '运行 hellaswag (常识推理,4 选择,0-shot,accuracy)')
+        booleanParam(name: 'TASK_HUMANEVAL',    defaultValue: true,  description: '运行 humaneval (Python 代码生成,164 题,0-shot,pass@1;需执行模型生成的代码,启用 sandbox 见 evalscope 文档)')
 
         string(name: 'EXAMPLES',        defaultValue: '',      description: '样本数限制(空 = 不限制;传给 evalscope --limit。int=数量,float=比例)')
         string(name: 'REPEATS',         defaultValue: '',      description: '重复次数(k-metrics,传给 evalscope --repeats。空 = 默认 1)')
@@ -28,8 +29,9 @@ pipeline {
         string(name: 'TOP_K',           defaultValue: '20',    description: 'top-k 采样(默认 20)')
         choice(name: 'ENABLE_THINKING', choices: ['false', 'true'], description: '启用 thinking 模式(默认 false)')
         choice(name: 'JUDGE_STRATEGY',  choices: ['auto', 'rule', 'llm', 'llm_recall'], description: '评分策略(默认 auto;多选题用 rule,主观题用 llm)')
+        choice(name: 'ENABLE_SANDBOX', choices: ['true', 'false'], description: '启用 sandbox 执行(默认 true)。true 时给所有任务拼 --sandbox {"enabled": true},仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效。启用前环境检查 stage 会预装 evalscope[sandbox] 并校验 Docker 可用')
         text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '', description: '按任务覆盖 max_tokens 的 JSON,例: {"mmlu_pro":4096,"gpqa_diamond":4096}')
-        text(name: 'TASK_TEMPERATURE_JSON', defaultValue: '{"mmlu_pro":0.0,"gpqa_diamond":0.0,"ceval":0.0,"cmmlu":0.0,"math_500":0.6,"hellaswag":0.0}', description: '按任务指定采样温度的 JSON。默认值=各基准推荐温度:多选题/常识题 0.0(greedy 可复现),math_500 0.6(数学推理略带随机有助思考)。可按模型调整,如 DSv4 reasoning 提高到 1.0、R1 系 0.6、instruct 0.0')
+        text(name: 'TASK_TEMPERATURE_JSON', defaultValue: '{"mmlu_pro":0.0,"gpqa_diamond":0.0,"ceval":0.0,"cmmlu":0.0,"math_500":0.6,"hellaswag":0.0,"humaneval":0.2}', description: '按任务指定采样温度的 JSON。默认值=各基准推荐温度:多选题/常识题 0.0(greedy 可复现),math_500 0.6(数学推理略带随机有助思考),humaneval 0.2(代码生成略带随机有助 pass@1 多样性)。可按模型调整,如 DSv4 reasoning 提高到 1.0、R1 系 0.6、instruct 0.0')
         text(name: 'DATASET_ARGS',      defaultValue: '',      description: '数据集参数 JSON,例: {"mmlu_pro":{"subset_list":["math","physics"]}}')
 
         string(name: 'DESCRIPTION', defaultValue: '', description: '模型服务描述信息(仅用于邮件展示)')
@@ -65,6 +67,7 @@ pipeline {
                     println("任务 CMMLU:        ${params.TASK_CMMLU}")
                     println("任务 MATH_500:     ${params.TASK_MATH_500}")
                     println("任务 HELLASWAG:   ${params.TASK_HELLASWAG}")
+                    println("任务 HUMANEVAL:   ${params.TASK_HUMANEVAL}")
                     println("样本限制:        ${params.EXAMPLES ?: '无限制'}")
                     println("repeats:         ${params.REPEATS ?: 'default 1'}")
                     println("eval-batch-size: ${params.EVAL_BATCH_SIZE}")
@@ -73,6 +76,7 @@ pipeline {
                     println("top_p / top_k:   ${params.TOP_P} / ${params.TOP_K}")
                     println("enable_thinking: ${params.ENABLE_THINKING}")
                     println("judge_strategy:  ${params.JUDGE_STRATEGY}")
+                    println("enable_sandbox:  ${params.ENABLE_SANDBOX}")
                     println("per-task max_tokens JSON: ${params.TASK_MAX_TOKENS_JSON ?: 'N/A'}")
                     println("per-task temperature JSON: ${params.TASK_TEMPERATURE_JSON ?: 'N/A'}")
                     println("dataset_args:    ${params.DATASET_ARGS ?: 'N/A'}")
@@ -189,6 +193,27 @@ fi
 
 cd ${params.WORK_DIR}
 echo "=== 虚拟环境准备完成 ==="
+
+echo "=== 检查 sandbox 依赖 ==="
+if [ "${params.ENABLE_SANDBOX}" = "true" ]; then
+    echo "ENABLE_SANDBOX=true,预装 evalscope[sandbox] 并校验 Docker..."
+    export https_proxy=http://100.64.1.68:1080
+    export http_proxy=http://100.64.1.68:1080
+    cd ${params.WORK_DIR}
+    source .venv/bin/activate
+    uv pip install -e '.[sandbox]'
+    deactivate
+    unset https_proxy
+    unset http_proxy
+    if ! docker info >/dev/null 2>&1; then
+        echo "ERROR: ENABLE_SANDBOX=true 但 Docker daemon 不可用(docker info 失败)。"
+        echo "请确认 runner 上 Docker 已安装且 daemon 运行,或关闭 ENABLE_SANDBOX。"
+        exit 1
+    fi
+    echo "Docker daemon 可用,sandbox 依赖预检通过"
+else
+    echo "ENABLE_SANDBOX=false,跳过 sandbox 依赖检查"
+fi
 ENDSSH
 """
                 }
@@ -208,6 +233,7 @@ ENDSSH
                     if (params.TASK_CMMLU)        taskList.add('cmmlu')
                     if (params.TASK_MATH_500)     taskList.add('math_500')
                     if (params.TASK_HELLASWAG)   taskList.add('hellaswag')
+                    if (params.TASK_HUMANEVAL)    taskList.add('humaneval')
                     if (taskList.isEmpty()) {
                         error '至少需要选择一个测试任务'
                     }
@@ -246,6 +272,7 @@ python3 run_evalscope.py \\
     --enable-thinking "${params.ENABLE_THINKING?.toString()?.toLowerCase()}" \\
     --repeats "${params.REPEATS}" \\
     --judge-strategy "${params.JUDGE_STRATEGY}" \\
+    --enable-sandbox "${params.ENABLE_SANDBOX?.toString()?.toLowerCase()}" \\
     --task-max-tokens-json '${params.TASK_MAX_TOKENS_JSON}' \\
     --dataset-args '${params.DATASET_ARGS}' \\
     --description "${params.DESCRIPTION}"
