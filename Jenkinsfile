@@ -30,7 +30,7 @@ pipeline {
         choice(name: 'ENABLE_THINKING', choices: ['false', 'true'], description: '启用 thinking 模式(默认 false)')
         choice(name: 'JUDGE_STRATEGY',  choices: ['auto', 'rule', 'llm', 'llm_recall'], description: '评分策略(默认 auto;多选题用 rule,主观题用 llm)')
         choice(name: 'ENABLE_SANDBOX', choices: ['true', 'false'], description: '启用 sandbox 执行(默认 true)。true 时给所有任务拼 --sandbox {"enabled": true},仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效。启用前环境检查 stage 会预装 evalscope[sandbox] 并校验 Docker 可用')
-        text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '', description: '按任务覆盖 max_tokens 的 JSON,例: {"mmlu_pro":4096,"gpqa_diamond":4096}')
+        text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '{"gpqa_diamond":131072}', description: '按任务覆盖 max_tokens 的 JSON,默认 gpqa_diamond=131072,其余任务用 MAX_TOKENS 默认值;可按需追加,例: {"mmlu_pro":4096,"gpqa_diamond":131072}')
         text(name: 'TASK_TEMPERATURE_JSON', defaultValue: '{"mmlu_pro":0.0,"gpqa_diamond":0.0,"ceval":0.0,"cmmlu":0.0,"math_500":0.6,"hellaswag":0.0,"humaneval":0.2}', description: '按任务指定采样温度的 JSON。默认值=各基准推荐温度:多选题/常识题 0.0(greedy 可复现),math_500 0.6(数学推理略带随机有助思考),humaneval 0.2(代码生成略带随机有助 pass@1 多样性)。可按模型调整,如 DSv4 reasoning 提高到 1.0、R1 系 0.6、instruct 0.0')
         text(name: 'DATASET_ARGS',      defaultValue: '',      description: '数据集参数 JSON,例: {"mmlu_pro":{"subset_list":["math","physics"]}}')
 
