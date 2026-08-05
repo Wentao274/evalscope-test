@@ -104,7 +104,6 @@ evalscope eval \
     --eval-type openai_api \
     --datasets "${dataset}" \
     --generation-config '{"max_tokens":32768,"temperature":0.6,"top_p":0.95,"top_k":20,"MinP":0,"chat_template_kwargs":{"enable_thinking":false}}' \
-    --timeout ${TIMEOUT} \
     --eval-batch-size ${BS} \
     --work-dir "${OUTPUT_DIR}"
 ```
@@ -149,17 +148,13 @@ JSON(需求 #1、#2)。`run_evalscope.py` 负责把 Jenkins 参数翻译为环�
 | `TASK_MMLU_PRO` / `TASK_GPQA_DIAMOND` | `--datasets` | 见 checkbox | 勾选后逗号拼接 |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 重复次数(k-metrics),空 = 默认 1 |
-| `EVAL_BATCH_SIZE` | `--eval-batch-size` | `8` | 并发批大小 |
+| `EVAL_BATCH_SIZE` | `--eval-batch-size` | `32` | 并发批大小 |
 | `TEMPERATURE` | `--generation-config temperature` | `0.6` | 注入 generation-config |
 | `MAX_TOKENS` | `--generation-config max_tokens` | `32768` | 注入 generation-config |
 | `TOP_P` | `--generation-config top_p` | `0.95` | 注入 generation-config |
 | `TOP_K` | `--generation-config top_k` | `20` | 注入 generation-config |
-| `MIN_P` | `--generation-config MinP` | `0` | 注入 generation-config |
 | `ENABLE_THINKING` | `--generation-config chat_template_kwargs.enable_thinking` | `false` | 注入 generation-config |
-| `TIMEOUT` | `--timeout` | 空 | deprecated,建议用 generation-config.timeout |
-| `SEED` | `--seed` | `42` | 随机种子 |
 | `JUDGE_STRATEGY` | `--judge-strategy` | `auto` | auto/rule/llm/llm_recall |
-| `USE_CACHE` | `--use-cache` | 空 | 断点续跑,填 outputs/<timestamp> 路径 |
 | `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | 空 | 例 `{"mmlu_pro":32768}` |
 | `DATASET_ARGS` | `--dataset-args` | 空 | 数据集参数 JSON |
 
@@ -172,6 +167,10 @@ evalscope 还支持但未在 Jenkins 暴露的参数(留作扩展):
 | `--dataset-hub` | str | 数据源(modelscope / huggingface / local) |
 | `--no-timestamp` | flag | 不加时间戳子目录 |
 | `--rerun-review` | flag | 配合 `--use-cache`,强制重算评分 |
+| `--min-p` | float | min-p 采样(默认 0,使用框架默认值) |
+| `--timeout` | float | 请求超时秒数(使用框架默认值) |
+| `--seed` | int | 随机种子(默认 42,使用框架默认值) |
+| `--use-cache` | str | 断点续跑路径(使用框架默认值) |
 | `--debug` | flag | 调试模式 |
 | `--ignore-errors` | flag | 出错继续 |
 | `--analysis-report` | flag | 用 judge 模型生成分析报告 |

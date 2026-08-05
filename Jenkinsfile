@@ -20,17 +20,13 @@ pipeline {
 
         string(name: 'EXAMPLES',        defaultValue: '',      description: '样本数限制(空 = 不限制;传给 evalscope --limit。int=数量,float=比例)')
         string(name: 'REPEATS',         defaultValue: '',      description: '重复次数(k-metrics,传给 evalscope --repeats。空 = 默认 1)')
-        string(name: 'EVAL_BATCH_SIZE', defaultValue: '8',     description: '并发批大小(对应 evalscope --eval-batch-size,默认 8)')
+        string(name: 'EVAL_BATCH_SIZE', defaultValue: '32',    description: '并发批大小(对应 evalscope --eval-batch-size,默认 32)')
         string(name: 'TEMPERATURE',     defaultValue: '0.0',   description: '采样温度(默认 0.0 = greedy,保证精度评测可复现)')
         string(name: 'MAX_TOKENS',      defaultValue: '32768', description: '生成最大 token 数(默认 32768;清空 = 不指定)')
         string(name: 'TOP_P',           defaultValue: '0.95',  description: 'nucleus top_p(默认 0.95)')
         string(name: 'TOP_K',           defaultValue: '20',    description: 'top-k 采样(默认 20)')
-        string(name: 'MIN_P',           defaultValue: '0',     description: 'min-p 采样(默认 0)')
         choice(name: 'ENABLE_THINKING', choices: ['false', 'true'], description: '启用 thinking 模式(默认 false)')
-        string(name: 'TIMEOUT',         defaultValue: '',      description: '请求超时秒数(空 = 不指定;deprecated,建议用 generation-config.timeout)')
-        string(name: 'SEED',            defaultValue: '42',    description: '随机种子(默认 42)')
         choice(name: 'JUDGE_STRATEGY',  choices: ['auto', 'rule', 'llm', 'llm_recall'], description: '评分策略(默认 auto;多选题用 rule,主观题用 llm)')
-        string(name: 'USE_CACHE',       defaultValue: '',      description: '复用缓存路径(空 = 不复用;填 outputs/<timestamp> 路径可断点续跑)')
         text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '', description: '按任务覆盖 max_tokens 的 JSON,例: {"mmlu_pro":4096,"gpqa_diamond":4096}')
         text(name: 'DATASET_ARGS',      defaultValue: '',      description: '数据集参数 JSON,例: {"mmlu_pro":{"subset_list":["math","physics"]}}')
 
@@ -72,12 +68,8 @@ pipeline {
                     println("温度:            ${params.TEMPERATURE}")
                     println("max_tokens:      ${params.MAX_TOKENS ?: 'unlimited'}")
                     println("top_p / top_k:   ${params.TOP_P} / ${params.TOP_K}")
-                    println("min_p:           ${params.MIN_P}")
                     println("enable_thinking: ${params.ENABLE_THINKING}")
-                    println("timeout:         ${params.TIMEOUT ?: 'unset'}")
-                    println("seed:            ${params.SEED}")
                     println("judge_strategy:  ${params.JUDGE_STRATEGY}")
-                    println("use_cache:       ${params.USE_CACHE ?: 'no'}")
                     println("per-task max_tokens JSON: ${params.TASK_MAX_TOKENS_JSON ?: 'N/A'}")
                     println("dataset_args:    ${params.DATASET_ARGS ?: 'N/A'}")
                     println("模型描述:        ${params.DESCRIPTION}")
@@ -245,13 +237,9 @@ python3 run_evalscope.py \\
     --max-tokens "${params.MAX_TOKENS}" \\
     --top-p "${params.TOP_P}" \\
     --top-k "${params.TOP_K}" \\
-    --min-p "${params.MIN_P}" \\
     --enable-thinking "${params.ENABLE_THINKING?.toString()?.toLowerCase()}" \\
     --repeats "${params.REPEATS}" \\
-    --timeout "${params.TIMEOUT}" \\
-    --seed "${params.SEED}" \\
     --judge-strategy "${params.JUDGE_STRATEGY}" \\
-    --use-cache "${params.USE_CACHE}" \\
     --task-max-tokens-json '${params.TASK_MAX_TOKENS_JSON}' \\
     --dataset-args '${params.DATASET_ARGS}' \\
     --description "${params.DESCRIPTION}"
@@ -506,12 +494,8 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                 <tr><th>温度</th><td>${params.TEMPERATURE}</td></tr>
                 <tr><th>max_tokens</th><td>${params.MAX_TOKENS ?: 'unlimited'}</td></tr>
                 <tr><th>top_p / top_k</th><td>${params.TOP_P} / ${params.TOP_K}</td></tr>
-                <tr><th>min_p</th><td>${params.MIN_P}</td></tr>
                 <tr><th>enable_thinking</th><td>${params.ENABLE_THINKING}</td></tr>
-                <tr><th>timeout</th><td>${params.TIMEOUT ?: 'unset'}</td></tr>
-                <tr><th>seed</th><td>${params.SEED}</td></tr>
                 <tr><th>judge_strategy</th><td>${params.JUDGE_STRATEGY}</td></tr>
-                <tr><th>use_cache</th><td>${params.USE_CACHE ?: 'no'}</td></tr>
                 <tr><th>per-task max_tokens JSON</th><td>${params.TASK_MAX_TOKENS_JSON ?: 'N/A'}</td></tr>
                 <tr><th>dataset_args</th><td>${params.DATASET_ARGS ?: 'N/A'}</td></tr>
                 <tr><th>执行时间</th><td>${currentBuild.durationString}</td></tr>

@@ -111,6 +111,7 @@ cfg = {
     'top_p': ${TOP_P},
     'top_k': ${TOP_K},
     'MinP': ${MIN_P},
+    'timeout': 3600,
     'chat_template_kwargs': {'enable_thinking': ${enable_thinking_py}}
 }
 print(json.dumps(cfg, ensure_ascii=False))
@@ -153,9 +154,7 @@ run_task() {
     # ---- 需求 #2:样本数为空则不指定 --limit ----
     [ -n "$EXAMPLES" ] && cmd_args+=(--limit "$EXAMPLES")
 
-    # ---- 扩展参数:timeout / repeats / use-cache ----
-    [ -n "$TIMEOUT" ] && cmd_args+=(--timeout "$TIMEOUT")
-
+    # ---- 扩展参数:repeats / use-cache ----
     if [ -n "$REPEATS" ]; then
         cmd_args+=(--repeats "$REPEATS")
     fi

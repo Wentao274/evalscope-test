@@ -116,17 +116,13 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `TASK_GPQA_DIAMOND` | `--datasets gpqa_diamond` | true | 勾选后逗号拼接 |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 空 = 默认 1 |
-| `EVAL_BATCH_SIZE` | `--eval-batch-size` | `8` | 并发批大小 |
+| `EVAL_BATCH_SIZE` | `--eval-batch-size` | `32` | 并发批大小 |
 | `TEMPERATURE` | `--generation-config temperature` | `0.6` | 注入 generation-config |
 | `MAX_TOKENS` | `--generation-config max_tokens` | `32768` | 注入 generation-config |
 | `TOP_P` | `--generation-config top_p` | `0.95` | 注入 generation-config |
 | `TOP_K` | `--generation-config top_k` | `20` | 注入 generation-config |
-| `MIN_P` | `--generation-config MinP` | `0` | 注入 generation-config |
 | `ENABLE_THINKING` | `--generation-config chat_template_kwargs.enable_thinking` | `false` | 注入 generation-config |
-| `TIMEOUT` | `--timeout` | 空 | deprecated,建议用 generation-config.timeout |
-| `SEED` | `--seed` | `42` | 随机种子 |
 | `JUDGE_STRATEGY` | `--judge-strategy` | `auto` | auto/rule/llm/llm_recall |
-| `USE_CACHE` | `--use-cache` | 空 | 断点续跑,填 outputs/<timestamp> 路径 |
 | `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | 空 | 例 `{"mmlu_pro":32768}` |
 | `DATASET_ARGS` | `--dataset-args` | 空 | 数据集参数 JSON |
 | `DESCRIPTION` / `RECIPIENTS` / `WORK_DIR` | — | — | 元信息/邮件收件人/远程目录 |
