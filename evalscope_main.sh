@@ -7,32 +7,35 @@
 #   - 所有输出 tee 到统一日志文件,便于 Jenkins 邮件解析
 #
 # run_task 函数签名(需求 #1):
-#   run_task MODEL DATASET BASE_URL EXAMPLES [MAX_TOKENS] [TEMPERATURE]
+#   run_task MODEL DATASET BASE_URL EXAMPLES [MAX_TOKENS]
 #       MODEL       : 模型名称(传给 evalscope eval --model)
 #       DATASET     : 单个数据集名(传给 evalscope eval --datasets)
 #       BASE_URL    : OpenAI 兼容端点 URL
 #       EXAMPLES    : 样本数(--limit);为空则不指定该参数
 #       MAX_TOKENS  : 生成最大 token 数(可选,覆盖环境变量)
-#       TEMPERATURE : 采样温度(可选,覆盖环境变量)
+#
+# 采样温度不再有全局参数,改由 TASK_TEMPERATURE_JSON 按任务指定(见下)。
 #
 # 其余 evalscope 参数通过环境变量传入(需求 #7):
 #   API_KEY          OpenAI 风格 api key,默认 EMPTY
 #   EVAL_TYPE        评估类型,默认 openai_api
-#   TIMEOUT          请求超时(秒),空 = 不指定
 #   EVAL_BATCH_SIZE  并发批大小,默认 1
 #   TOP_P            nucleus 概率,默认 0.95
 #   TOP_K            top-k 采样,默认 20
-#   MIN_P            min-p 采样,默认 0
 #   ENABLE_THINKING  true / false,默认 false
+#   TEMPERATURE_FALLBACK  按任务温度未配置时的兜底值,默认 0.0
 #   REPEATS          重复次数(k-metrics),空 = 不指定
-#   SEED             随机种子,默认 42
 #   DATASETS         逗号分隔的多任务列表(本次运行的全部任务)
 #   OUTPUT_BASE      结果根目录,传给 evalscope --work-dir
 #   TASK_MAX_TOKENS_JSON   可选 JSON,形如 {"mmlu_pro":32768,"gpqa_diamond":32768},
 #                          按任务覆盖 MAX_TOKENS(若设置则覆盖全局 MAX_TOKENS)
+#   TASK_TEMPERATURE_JSON  可选 JSON,形如 {"mmlu_pro":0.0,"math_500":0.6},
+#                          按任务指定采样温度(若未命中则用 TEMPERATURE_FALLBACK)
 #   DATASET_ARGS     数据集参数 JSON 字符串
 #   JUDGE_STRATEGY   评分策略,默认 auto
-#   USE_CACHE        复用缓存路径,空 = 不复用
+#
+# 注:Jenkinsfile 未暴露的 evalscope knob(min_p / seed / timeout / use_cache)
+#   不再透传,统一用 evalscope 自身默认值。
 
 set -o pipefail
 
@@ -47,20 +50,17 @@ API_KEY=${API_KEY:-EMPTY}
 EVAL_TYPE=${EVAL_TYPE:-openai_api}
 OUTPUT_BASE=${OUTPUT_BASE:-./output}
 EXAMPLES=${EXAMPLES:-}
-TIMEOUT=${TIMEOUT:-}
-EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-1}
-TEMPERATURE=${TEMPERATURE:-0.6}
+EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-32}
 TOP_P=${TOP_P:-0.95}
 TOP_K=${TOP_K:-20}
-MIN_P=${MIN_P:-0}
 MAX_TOKENS=${MAX_TOKENS:-32768}
 ENABLE_THINKING=${ENABLE_THINKING:-false}
 REPEATS=${REPEATS:-}
-SEED=${SEED:-42}
 DATASET_ARGS=${DATASET_ARGS:-}
 JUDGE_STRATEGY=${JUDGE_STRATEGY:-auto}
-USE_CACHE=${USE_CACHE:-}
 TASK_MAX_TOKENS_JSON=${TASK_MAX_TOKENS_JSON:-}
+TASK_TEMPERATURE_JSON=${TASK_TEMPERATURE_JSON:-}
+TEMPERATURE_FALLBACK=${TEMPERATURE_FALLBACK:-0.0}
 
 # ---------- 日志文件 ----------
 TASKS_UNDERSCORE=$(echo "$DATASETS" | tr ',' '-')
@@ -90,6 +90,31 @@ print(v if v is not None else '')
     echo "$global_max_tokens"
 }
 
+# ---------- 按任务指定采样温度 ----------
+# 与 _resolve_max_tokens 同构:命中 TASK_TEMPERATURE_JSON 即返回对应值,
+# 否则返回 TEMPERATURE_FALLBACK(默认 0.0 = greedy,保证精度评测可复现)。
+_resolve_temperature() {
+    local dataset="$1"
+    local fallback="${TEMPERATURE_FALLBACK:-0.0}"
+    if [ -n "$TASK_TEMPERATURE_JSON" ]; then
+        local per_task
+        per_task=$(python3 -c "
+import json, sys
+try:
+    m = json.loads('''${TASK_TEMPERATURE_JSON}''')
+except Exception:
+    m = {}
+v = m.get('${dataset}')
+print(v if v is not None else '')
+" 2>/dev/null || echo "")
+        if [ -n "$per_task" ]; then
+            echo "$per_task"
+            return
+        fi
+    fi
+    echo "$fallback"
+}
+
 # ---------- 组装 generation-config JSON ----------
 _build_generation_config() {
     local max_tokens="$1"
@@ -107,10 +132,9 @@ _build_generation_config() {
 import json
 cfg = {
     'max_tokens': ${max_tokens:-32768},
-    'temperature': ${temperature:-0.6},
+    'temperature': ${temperature:-0.0},
     'top_p': ${TOP_P},
     'top_k': ${TOP_K},
-    'MinP': ${MIN_P},
     'timeout': 3600,
     'chat_template_kwargs': {'enable_thinking': ${enable_thinking_py}}
 }
@@ -125,12 +149,14 @@ run_task() {
     local BASE_URL="$3"         # 必填:端点 URL
     local EXAMPLES="$4"         # 可空:样本数,空则不指定 --limit
     local MAX_TOKENS_ARG="${5:-$MAX_TOKENS}"
-    local TEMPERATURE_ARG="${6:-$TEMPERATURE}"
 
-    # 按任务覆盖 max_tokens
+    # 按任务覆盖 max_tokens / temperature
     local task_max_tokens
     task_max_tokens=$(_resolve_max_tokens "$DATASET")
     [ -n "$task_max_tokens" ] && MAX_TOKENS_ARG="$task_max_tokens"
+
+    local TEMPERATURE_ARG
+    TEMPERATURE_ARG=$(_resolve_temperature "$DATASET")
 
     # 组装 generation-config JSON
     local gen_config
@@ -147,20 +173,15 @@ run_task() {
         --generation-config "$gen_config"
         --eval-batch-size "$EVAL_BATCH_SIZE"
         --work-dir "$OUTPUT_BASE"
-        --seed "$SEED"
         --judge-strategy "$JUDGE_STRATEGY"
     )
 
     # ---- 需求 #2:样本数为空则不指定 --limit ----
     [ -n "$EXAMPLES" ] && cmd_args+=(--limit "$EXAMPLES")
 
-    # ---- 扩展参数:repeats / use-cache ----
+    # ---- 扩展参数:repeats ----
     if [ -n "$REPEATS" ]; then
         cmd_args+=(--repeats "$REPEATS")
-    fi
-
-    if [ -n "$USE_CACHE" ]; then
-        cmd_args+=(--use-cache "$USE_CACHE")
     fi
 
     if [ -n "$DATASET_ARGS" ]; then
@@ -183,13 +204,9 @@ run_task() {
     echo "  MAX_TOKENS       : ${MAX_TOKENS_ARG:-<unlimited>}" | tee -a "$LOG_FILE"
     echo "  TOP_P            : $TOP_P"               | tee -a "$LOG_FILE"
     echo "  TOP_K            : $TOP_K"               | tee -a "$LOG_FILE"
-    echo "  MIN_P            : $MIN_P"               | tee -a "$LOG_FILE"
     echo "  ENABLE_THINKING  : $ENABLE_THINKING"     | tee -a "$LOG_FILE"
     echo "  REPEATS          : ${REPEATS:-<default 1>}"   | tee -a "$LOG_FILE"
-    echo "  TIMEOUT          : ${TIMEOUT:-<unset>}"  | tee -a "$LOG_FILE"
-    echo "  SEED             : $SEED"                | tee -a "$LOG_FILE"
     echo "  JUDGE_STRATEGY   : $JUDGE_STRATEGY"      | tee -a "$LOG_FILE"
-    echo "  USE_CACHE        : ${USE_CACHE:-<no>}"   | tee -a "$LOG_FILE"
     echo "  DATASET_ARGS     : ${DATASET_ARGS:-<none>}"  | tee -a "$LOG_FILE"
     echo "  WORK_DIR         : ${OUTPUT_BASE}"       | tee -a "$LOG_FILE"
     echo "  generation-config: $gen_config"          | tee -a "$LOG_FILE"
@@ -216,17 +233,14 @@ run_task() {
     echo "  EVAL_TYPE         : $EVAL_TYPE"
     echo "  EXAMPLES          : ${EXAMPLES:-<unlimited>}"
     echo "  EVAL_BATCH_SIZE   : $EVAL_BATCH_SIZE"
-    echo "  TEMPERATURE       : $TEMPERATURE"
+    echo "  TEMPERATURE       : <per-task; fallback=$TEMPERATURE_FALLBACK>"
+    echo "  TASK_TEMPERATURE_JSON : ${TASK_TEMPERATURE_JSON:-<none>}"
     echo "  MAX_TOKENS        : ${MAX_TOKENS:-<unlimited>}"
     echo "  TOP_P             : $TOP_P"
     echo "  TOP_K             : $TOP_K"
-    echo "  MIN_P             : $MIN_P"
     echo "  ENABLE_THINKING   : $ENABLE_THINKING"
     echo "  REPEATS           : ${REPEATS:-<default 1>}"
-    echo "  TIMEOUT           : ${TIMEOUT:-<unset>}"
-    echo "  SEED              : $SEED"
     echo "  JUDGE_STRATEGY    : $JUDGE_STRATEGY"
-    echo "  USE_CACHE         : ${USE_CACHE:-<no>}"
     echo "  DATASET_ARGS      : ${DATASET_ARGS:-<none>}"
     echo "  OUTPUT_BASE       : $OUTPUT_BASE"
     echo "  LOG_FILE          : $LOG_FILE"

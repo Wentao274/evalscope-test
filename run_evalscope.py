@@ -12,7 +12,10 @@
    - 本仓库编排脚本命名为 run_evalscope.py(避免与其他测试框架的 run_eval.py 混淆,
      Jenkinsfile 清理残留进程时按全字符串 run_evalscope.py 匹配,不会误杀其他框架)
    - evalscope 的 generation-config 是单个 JSON 字符串,拆分为 max_tokens /
-     temperature / top_p / top_k / min_p / enable_thinking 等独立参数后注入
+     top_p / top_k / enable_thinking 等独立参数后注入;采样温度改为
+     按任务通过 TASK_TEMPERATURE_JSON 指定(无全局 TEMPERATURE)。仅保留
+     Jenkinsfile 暴露的参数,min_p / seed / timeout / use_cache 等未暴露
+     的 knob 不再透传(用 evalscope 自身默认值)
    - 多任务由 --tasks 逗号分隔,在一次 bash 调用里串行执行
    - evalscope 的 --limit 等价于 sgl-eval 的 --num-examples
    - evalscope 的 --repeats 等价于 sgl-eval 的 --n-repeats
@@ -50,7 +53,16 @@ def parse_args():
         default="1",
         help="并发批大小(对应 evalscope --eval-batch-size,默认 1)",
     )
-    parser.add_argument("--temperature", default="0.6", help="采样温度(默认 0.6)")
+    parser.add_argument(
+        "--task-temperature-json",
+        default="",
+        help='按任务指定采样温度的 JSON,例: {"mmlu_pro":0.0,"math_500":0.6}',
+    )
+    parser.add_argument(
+        "--temperature-fallback",
+        default="0.0",
+        help="TASK_TEMPERATURE_JSON 未命中任务时的兜底采样温度(默认 0.0 = greedy)",
+    )
     parser.add_argument(
         "--max-tokens",
         default="32768",
@@ -58,7 +70,6 @@ def parse_args():
     )
     parser.add_argument("--top-p", default="0.95", help="nucleus top_p(默认 0.95)")
     parser.add_argument("--top-k", default="20", help="top-k 采样(默认 20)")
-    parser.add_argument("--min-p", default="0", help="min-p 采样(默认 0)")
     parser.add_argument(
         "--enable-thinking",
         default="false",
@@ -70,15 +81,12 @@ def parse_args():
         default="",
         help="重复次数(对应 evalscope --repeats,空 = 默认 1)",
     )
-    parser.add_argument("--timeout", default="", help="请求超时秒数(空 = 不指定)")
-    parser.add_argument("--seed", default="42", help="随机种子(默认 42)")
     parser.add_argument(
         "--judge-strategy",
         default="auto",
         choices=["auto", "rule", "llm", "llm_recall"],
         help="评分策略(默认 auto)",
     )
-    parser.add_argument("--use-cache", default="", help="复用缓存路径(空 = 不复用)")
     parser.add_argument(
         "--dataset-args", default="", help="数据集参数 JSON 字符串(空 = 不指定)"
     )
@@ -121,21 +129,17 @@ def main():
     if args.examples:
         env["EXAMPLES"] = args.examples
     env["EVAL_BATCH_SIZE"] = args.eval_batch_size
-    env["TEMPERATURE"] = args.temperature
+    if args.task_temperature_json:
+        env["TASK_TEMPERATURE_JSON"] = args.task_temperature_json
+    env["TEMPERATURE_FALLBACK"] = args.temperature_fallback
     if args.max_tokens:
         env["MAX_TOKENS"] = args.max_tokens
     env["TOP_P"] = args.top_p
     env["TOP_K"] = args.top_k
-    env["MIN_P"] = args.min_p
     env["ENABLE_THINKING"] = args.enable_thinking
     if args.repeats:
         env["REPEATS"] = args.repeats
-    if args.timeout:
-        env["TIMEOUT"] = args.timeout
-    env["SEED"] = args.seed
     env["JUDGE_STRATEGY"] = args.judge_strategy
-    if args.use_cache:
-        env["USE_CACHE"] = args.use_cache
     if args.dataset_args:
         env["DATASET_ARGS"] = args.dataset_args
     if args.task_max_tokens_json:
@@ -154,17 +158,14 @@ def main():
         "OUTPUT_BASE",
         "EXAMPLES",
         "EVAL_BATCH_SIZE",
-        "TEMPERATURE",
+        "TEMPERATURE_FALLBACK",
+        "TASK_TEMPERATURE_JSON",
         "MAX_TOKENS",
         "TOP_P",
         "TOP_K",
-        "MIN_P",
         "ENABLE_THINKING",
         "REPEATS",
-        "TIMEOUT",
-        "SEED",
         "JUDGE_STRATEGY",
-        "USE_CACHE",
         "DATASET_ARGS",
         "TASK_MAX_TOKENS_JSON",
     ]:

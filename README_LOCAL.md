@@ -84,7 +84,7 @@ python3 run_evalscope.py \
     --base-url http://10.201.149.34:8000/v1 \
     --tasks mmlu_pro,gpqa_diamond \
     --examples 50 \
-    --temperature 0.6 \
+    --task-temperature-json '{"mmlu_pro":0.0,"gpqa_diamond":0.0}' \
     --max-tokens 32768 \
     --enable-thinking false
 ```
@@ -114,10 +114,15 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `API_KEY` | `--api-key` | 空 → `EMPTY` | 鉴权 |
 | `TASK_MMLU_PRO` | `--datasets mmlu_pro` | true | 勾选后逗号拼接 |
 | `TASK_GPQA_DIAMOND` | `--datasets gpqa_diamond` | true | 勾选后逗号拼接 |
+| `TASK_CEVAL` | `--datasets ceval` | true | 勾选后逗号拼接 |
+| `TASK_CMMLU` | `--datasets cmmlu` | true | 勾选后逗号拼接 |
+| `TASK_MATH_500` | `--datasets math_500` | true | 勾选后逗号拼接 |
+| `TASK_HELLASWAG` | `--datasets hellaswag` | true | 勾选后逗号拼接 |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 空 = 默认 1 |
 | `EVAL_BATCH_SIZE` | `--eval-batch-size` | `32` | 并发批大小 |
-| `TEMPERATURE` | `--generation-config temperature` | `0.6` | 注入 generation-config |
+| `TEMPERATURE_FALLBACK` | (shell 内温度兜底) | `0.0` | `TASK_TEMPERATURE_JSON` 未命中任务时用此值 |
+| `TASK_TEMPERATURE_JSON` | (shell 内 per-task 覆盖) | 见默认值 | 例 `{"mmlu_pro":0.0,"math_500":0.6}` |
 | `MAX_TOKENS` | `--generation-config max_tokens` | `32768` | 注入 generation-config |
 | `TOP_P` | `--generation-config top_p` | `0.95` | 注入 generation-config |
 | `TOP_K` | `--generation-config top_k` | `20` | 注入 generation-config |
@@ -127,10 +132,22 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `DATASET_ARGS` | `--dataset-args` | 空 | 数据集参数 JSON |
 | `DESCRIPTION` / `RECIPIENTS` / `WORK_DIR` | — | — | 元信息/邮件收件人/远程目录 |
 
-**为什么有 `TASK_MAX_TOKENS_JSON`:** evalscope 的 `max_tokens` 是全局的,但
-不同基准对生成长度需求差异极大(mmlu_pro 推理长、gpqa 短)。
-`evalscope_main.sh:_resolve_max_tokens` 在循环每个任务时按 JSON 覆盖,
-比多次 Jenkins 构建省事。
+**为什么有 `TASK_MAX_TOKENS_JSON` / `TASK_TEMPERATURE_JSON`:** evalscope 的
+`max_tokens` 与 `temperature` 都是全局的,但不同基准对生成长度需求差异极大
+(mmlu_pro 推理长、gpqa 短),且不同任务对采样温度偏好不同(多选题用
+`temperature=0.0` greedy 保证可复现,数学推理 `math_500` 用 `0.6` 略带随机
+有助思考模型发散)。`evalscope_main.sh:_resolve_max_tokens` /
+`_resolve_temperature` 在循环每个任务时按 JSON 覆盖,比多次 Jenkins 构建省事。
+
+**默认推荐温度**(已预填在 `TASK_TEMPERATURE_JSON`):
+
+| 任务 | 推荐温度 | 理由 |
+|------|----------|------|
+| `mmlu_pro` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` | `0.0` | 多选题/常识题,greedy 解码保证可复现、最大化准确率 |
+| `math_500` | `0.6` | 数学推理,带 thinking 时略带随机有助模型发散推理路径 |
+
+按模型族微调:DSv3.2/V4 reasoning 系可整体提高到 `1.0`,R1 系用 `0.6`,
+通用 instruct(非 thinking)用 `0.0`。
 
 ### 4.1 各基准的默认配置(来自 adapter)
 
@@ -138,6 +155,10 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 |------|------------|----------------|--------|------|
 | `mmlu_pro` | `TIGER-Lab/MMLU-Pro` | 5-shot | `acc` | 10 选项多学科多选,要求 step-by-step 推理 |
 | `gpqa_diamond` | `AI-ModelScope/gpqa_diamond` | 0-shot | `acc` | 博士级 4 选择,198 题,答案随机打乱 |
+| `ceval` | `evalscope/ceval` | 5-shot | `acc` | 中文多学科多选,52 学科 |
+| `cmmlu` | `evalscope/cmmlu` | 0-shot | `acc` | 中文多学科多选,67 学科 |
+| `math_500` | `AI-ModelScope/MATH-500` | 0-shot | `acc` | 数学推理,500 题,5 个难度等级 |
+| `hellaswag` | `evalscope/hellaswag` | 0-shot | `acc` | 常识推理,4 选择句补全 |
 
 这些默认值不传任何 flag 时生效;Jenkins 任一对应参数填了非空值就覆盖默认。
 
@@ -252,7 +273,7 @@ evalscope 默认使用 **ModelScope** 作为数据源,缓存到:
 | 数据集下载失败 | 设置 `MODELSCOPE_CACHE` 换路径;或 `DATASET_ARGS` 指定 `local_path`;或切 `dataset_hub=huggingface` |
 | 邮件 metrics 全 N/A | `find reports/<tester>/<build> -name '*.json' -path '*/reports/*'` 看是否拉到 report JSON;若拉到但 N/A,检查 `dataset_name` 字段名 |
 | `no_answer` 比例高 | `max_tokens` 太小被截断,加大 `MAX_TOKENS` 或用 `TASK_MAX_TOKENS_JSON` 按任务调 |
-| reasoning 模型温度选不对 | DSv3.2/V4 用 `1.0`,R1 系用 `0.6`,通用 instruct 用 `0.0` |
+| reasoning 模型温度选不对 | 改 `TASK_TEMPERATURE_JSON` 按模型族调:DSv3.2/V4 reasoning 用 `1.0`,R1 系用 `0.6`,通用 instruct 用 `0.0` |
 | 远程 venv 缺包 | 删 `.venv` 重跑环境检查 stage,Jenkins 会自动 `uv pip install -e .` |
 | evalscope 命令找不到 | 确认 `source .venv/bin/activate` 后 `which evalscope` 有输出;否则重装 |
 | 连通性预检失败 | 检查 `BASE_URL` 是否可达、`MODEL` 参数是否匹配服务端模型名 |

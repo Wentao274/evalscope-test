@@ -17,17 +17,19 @@ pipeline {
         booleanParam(name: 'TASK_CEVAL',        defaultValue: true,  description: '运行 ceval (中文多学科多选,52 学科,5-shot,accuracy)')
         booleanParam(name: 'TASK_CMMLU',        defaultValue: true,  description: '运行 cmmlu (中文多学科多选,67 学科,0-shot,accuracy)')
         booleanParam(name: 'TASK_MATH_500',     defaultValue: true,  description: '运行 math_500 (数学推理,500 题,0-shot,accuracy)')
+        booleanParam(name: 'TASK_HELLASWAG',   defaultValue: true,  description: '运行 hellaswag (常识推理,4 选择,0-shot,accuracy)')
 
         string(name: 'EXAMPLES',        defaultValue: '',      description: '样本数限制(空 = 不限制;传给 evalscope --limit。int=数量,float=比例)')
         string(name: 'REPEATS',         defaultValue: '',      description: '重复次数(k-metrics,传给 evalscope --repeats。空 = 默认 1)')
         string(name: 'EVAL_BATCH_SIZE', defaultValue: '32',    description: '并发批大小(对应 evalscope --eval-batch-size,默认 32)')
-        string(name: 'TEMPERATURE',     defaultValue: '0.0',   description: '采样温度(默认 0.0 = greedy,保证精度评测可复现)')
+        string(name: 'TEMPERATURE_FALLBACK', defaultValue: '0.0', description: '采样温度兜底值(仅当 TASK_TEMPERATURE_JSON 未命中某任务时使用;默认 0.0 = greedy)')
         string(name: 'MAX_TOKENS',      defaultValue: '32768', description: '生成最大 token 数(默认 32768;清空 = 不指定)')
         string(name: 'TOP_P',           defaultValue: '0.95',  description: 'nucleus top_p(默认 0.95)')
         string(name: 'TOP_K',           defaultValue: '20',    description: 'top-k 采样(默认 20)')
         choice(name: 'ENABLE_THINKING', choices: ['false', 'true'], description: '启用 thinking 模式(默认 false)')
         choice(name: 'JUDGE_STRATEGY',  choices: ['auto', 'rule', 'llm', 'llm_recall'], description: '评分策略(默认 auto;多选题用 rule,主观题用 llm)')
         text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '', description: '按任务覆盖 max_tokens 的 JSON,例: {"mmlu_pro":4096,"gpqa_diamond":4096}')
+        text(name: 'TASK_TEMPERATURE_JSON', defaultValue: '{"mmlu_pro":0.0,"gpqa_diamond":0.0,"ceval":0.0,"cmmlu":0.0,"math_500":0.6,"hellaswag":0.0}', description: '按任务指定采样温度的 JSON。默认值=各基准推荐温度:多选题/常识题 0.0(greedy 可复现),math_500 0.6(数学推理略带随机有助思考)。可按模型调整,如 DSv4 reasoning 提高到 1.0、R1 系 0.6、instruct 0.0')
         text(name: 'DATASET_ARGS',      defaultValue: '',      description: '数据集参数 JSON,例: {"mmlu_pro":{"subset_list":["math","physics"]}}')
 
         string(name: 'DESCRIPTION', defaultValue: '', description: '模型服务描述信息(仅用于邮件展示)')
@@ -62,15 +64,17 @@ pipeline {
                     println("任务 CEVAL:        ${params.TASK_CEVAL}")
                     println("任务 CMMLU:        ${params.TASK_CMMLU}")
                     println("任务 MATH_500:     ${params.TASK_MATH_500}")
+                    println("任务 HELLASWAG:   ${params.TASK_HELLASWAG}")
                     println("样本限制:        ${params.EXAMPLES ?: '无限制'}")
                     println("repeats:         ${params.REPEATS ?: 'default 1'}")
                     println("eval-batch-size: ${params.EVAL_BATCH_SIZE}")
-                    println("温度:            ${params.TEMPERATURE}")
+                    println("温度(兜底):     ${params.TEMPERATURE_FALLBACK}")
                     println("max_tokens:      ${params.MAX_TOKENS ?: 'unlimited'}")
                     println("top_p / top_k:   ${params.TOP_P} / ${params.TOP_K}")
                     println("enable_thinking: ${params.ENABLE_THINKING}")
                     println("judge_strategy:  ${params.JUDGE_STRATEGY}")
                     println("per-task max_tokens JSON: ${params.TASK_MAX_TOKENS_JSON ?: 'N/A'}")
+                    println("per-task temperature JSON: ${params.TASK_TEMPERATURE_JSON ?: 'N/A'}")
                     println("dataset_args:    ${params.DATASET_ARGS ?: 'N/A'}")
                     println("模型描述:        ${params.DESCRIPTION}")
                     println("邮件接收者:      ${params.RECIPIENTS}")
@@ -203,6 +207,7 @@ ENDSSH
                     if (params.TASK_CEVAL)        taskList.add('ceval')
                     if (params.TASK_CMMLU)        taskList.add('cmmlu')
                     if (params.TASK_MATH_500)     taskList.add('math_500')
+                    if (params.TASK_HELLASWAG)   taskList.add('hellaswag')
                     if (taskList.isEmpty()) {
                         error '至少需要选择一个测试任务'
                     }
@@ -233,7 +238,8 @@ python3 run_evalscope.py \\
     --tasks ${env.TASKS} \\
     --examples "${params.EXAMPLES}" \\
     --eval-batch-size "${params.EVAL_BATCH_SIZE}" \\
-    --temperature "${params.TEMPERATURE}" \\
+    --temperature-fallback "${params.TEMPERATURE_FALLBACK}" \\
+    --task-temperature-json '${params.TASK_TEMPERATURE_JSON}' \\
     --max-tokens "${params.MAX_TOKENS}" \\
     --top-p "${params.TOP_P}" \\
     --top-k "${params.TOP_K}" \\
@@ -491,7 +497,8 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                 <tr><th>样本限制</th><td>${params.EXAMPLES ?: '无限制'}</td></tr>
                 <tr><th>repeats</th><td>${params.REPEATS ?: 'default 1'}</td></tr>
                 <tr><th>eval-batch-size</th><td>${params.EVAL_BATCH_SIZE}</td></tr>
-                <tr><th>温度</th><td>${params.TEMPERATURE}</td></tr>
+                <tr><th>温度(兜底)</th><td>${params.TEMPERATURE_FALLBACK}</td></tr>
+                <tr><th>per-task temperature JSON</th><td>${params.TASK_TEMPERATURE_JSON ?: 'N/A'}</td></tr>
                 <tr><th>max_tokens</th><td>${params.MAX_TOKENS ?: 'unlimited'}</td></tr>
                 <tr><th>top_p / top_k</th><td>${params.TOP_P} / ${params.TOP_K}</td></tr>
                 <tr><th>enable_thinking</th><td>${params.ENABLE_THINKING}</td></tr>
