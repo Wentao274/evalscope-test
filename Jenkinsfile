@@ -196,15 +196,32 @@ echo "=== 虚拟环境准备完成 ==="
 
 echo "=== 检查 sandbox 依赖 ==="
 if [ "${params.ENABLE_SANDBOX}" = "true" ]; then
-    echo "ENABLE_SANDBOX=true,预装 evalscope[sandbox] 并校验 Docker..."
-    export https_proxy=http://100.64.1.68:1080
-    export http_proxy=http://100.64.1.68:1080
+    echo "ENABLE_SANDBOX=true,预装 sandbox 依赖并校验 Docker..."
     cd ${params.WORK_DIR}
     source .venv/bin/activate
-    uv pip install -e '.[sandbox]'
-    deactivate
+    export https_proxy=http://100.64.1.68:1080
+    export http_proxy=http://100.64.1.68:1080
+    # evalscope 已在虚拟环境创建时安装,这里只需补装 sandbox 额外依赖,
+    # 避免重新构建 evalscope(否则 uv 需从 PyPI 下载 setuptools/wheel 作为 build 依赖,
+    # 当 pypi.org TLS 握手失败时会导致整个构建中断)。
+    # 依次尝试国内镜像和 pypi.org(均通过代理)。
+    SANDBOX_OK=false
+    for INDEX_URL in "https://mirrors.aliyun.com/pypi/simple/" "https://pypi.tuna.tsinghua.edu.cn/simple/" "https://pypi.org/simple/"; do
+        echo "尝试从 \${INDEX_URL} 安装 sandbox 依赖..."
+        if UV_INDEX_URL="\${INDEX_URL}" uv pip install -r requirements/sandbox.txt 2>&1; then
+            SANDBOX_OK=true
+            break
+        fi
+        echo "从 \${INDEX_URL} 安装失败,尝试下一个源..."
+    done
     unset https_proxy
     unset http_proxy
+    deactivate
+    if [ "\${SANDBOX_OK}" != "true" ]; then
+        echo "ERROR: sandbox 依赖安装失败,所有 PyPI 源均不可用。"
+        echo "请检查网络/代理配置,或关闭 ENABLE_SANDBOX。"
+        exit 1
+    fi
     if ! docker info >/dev/null 2>&1; then
         echo "ERROR: ENABLE_SANDBOX=true 但 Docker daemon 不可用(docker info 失败)。"
         echo "请确认 runner 上 Docker 已安装且 daemon 运行,或关闭 ENABLE_SANDBOX。"
