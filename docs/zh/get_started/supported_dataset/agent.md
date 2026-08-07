@@ -4,6 +4,7 @@
 
 | 数据集名称 | 标准名称 | 任务类别 |
 |------------|----------|----------|
+| `acebench` | [ACEBench](../../benchmarks/acebench.md) | `Agent`, `FunctionCalling`, `MultiTurn` |
 | `automation_bench` | [AutomationBench](../../benchmarks/automation_bench.md) | `Agent`, `FunctionCalling`, `MultiTurn` |
 | `bfcl_v3` | [BFCL-v3](../../benchmarks/bfcl_v3.md) | `Agent`, `FunctionCalling` |
 | `bfcl_v4` | [BFCL-v4](../../benchmarks/bfcl_v4.md) | `Agent`, `FunctionCalling` |
@@ -16,7 +17,7 @@
 | `general_fc` | [General-FunctionCalling](../../benchmarks/general_fc.md) | `Agent`, `Custom`, `FunctionCalling` |
 | `job_bench` | [JobBench](../../benchmarks/job_bench.md) | `Agent`, `Knowledge`, `MultiTurn` |
 | `k2_verifier` | [K2-Vendor-Verifier](../../benchmarks/k2_verifier.md) | `Agent`, `FunctionCalling` |
-| `kimi_verifier` | [Kimi-Vendor-Verifier (Param Compliance)](../../benchmarks/kimi_verifier.md) | `Agent`, `FunctionCalling` |
+| `kimi_verifier` | [Kimi-Vendor-Verifier](../../benchmarks/kimi_verifier.md) | `Agent`, `FunctionCalling` |
 | `mcp_atlas` | [MCP-Atlas](../../benchmarks/mcp_atlas.md) | `Agent`, `MultiTurn` |
 | `minimax_verifier` | [MiniMax-Vendor-Verifier](../../benchmarks/minimax_verifier.md) | `Agent`, `FunctionCalling` |
 | `miniwob` | [MiniWoB](../../benchmarks/miniwob.md) | `Agent`, `FunctionCalling`, `MultiModal`, `MultiTurn` |
@@ -40,6 +41,7 @@
 :hidden:
 :maxdepth: 1
 
+../../benchmarks/acebench.md
 ../../benchmarks/automation_bench.md
 ../../benchmarks/bfcl_v3.md
 ../../benchmarks/bfcl_v4.md
