@@ -25,6 +25,7 @@
 #   ENABLE_THINKING  true / false,默认 false
 #   TEMPERATURE_FALLBACK  按任务温度未配置时的兜底值,默认 0.0
 #   REPEATS          重复次数(k-metrics),空 = 不指定
+#   TASK_REPEATS_JSON     可选 JSON,形如 {"humaneval":5},按任务覆盖 REPEATS
 #   DATASETS         逗号分隔的多任务列表(本次运行的全部任务)
 #   OUTPUT_BASE      结果根目录,传给 evalscope --work-dir
 #   TASK_MAX_TOKENS_JSON   可选 JSON,形如 {"mmlu_pro":32768,"gpqa_diamond":32768},
@@ -65,6 +66,7 @@ JUDGE_STRATEGY=${JUDGE_STRATEGY:-auto}
 ENABLE_SANDBOX=${ENABLE_SANDBOX:-false}
 TASK_MAX_TOKENS_JSON=${TASK_MAX_TOKENS_JSON:-}
 TASK_TEMPERATURE_JSON=${TASK_TEMPERATURE_JSON:-}
+TASK_REPEATS_JSON=${TASK_REPEATS_JSON:-}
 TEMPERATURE_FALLBACK=${TEMPERATURE_FALLBACK:-0.0}
 
 # ---------- 日志文件 ----------
@@ -120,6 +122,29 @@ print(v if v is not None else '')
     echo "$fallback"
 }
 
+# ---------- 按任务覆盖 repeats ----------
+# 命中 TASK_REPEATS_JSON 即返回对应值,否则返回全局 REPEATS(可能为空)。
+_resolve_repeats() {
+    local dataset="$1"
+    if [ -n "$TASK_REPEATS_JSON" ]; then
+        local per_task
+        per_task=$(python3 -c "
+import json, sys
+try:
+    m = json.loads('''${TASK_REPEATS_JSON}''')
+except Exception:
+    m = {}
+v = m.get('${dataset}')
+print(v if v is not None else '')
+" 2>/dev/null || echo "")
+        if [ -n "$per_task" ]; then
+            echo "$per_task"
+            return
+        fi
+    fi
+    echo "${REPEATS:-}"
+}
+
 # ---------- 组装 generation-config JSON ----------
 _build_generation_config() {
     local max_tokens="$1"
@@ -163,6 +188,10 @@ run_task() {
     local TEMPERATURE_ARG
     TEMPERATURE_ARG=$(_resolve_temperature "$DATASET")
 
+    # 按任务覆盖 repeats(命中 TASK_REPEATS_JSON 则覆盖全局 REPEATS)
+    local REPEATS_ARG
+    REPEATS_ARG=$(_resolve_repeats "$DATASET")
+
     # 组装 generation-config JSON
     local gen_config
     gen_config=$(_build_generation_config "$MAX_TOKENS_ARG" "$TEMPERATURE_ARG")
@@ -189,9 +218,9 @@ run_task() {
         cmd_args+=(--sandbox '{"enabled": true}')
     fi
 
-    # ---- 扩展参数:repeats ----
-    if [ -n "$REPEATS" ]; then
-        cmd_args+=(--repeats "$REPEATS")
+    # ---- 扩展参数:repeats(支持按任务覆盖)----
+    if [ -n "$REPEATS_ARG" ]; then
+        cmd_args+=(--repeats "$REPEATS_ARG")
     fi
 
     if [ -n "$DATASET_ARGS" ]; then
@@ -215,7 +244,7 @@ run_task() {
     echo "  TOP_P            : $TOP_P"               | tee -a "$LOG_FILE"
     echo "  TOP_K            : $TOP_K"               | tee -a "$LOG_FILE"
     echo "  ENABLE_THINKING  : $ENABLE_THINKING"     | tee -a "$LOG_FILE"
-    echo "  REPEATS          : ${REPEATS:-<default 1>}"   | tee -a "$LOG_FILE"
+    echo "  REPEATS          : ${REPEATS_ARG:-<default 1>}"  | tee -a "$LOG_FILE"
     echo "  JUDGE_STRATEGY   : $JUDGE_STRATEGY"      | tee -a "$LOG_FILE"
     echo "  ENABLE_SANDBOX   : $ENABLE_SANDBOX"      | tee -a "$LOG_FILE"
     echo "  DATASET_ARGS     : ${DATASET_ARGS:-<none>}"  | tee -a "$LOG_FILE"
@@ -251,6 +280,7 @@ run_task() {
     echo "  TOP_K             : $TOP_K"
     echo "  ENABLE_THINKING   : $ENABLE_THINKING"
     echo "  REPEATS           : ${REPEATS:-<default 1>}"
+    echo "  TASK_REPEATS_JSON : ${TASK_REPEATS_JSON:-<none>}"
     echo "  JUDGE_STRATEGY    : $JUDGE_STRATEGY"
     echo "  ENABLE_SANDBOX    : $ENABLE_SANDBOX"
     echo "  DATASET_ARGS      : ${DATASET_ARGS:-<none>}"

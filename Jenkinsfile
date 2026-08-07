@@ -32,6 +32,7 @@ pipeline {
         choice(name: 'ENABLE_SANDBOX', choices: ['true', 'false'], description: '启用 sandbox 执行(默认 true)。true 时给所有任务拼 --sandbox {"enabled": true},仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效。启用前环境检查 stage 会预装 evalscope[sandbox] 并校验 Docker 可用')
         text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '{"gpqa_diamond":131072}', description: '按任务覆盖 max_tokens 的 JSON,默认 gpqa_diamond=131072,其余任务用 MAX_TOKENS 默认值;可按需追加,例: {"mmlu_pro":4096,"gpqa_diamond":131072}')
         text(name: 'TASK_TEMPERATURE_JSON', defaultValue: '{"mmlu_pro":0.0,"gpqa_diamond":0.0,"ceval":0.0,"cmmlu":0.0,"math_500":0.6,"hellaswag":0.0,"humaneval":0.2}', description: '按任务指定采样温度的 JSON。默认值=各基准推荐温度:多选题/常识题 0.0(greedy 可复现),math_500 0.6(数学推理略带随机有助思考),humaneval 0.2(代码生成略带随机有助 pass@1 多样性)。可按模型调整,如 DSv4 reasoning 提高到 1.0、R1 系 0.6、instruct 0.0')
+        text(name: 'TASK_REPEATS_JSON', defaultValue: '', description: '按任务覆盖 repeats 的 JSON,例: {"humaneval":5}。命中任务使用对应值,未命中任务用全局 REPEATS;为空则全部用全局 REPEATS。推荐:humaneval 设 5 算 pass@1..pass@5,其余 greedy 基准(mmlu_pro/gpqa_diamond/ceval/cmmlu/hellaswag/math_500)保持 1 避免 N 倍空跑')
         text(name: 'DATASET_ARGS',      defaultValue: '',      description: '数据集参数 JSON,例: {"mmlu_pro":{"subset_list":["math","physics"]}}')
 
         string(name: 'DESCRIPTION', defaultValue: '', description: '模型服务描述信息(仅用于邮件展示)')
@@ -79,6 +80,7 @@ pipeline {
                     println("enable_sandbox:  ${params.ENABLE_SANDBOX}")
                     println("per-task max_tokens JSON: ${params.TASK_MAX_TOKENS_JSON ?: 'N/A'}")
                     println("per-task temperature JSON: ${params.TASK_TEMPERATURE_JSON ?: 'N/A'}")
+                    println("per-task repeats JSON:   ${params.TASK_REPEATS_JSON ?: 'N/A'}")
                     println("dataset_args:    ${params.DATASET_ARGS ?: 'N/A'}")
                     println("模型描述:        ${params.DESCRIPTION}")
                     println("邮件接收者:      ${params.RECIPIENTS}")
@@ -287,8 +289,9 @@ python3 run_evalscope.py \\
     --top-p "${params.TOP_P}" \\
     --top-k "${params.TOP_K}" \\
     --enable-thinking "${params.ENABLE_THINKING?.toString()?.toLowerCase()}" \\
-    --repeats "${params.REPEATS}" \\
-    --judge-strategy "${params.JUDGE_STRATEGY}" \\
+                    --repeats "${params.REPEATS}" \\
+                    --task-repeats-json '${params.TASK_REPEATS_JSON}' \\
+                    --judge-strategy "${params.JUDGE_STRATEGY}" \\
     --enable-sandbox "${params.ENABLE_SANDBOX?.toString()?.toLowerCase()}" \\
     --task-max-tokens-json '${params.TASK_MAX_TOKENS_JSON}' \\
     --dataset-args '${params.DATASET_ARGS}' \\
@@ -543,6 +546,7 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                 <tr><th>eval-batch-size</th><td>${params.EVAL_BATCH_SIZE}</td></tr>
                 <tr><th>温度(兜底)</th><td>${params.TEMPERATURE_FALLBACK}</td></tr>
                 <tr><th>per-task temperature JSON</th><td>${params.TASK_TEMPERATURE_JSON ?: 'N/A'}</td></tr>
+                <tr><th>per-task repeats JSON</th><td>${params.TASK_REPEATS_JSON ?: 'N/A'}</td></tr>
                 <tr><th>max_tokens</th><td>${params.MAX_TOKENS ?: 'unlimited'}</td></tr>
                 <tr><th>top_p / top_k</th><td>${params.TOP_P} / ${params.TOP_K}</td></tr>
                 <tr><th>enable_thinking</th><td>${params.ENABLE_THINKING}</td></tr>

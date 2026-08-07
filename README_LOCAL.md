@@ -85,6 +85,7 @@ python3 run_evalscope.py \
     --tasks mmlu_pro,gpqa_diamond \
     --examples 50 \
     --task-temperature-json '{"mmlu_pro":0.0,"gpqa_diamond":0.0}' \
+    --task-repeats-json '{"gpqa_diamond":1}' \
     --max-tokens 32768 \
     --enable-thinking false
 ```
@@ -120,7 +121,7 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `TASK_HELLASWAG` | `--datasets hellaswag` | true | 勾选后逗号拼接 |
 | `TASK_HUMANEVAL` | `--datasets humaneval` | true | 勾选后逗号拼接(Python 代码生成,需执行模型生成代码,建议 sandbox) |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
-| `REPEATS` | `--repeats` | 空 | 空 = 默认 1 |
+| `REPEATS` | `--repeats` | 空 | 空 = 默认 1;全局重复次数,按任务覆盖见 `TASK_REPEATS_JSON` |
 | `EVAL_BATCH_SIZE` | `--eval-batch-size` | `32` | 并发批大小 |
 | `TEMPERATURE_FALLBACK` | (shell 内温度兜底) | `0.0` | `TASK_TEMPERATURE_JSON` 未命中任务时用此值 |
 | `TASK_TEMPERATURE_JSON` | (shell 内 per-task 覆盖) | 见默认值 | 例 `{"mmlu_pro":0.0,"math_500":0.6}` |
@@ -131,15 +132,18 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `JUDGE_STRATEGY` | `--judge-strategy` | `auto` | auto/rule/llm/llm_recall |
 | `ENABLE_SANDBOX` | `--sandbox {"enabled": true}` | `false` | 仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效;启用需 runner 上 Docker + evalscope[sandbox] |
 | `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | 空 | 例 `{"mmlu_pro":32768}` |
+| `TASK_REPEATS_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 `REPEATS`,例 `{"humaneval":5}`;未命中任务用全局 `REPEATS` |
 | `DATASET_ARGS` | `--dataset-args` | 空 | 数据集参数 JSON |
 | `DESCRIPTION` / `RECIPIENTS` / `WORK_DIR` | — | — | 元信息/邮件收件人/远程目录 |
 
-**为什么有 `TASK_MAX_TOKENS_JSON` / `TASK_TEMPERATURE_JSON`:** evalscope 的
-`max_tokens` 与 `temperature` 都是全局的,但不同基准对生成长度需求差异极大
+**为什么有 `TASK_MAX_TOKENS_JSON` / `TASK_TEMPERATURE_JSON` / `TASK_REPEATS_JSON`:** evalscope 的
+`max_tokens` / `temperature` / `repeats` 都是全局的,但不同基准对生成长度需求差异极大
 (mmlu_pro 推理长、gpqa 短),且不同任务对采样温度偏好不同(多选题用
 `temperature=0.0` greedy 保证可复现,数学推理 `math_500` 用 `0.6` 略带随机
-有助思考模型发散)。`evalscope_main.sh:_resolve_max_tokens` /
-`_resolve_temperature` 在循环每个任务时按 JSON 覆盖,比多次 Jenkins 构建省事。
+有助思考模型发散),而 `repeats` 仅对带 k-度量聚合器的基准(如 humaneval 的
+`mean_and_pass_at_k`)有意义——其余 greedy 基准重复多次只是 N 倍空跑、得分不变。
+`evalscope_main.sh:_resolve_max_tokens` / `_resolve_temperature` / `_resolve_repeats`
+在循环每个任务时按 JSON 覆盖,比多次 Jenkins 构建省事。
 
 **默认推荐温度**(已预填在 `TASK_TEMPERATURE_JSON`):
 
@@ -148,6 +152,14 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `mmlu_pro` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` | `0.0` | 多选题/常识题,greedy 解码保证可复现、最大化准确率 |
 | `math_500` | `0.6` | 数学推理,带 thinking 时略带随机有助模型发散推理路径 |
 | `humaneval` | `0.2` | 代码生成,略带随机有助 pass@1 多样性(HumanEval 论文常用值) |
+
+**默认推荐 repeats**(默认 `REPEATS` 为空 = 全部 1,按需用 `TASK_REPEATS_JSON` 覆盖):
+
+| 任务 | 推荐 repeats | 理由 |
+|------|-------------|------|
+| `mmlu_pro` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` | `1` | greedy + `mean` 聚合,重复多次输入不变、得分不变,纯 N 倍空跑 |
+| `math_500` | `1` | `mean` 聚合(非 k-metric);想降噪应降温度而非加 repeats |
+| `humaneval` | `1`(pass@1)或 `5`(pass@k) | 唯一带 `mean_and_pass_at_k` 聚合器的基准;`repeats=k` 才能算 `pass@1..pass@k` |
 
 按模型族微调:DSv3.2/V4 reasoning 系可整体提高到 `1.0`,R1 系用 `0.6`,
 通用 instruct(非 thinking)用 `0.0`。
@@ -278,6 +290,7 @@ evalscope 默认使用 **ModelScope** 作为数据源,缓存到:
 | 邮件 metrics 全 N/A | `find reports/<tester>/<build> -name '*.json' -path '*/reports/*'` 看是否拉到 report JSON;若拉到但 N/A,检查 `dataset_name` 字段名 |
 | `no_answer` 比例高 | `max_tokens` 太小被截断,加大 `MAX_TOKENS` 或用 `TASK_MAX_TOKENS_JSON` 按任务调 |
 | reasoning 模型温度选不对 | 改 `TASK_TEMPERATURE_JSON` 按模型族调:DSv3.2/V4 reasoning 用 `1.0`,R1 系用 `0.6`,通用 instruct 用 `0.0` |
+| 想要 humaneval 的 pass@5 但不想让其他基准空跑 | 设 `REPEATS` 空 + `TASK_REPEATS_JSON={"humaneval":5}`;只对 humaneval 生效 |
 | 远程 venv 缺包 | 删 `.venv` 重跑环境检查 stage,Jenkins 会自动 `uv pip install -e .` |
 | evalscope 命令找不到 | 确认 `source .venv/bin/activate` 后 `which evalscope` 有输出;否则重装 |
 | 连通性预检失败 | 检查 `BASE_URL` 是否可达、`MODEL` 参数是否匹配服务端模型名 |

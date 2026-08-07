@@ -82,6 +82,11 @@ def parse_args():
         help="重复次数(对应 evalscope --repeats,空 = 默认 1)",
     )
     parser.add_argument(
+        "--task-repeats-json",
+        default="",
+        help='按任务覆盖 repeats 的 JSON,例: {"humaneval":5};命中任务覆盖全局 --repeats',
+    )
+    parser.add_argument(
         "--judge-strategy",
         default="auto",
         choices=["auto", "rule", "llm", "llm_recall"],
@@ -147,6 +152,8 @@ def main():
     env["ENABLE_THINKING"] = args.enable_thinking
     if args.repeats:
         env["REPEATS"] = args.repeats
+    if args.task_repeats_json:
+        env["TASK_REPEATS_JSON"] = args.task_repeats_json
     env["JUDGE_STRATEGY"] = args.judge_strategy
     env["ENABLE_SANDBOX"] = args.enable_sandbox
     if args.dataset_args:
@@ -174,6 +181,7 @@ def main():
         "TOP_K",
         "ENABLE_THINKING",
         "REPEATS",
+        "TASK_REPEATS_JSON",
         "JUDGE_STRATEGY",
         "ENABLE_SANDBOX",
         "DATASET_ARGS",
