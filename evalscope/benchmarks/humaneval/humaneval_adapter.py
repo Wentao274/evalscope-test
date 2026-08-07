@@ -93,9 +93,12 @@ class HumanevalAdapter(CodeExecutionSandboxMixin, DefaultDataAdapter):
     @classmethod
     def _postprocess(cls, text: str) -> str:
         """Extract code from markdown code blocks."""
-        blocks = re.findall(r'```\w*\n(.*?)```', text, re.DOTALL)
-        if len(blocks) >= 1:
-            text = blocks[0]
+        blocks = re.findall(r'```[^\n]*\n(.*?)```', text, re.DOTALL)
+        if blocks:
+            return blocks[0]
+        trunc = re.findall(r'```[^\n]*\n(.*)', text, re.DOTALL)
+        if trunc:
+            return trunc[-1]
         return text
 
     def match_score(
