@@ -28,7 +28,7 @@ pipeline {
         booleanParam(name: 'TASK_HMMT25',        defaultValue: true,  description: '运行 hmmt25 (HMMT 2025年2月数学竞赛,30 题,0-shot,numeric accuracy;数学推理题,答案需 \\boxed{} 格式)')
         booleanParam(name: 'TASK_HMMT26',        defaultValue: true,  description: '运行 hmmt26 (HMMT 2026年2月数学竞赛,33 题,0-shot,numeric accuracy;数学推理题,答案需 \\boxed{} 格式)')
         booleanParam(name: 'TASK_IMO_ANSWERBENCH', defaultValue: true,  description: '运行 imo_answerbench (IMO 短名单奥数题,400 题,0-shot,numeric accuracy;llm_judge_default=True,有裁判模型时自动走 LLM judge,无裁判模型时回退 rule(numeric math_equal);答案含区间/集合/分数等复杂 LaTeX 形式,部分比对可能不如纯数字精确)')
-        booleanParam(name: 'TASK_MCP_ATLAS',          defaultValue: true,  description: '运行 mcp_atlas (Scale AI MCP 工具使用智能体,89 题,multi-turn function-calling,LLM judge coverage_score/pass_rate;需提前在 runner 上启动 MCP-Atlas agent-environment Docker 服务 http://localhost:1984,暴露 /enabled-servers /list-tools /call-tool;被测模型驱动 AgentLoop,裁判模型逐 claim 评判;依赖 JUDGE_MODEL_ID/JUDGE_API_URL/JUDGE_API_KEY 参数')
+        booleanParam(name: 'TASK_MCP_ATLAS',          defaultValue: true,  description: '运行 mcp_atlas (Scale AI MCP 工具使用智能体,89 题,multi-turn function-calling,LLM judge coverage_score/pass_rate;MCP-Atlas agent-environment Docker 服务支持自动部署,见 MCP_ATLAS_AUTO_DEPLOY 参数;20 个无需 API key 的 MCP server 默认启用,约 40-50 个任务可评测,配置 MCP_ATLAS_API_KEYS 可启用更多 server;被测模型驱动 AgentLoop,裁判模型逐 claim 评判;依赖 JUDGE_MODEL_ID/JUDGE_API_URL/JUDGE_API_KEY 参数)')
 
         booleanParam(name: 'TASK_DEEP_SWE',           defaultValue: true,  description: '运行 deep_swe (仓库级软件工程编码智能体,113 题,multi-turn agent,verifier 二值奖励 acc;通过 Pier Python API 运行,需 Docker + pip install evalscope[deep_swe] + Python>=3.12;Pier 内置 mini-swe-agent 驱动,默认 litellm model_class 兼容 OpenAI chat/completions 端点;默认 temperature=1.0 top_p=1.0 timeout=24h max_tokens=400k(官方 GLM-5.2 为 2h,低性能机器可调大);每个任务在隔离容器中运行,2 CPU/8GB RAM/无网络,串行执行耗时较长)')
 
@@ -53,6 +53,11 @@ pipeline {
         string(name: 'DESCRIPTION', defaultValue: '', description: '模型服务描述信息(仅用于邮件展示)')
         text(name: 'RECIPIENTS',    defaultValue: 'liwt@zetyun.com', description: '报告邮件接收者(逗号分隔)')
         string(name: 'WORK_DIR',    defaultValue: '/dingofs/data2/userdata/liwt/maas-image/evalscope-test', description: '远程仓库目录,请不要改动')
+
+        // MCP-Atlas agent-environment 自动部署
+        string(name: 'MCP_ATLAS_IMAGE', defaultValue: 'ghcr.io/scaleapi/mcp-atlas:1.2.7', description: 'MCP-Atlas agent-environment Docker 镜像(Scale AI 官方预构建)。当 TASK_MCP_ATLAS=true 且服务未运行时,Jenkins 自动拉取并启动此镜像,监听 localhost:1984。20 个无需 API key 的 MCP server 默认启用')
+        choice(name: 'MCP_ATLAS_AUTO_DEPLOY', choices: ['true', 'false'], description: '自动部署 MCP-Atlas agent-environment(默认 true)。服务未运行时自动 pull + docker run;false 则仅检查不自动启动,需手动准备')
+        string(name: 'MCP_ATLAS_API_KEYS', defaultValue: '', description: '可选:MCP server API keys 环境变量,逗号分隔 KEY=VALUE 对。例: BRAVE_API_KEY=xxx,GITHUB_TOKEN=yyy。留空则仅启用 20 个无需 key 的 server(约 40-50 个任务可评测)')
     }
     environment {
         SSH_CREDENTIALS = 'HOST_SSH_KEY'
@@ -111,6 +116,9 @@ pipeline {
                     println("模型描述:        ${params.DESCRIPTION}")
                     println("邮件接收者:      ${params.RECIPIENTS}")
                     println("工作目录:        ${params.WORK_DIR}")
+                    println("MCP-Atlas 镜像:  ${params.MCP_ATLAS_IMAGE}")
+                    println("MCP-Atlas 自动部署: ${params.MCP_ATLAS_AUTO_DEPLOY}")
+                    println("MCP-Atlas API Keys: ${params.MCP_ATLAS_API_KEYS ?: 'N/A(仅启用 20 个无 key server)'}")
                     println("构建编号:        #${BUILD_NUMBER}")
                     println("========================================")
                 }
@@ -206,58 +214,271 @@ chmod +x evalscope_main.sh
 chmod +x run_evalscope.py
 
 echo "=== 检查并创建虚拟环境 ==="
+# 统一使用 Python 3.12 创建虚拟环境:
+# - deep_swe 需要 Python >= 3.12(datacurve-pier 的硬约束)
+# - Python 3.12 向后兼容 3.10/3.11 代码,EvalScope 支持的所有任务均可正常运行
+# - uv 会在系统无 3.12 时自动下载
+REQUIRED_PY="3.12"
+
+# 判断需要哪些 extras
+NEED_DEEP_SWE="${params.TASK_DEEP_SWE}"
+NEED_SANDBOX="${params.ENABLE_SANDBOX}"
+
+# 检查现有 venv 的 Python 版本,不满足则重建
+if [ -d "${params.WORK_DIR}/.venv" ]; then
+    VENV_PY=\$(${params.WORK_DIR}/.venv/bin/python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "")
+    if [ -n "\${VENV_PY}" ]; then
+        VENV_MAJOR=\$(echo "\${VENV_PY}" | cut -d. -f1)
+        VENV_MINOR=\$(echo "\${VENV_PY}" | cut -d. -f2)
+        REQUIRED_MAJOR=\$(echo "\${REQUIRED_PY}" | cut -d. -f1)
+        REQUIRED_MINOR=\$(echo "\${REQUIRED_PY}" | cut -d. -f2)
+        if [ "\${VENV_MAJOR}" -lt "\${REQUIRED_MAJOR}" ] || ([ "\${VENV_MAJOR}" -eq "\${REQUIRED_MAJOR}" ] && [ "\${VENV_MINOR}" -lt "\${REQUIRED_MINOR}" ]); then
+            echo "当前 venv Python \${VENV_PY} < \${REQUIRED_PY}(deep_swe 需要),重建虚拟环境..."
+            rm -rf ${params.WORK_DIR}/.venv
+        else
+            echo "现有 venv Python \${VENV_PY} 满足要求(>= \${REQUIRED_PY})"
+        fi
+    else
+        echo "无法检测 venv Python 版本,重建虚拟环境..."
+        rm -rf ${params.WORK_DIR}/.venv
+    fi
+fi
+
 if [ ! -d "${params.WORK_DIR}/.venv" ]; then
     export https_proxy=http://100.64.1.68:1080
     export http_proxy=http://100.64.1.68:1080
-    echo "创建虚拟环境..."
+    echo "创建虚拟环境 (Python \${REQUIRED_PY})..."
     cd ${params.WORK_DIR}
-    uv venv
+    uv venv --python \${REQUIRED_PY}
     source .venv/bin/activate
-    uv pip install -e .
-    deactivate
-    unset https_proxy
-    unset http_proxy
-fi
-
-cd ${params.WORK_DIR}
-echo "=== 虚拟环境准备完成 ==="
-
-echo "=== 检查 sandbox 依赖 ==="
-if [ "${params.ENABLE_SANDBOX}" = "true" ]; then
-    echo "ENABLE_SANDBOX=true,预装 sandbox 依赖并校验 Docker..."
-    cd ${params.WORK_DIR}
-    source .venv/bin/activate
-    export https_proxy=http://100.64.1.68:1080
-    export http_proxy=http://100.64.1.68:1080
-    # evalscope 已在虚拟环境创建时安装,这里只需补装 sandbox 额外依赖,
-    # 避免重新构建 evalscope(否则 uv 需从 PyPI 下载 setuptools/wheel 作为 build 依赖,
-    # 当 pypi.org TLS 握手失败时会导致整个构建中断)。
-    # 依次尝试国内镜像和 pypi.org(均通过代理)。
-    SANDBOX_OK=false
+    # 构建动态 extras 列表,一次性安装所有需要的 extras 与基础包
+    EXTRAS=""
+    if [ "\${NEED_SANDBOX}" = "true" ]; then
+        EXTRAS="sandbox"
+    fi
+    if [ "\${NEED_DEEP_SWE}" = "true" ]; then
+        if [ -n "\${EXTRAS}" ]; then
+            EXTRAS="\${EXTRAS},deep_swe"
+        else
+            EXTRAS="deep_swe"
+        fi
+    fi
+    EXTRAS_OK=false
     for INDEX_URL in "https://mirrors.aliyun.com/pypi/simple/" "https://pypi.tuna.tsinghua.edu.cn/simple/" "https://pypi.org/simple/"; do
-        echo "尝试从 \${INDEX_URL} 安装 sandbox 依赖..."
-        if UV_INDEX_URL="\${INDEX_URL}" uv pip install -r requirements/sandbox.txt 2>&1; then
-            SANDBOX_OK=true
-            break
+        echo "尝试从 \${INDEX_URL} 安装 evalscope(extras: \${EXTRAS:-none})..."
+        if [ -n "\${EXTRAS}" ]; then
+            if UV_INDEX_URL="\${INDEX_URL}" uv pip install -e ".[\${EXTRAS}]" 2>&1; then
+                EXTRAS_OK=true
+                break
+            fi
+        else
+            if UV_INDEX_URL="\${INDEX_URL}" uv pip install -e . 2>&1; then
+                EXTRAS_OK=true
+                break
+            fi
         fi
         echo "从 \${INDEX_URL} 安装失败,尝试下一个源..."
     done
     unset https_proxy
     unset http_proxy
     deactivate
-    if [ "\${SANDBOX_OK}" != "true" ]; then
-        echo "ERROR: sandbox 依赖安装失败,所有 PyPI 源均不可用。"
-        echo "请检查网络/代理配置,或关闭 ENABLE_SANDBOX。"
+    if [ "\${EXTRAS_OK}" != "true" ]; then
+        echo "ERROR: evalscope 安装失败,所有 PyPI 源均不可用。"
+        echo "请检查网络/代理配置。"
         exit 1
     fi
-    if ! docker info >/dev/null 2>&1; then
-        echo "ERROR: ENABLE_SANDBOX=true 但 Docker daemon 不可用(docker info 失败)。"
-        echo "请确认 runner 上 Docker 已安装且 daemon 运行,或关闭 ENABLE_SANDBOX。"
-        exit 1
-    fi
-    echo "Docker daemon 可用,sandbox 依赖预检通过"
+    echo "虚拟环境创建完成(Python \${REQUIRED_PY}, extras: \${EXTRAS:-none})"
 else
-    echo "ENABLE_SANDBOX=false,跳过 sandbox 依赖检查"
+    echo "虚拟环境已存在,检查并补装缺失 extras..."
+
+    cd ${params.WORK_DIR}
+    source .venv/bin/activate
+
+    # sandbox:检查是否已安装
+    if [ "\${NEED_SANDBOX}" = "true" ]; then
+        if ! python3 -c "import evalscope.api.sandbox" 2>/dev/null && ! pip show evalscope 2>/dev/null | grep -q "sandbox"; then
+            echo "补装 sandbox 依赖..."
+            export https_proxy=http://100.64.1.68:1080
+            export http_proxy=http://100.64.1.68:1080
+            SANDBOX_OK=false
+            for INDEX_URL in "https://mirrors.aliyun.com/pypi/simple/" "https://pypi.tuna.tsinghua.edu.cn/simple/" "https://pypi.org/simple/"; do
+                if UV_INDEX_URL="\${INDEX_URL}" uv pip install -r requirements/sandbox.txt 2>&1; then
+                    SANDBOX_OK=true
+                    break
+                fi
+            done
+            unset https_proxy
+            unset http_proxy
+            if [ "\${SANDBOX_OK}" != "true" ]; then
+                echo "ERROR: sandbox 依赖补装失败,所有 PyPI 源均不可用。"
+                exit 1
+            fi
+            echo "sandbox 依赖补装完成"
+        else
+            echo "sandbox 依赖已安装"
+        fi
+    fi
+
+    # deep_swe:检查 pier 是否已安装
+    if [ "\${NEED_DEEP_SWE}" = "true" ]; then
+        if ! python3 -c "import pier" 2>/dev/null; then
+            echo "补装 deep_swe 依赖(datacurve-pier)..."
+            export https_proxy=http://100.64.1.68:1080
+            export http_proxy=http://100.64.1.68:1080
+            DEEP_SWE_OK=false
+            for INDEX_URL in "https://mirrors.aliyun.com/pypi/simple/" "https://pypi.tuna.tsinghua.edu.cn/simple/" "https://pypi.org/simple/"; do
+                if UV_INDEX_URL="\${INDEX_URL}" uv pip install -r evalscope/benchmarks/deep_swe/requirements.txt 2>&1; then
+                    DEEP_SWE_OK=true
+                    break
+                fi
+            done
+            unset https_proxy
+            unset http_proxy
+            if [ "\${DEEP_SWE_OK}" != "true" ]; then
+                echo "ERROR: deep_swe 依赖补装失败,所有 PyPI 源均不可用。"
+                exit 1
+            fi
+            if ! python3 -c "import pier" 2>/dev/null; then
+                echo "ERROR: deep_swe 依赖安装后仍无法 import pier。"
+                echo "当前 Python 版本: \$(python3 --version)"
+                echo "请删除 venv 重建: rm -rf .venv(下次 Jenkins 构建会自动用 Python \${REQUIRED_PY} 重建)"
+                exit 1
+            fi
+            echo "deep_swe 依赖补装完成"
+        else
+            echo "deep_swe 依赖(pier)已安装"
+        fi
+    fi
+
+    deactivate
+fi
+
+cd ${params.WORK_DIR}
+echo "=== 虚拟环境准备完成 ==="
+
+echo "=== 校验 Docker(sandbox / deep_swe 共用)==="
+NEED_DOCKER=false
+if [ "\${NEED_SANDBOX}" = "true" ]; then
+    NEED_DOCKER=true
+fi
+if [ "\${NEED_DEEP_SWE}" = "true" ]; then
+    NEED_DOCKER=true
+fi
+if [ "\${NEED_DOCKER}" = "true" ]; then
+    if ! docker info >/dev/null 2>&1; then
+        echo "ERROR: Docker daemon 不可用(ENABLE_SANDBOX 或 TASK_DEEP_SWE 需要 Docker)。"
+        echo "请确认 runner 上 Docker 已安装且 daemon 运行。"
+        exit 1
+    fi
+    echo "Docker daemon 可用"
+else
+    echo "无需 Docker,跳过"
+fi
+
+echo "=== 检查 MCP-Atlas agent-environment 服务 ==="
+if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
+    echo "TASK_MCP_ATLAS=true,检查 MCP-Atlas agent-environment 服务..."
+
+    # 先检查服务是否已在运行
+    HTTP_CODE=\$(curl -s --connect-timeout 5 -o /dev/null -w "%{http_code}" http://localhost:1984/enabled-servers 2>/dev/null)
+    if [ "\${HTTP_CODE}" = "200" ]; then
+        echo "MCP-Atlas agent-environment 服务已运行(HTTP 200),预检通过"
+        # 输出已启用的 server 列表
+        echo "已启用的 MCP servers:"
+        curl -s http://localhost:1984/enabled-servers | python3 -m json.tool 2>/dev/null || echo "(解析失败,但服务可用)"
+    elif [ "${params.MCP_ATLAS_AUTO_DEPLOY}" = "true" ]; then
+        echo "MCP-Atlas agent-environment 服务未运行(HTTP \${HTTP_CODE}),开始自动部署..."
+        echo "镜像: ${params.MCP_ATLAS_IMAGE}"
+
+        # 检查 Docker
+        if ! docker info >/dev/null 2>&1; then
+            echo "ERROR: Docker daemon 不可用,无法自动部署 MCP-Atlas agent-environment。"
+            echo "请确认 Docker 已安装且 daemon 运行,或设置 MCP_ATLAS_AUTO_DEPLOY=false 手动准备。"
+            exit 1
+        fi
+
+        # 清理可能存在的旧容器
+        OLD_CONTAINER=\$(docker ps -a --filter "publish=1984" --format "{{.ID}}" 2>/dev/null || echo "")
+        if [ -n "\${OLD_CONTAINER}" ]; then
+            echo "清理旧的 MCP-Atlas 容器: \${OLD_CONTAINER}"
+            docker rm -f \${OLD_CONTAINER} 2>/dev/null || true
+        fi
+
+        # 拉取镜像(代理)
+        echo "拉取 MCP-Atlas 镜像(可能需要几分钟)..."
+        export https_proxy=http://100.64.1.68:1080
+        export http_proxy=http://100.64.1.68:1080
+        if ! docker pull ${params.MCP_ATLAS_IMAGE} 2>&1; then
+            unset https_proxy http_proxy
+            echo "ERROR: 拉取 MCP-Atlas 镜像失败。"
+            echo "请检查网络/代理配置,或手动拉取: docker pull ${params.MCP_ATLAS_IMAGE}"
+            exit 1
+        fi
+        unset https_proxy
+        unset http_proxy
+
+        # 构建 docker run 的环境变量参数
+        DOCKER_ENV_ARGS=""
+        if [ -n "${params.MCP_ATLAS_API_KEYS}" ]; then
+            # 解析逗号分隔的 KEY=VALUE 对,生成 --env 参数
+            IFS=',' read -ra KEY_PAIRS <<< "${params.MCP_ATLAS_API_KEYS}"
+            for pair in "\${KEY_PAIRS[@]}"; do
+                pair=\$(echo "\$pair" | xargs)  # trim whitespace
+                if [ -n "\$pair" ]; then
+                    DOCKER_ENV_ARGS="\${DOCKER_ENV_ARGS} --env \$pair"
+                fi
+            done
+            echo "注入 MCP server API keys: \$(echo \${DOCKER_ENV_ARGS} | tr ' ' '\n' | grep -- '--env' | wc -l) 个"
+        fi
+
+        # 启动容器
+        echo "启动 MCP-Atlas agent-environment 容器..."
+        docker run -d \
+            --name mcp-atlas-agent-env \
+            -p 1984:1984 \
+            \${DOCKER_ENV_ARGS} \
+            --restart unless-stopped \
+            ${params.MCP_ATLAS_IMAGE} 2>&1 || {
+                echo "ERROR: 启动 MCP-Atlas 容器失败。"
+                docker logs mcp-atlas-agent-env 2>/dev/null | tail -20
+                exit 1
+            }
+
+        # 等待服务就绪(官方文档说启动需要 1+ 分钟,最长等 3 分钟)
+        echo "等待 MCP-Atlas agent-environment 启动(最长 180 秒)..."
+        READY=false
+        for i in \$(seq 1 36); do
+            sleep 5
+            HTTP_CODE=\$(curl -s --connect-timeout 3 -o /dev/null -w "%{http_code}" http://localhost:1984/enabled-servers 2>/dev/null)
+            if [ "\${HTTP_CODE}" = "200" ]; then
+                READY=true
+                echo "MCP-Atlas agent-environment 启动完成(等待 \$((i * 5)) 秒)"
+                break
+            fi
+            echo "  等待中... (\$((i * 5))s, HTTP \${HTTP_CODE})"
+        done
+
+        if [ "\${READY}" != "true" ]; then
+            echo "ERROR: MCP-Atlas agent-environment 在 180 秒内未就绪。"
+            echo "容器日志(最后 30 行):"
+            docker logs mcp-atlas-agent-env 2>/dev/null | tail -30
+            echo "---"
+            echo "请检查容器状态: docker logs mcp-atlas-agent-env"
+            exit 1
+        fi
+
+        # 输出已启用的 server 列表
+        echo "MCP-Atlas agent-environment 部署成功,已启用的 MCP servers:"
+        curl -s http://localhost:1984/enabled-servers | python3 -m json.tool 2>/dev/null || echo "(解析失败,但服务可用)"
+        echo "预检通过"
+    else
+        echo "MCP-Atlas agent-environment 服务不可达(HTTP \${HTTP_CODE}),且 MCP_ATLAS_AUTO_DEPLOY=false。"
+        echo "请手动部署: docker pull ${params.MCP_ATLAS_IMAGE} && docker run -d -p 1984:1984 ${params.MCP_ATLAS_IMAGE}"
+        echo "或设置 MCP_ATLAS_AUTO_DEPLOY=true 让 Jenkins 自动部署。"
+        echo "mcp_atlas 任务将继续保留在任务列表中,但预期会失败。"
+    fi
+else
+    echo "TASK_MCP_ATLAS=false,跳过 mcp_atlas 服务检查"
 fi
 ENDSSH
 """
@@ -597,6 +818,9 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                 <tr><th>per-task timeout JSON</th><td>${params.TASK_TIMEOUT_JSON ?: 'N/A'}</td></tr>
                 <tr><th>per-task top_p JSON</th><td>${params.TASK_TOP_P_JSON ?: 'N/A'}</td></tr>
                 <tr><th>dataset_args</th><td>${params.DATASET_ARGS ?: 'N/A'}</td></tr>
+                <tr><th>MCP-Atlas 镜像</th><td>${params.MCP_ATLAS_IMAGE}</td></tr>
+                <tr><th>MCP-Atlas 自动部署</th><td>${params.MCP_ATLAS_AUTO_DEPLOY}</td></tr>
+                <tr><th>MCP-Atlas API Keys</th><td>${params.MCP_ATLAS_API_KEYS ?: 'N/A(仅启用 20 个无 key server)'}</td></tr>
                 <tr><th>执行时间</th><td>${currentBuild.durationString}</td></tr>
                 <tr><th>测试状态</th><td>${resultStatus}</td></tr>
                 <tr><th>构建状态</th><td>${currentBuild.currentResult}</td></tr>
