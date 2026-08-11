@@ -30,6 +30,8 @@
 #   OUTPUT_BASE      结果根目录,传给 evalscope --work-dir
 #   TASK_MAX_TOKENS_JSON   可选 JSON,形如 {"mmlu_pro":32768,"gpqa_diamond":32768},
 #                          按任务覆盖 MAX_TOKENS(若设置则覆盖全局 MAX_TOKENS)
+#   TASK_TIMEOUT_JSON  可选 JSON,形如 {"mcp_atlas":3600},按任务覆盖 timeout(秒)
+#   TASK_TOP_P_JSON    可选 JSON,形如 {"deep_swe":1.0},按任务覆盖 top_p
 #   TASK_TEMPERATURE_JSON  可选 JSON,形如 {"mmlu_pro":0.0,"math_500":0.6},
 #                          按任务指定采样温度(若未命中则用 TEMPERATURE_FALLBACK)
 #   DATASET_ARGS     数据集参数 JSON 字符串
@@ -38,6 +40,15 @@
 #                    --sandbox {"enabled": true}(仅对 CodeExecutionSandboxMixin
 #                    任务如 humaneval 生效,其他任务被 evalscope 忽略)。
 #                    启用前需确保 runner 上 Docker 可用且装了 evalscope[sandbox]。
+#   JUDGE_MODEL_ID   裁判模型名称(非空时给所有任务拼 --judge-model-args
+#                    JSON,含 model_id/api_url/api_key;仅对 LLM judge 任务
+#                    如 mcp_atlas 生效,rule-only 任务忽略)
+#   JUDGE_API_URL    裁判模型 OpenAI 兼容端点 URL(含 /v1 后缀)
+#   JUDGE_API_KEY    裁判模型 API Key,默认 EMPTY
+# 注(deep_swe):deep_swe 绕过 EvalScope generation_config,仅将 model.name 传给
+#   Pier。temperature/top_p/max_tokens/timeout/base_url/api_key 通过
+#   pier_agent_kwargs.config_yaml 注入(因 AgentConfig.env={} 不继承父进程环境,
+#   litellm 在 Docker 容器内需从 config_yaml 读取端点信息)。
 #
 # 注:Jenkinsfile 未暴露的 evalscope knob(min_p / seed / timeout / use_cache)
 #   不再透传,统一用 evalscope 自身默认值。
@@ -67,7 +78,13 @@ ENABLE_SANDBOX=${ENABLE_SANDBOX:-false}
 TASK_MAX_TOKENS_JSON=${TASK_MAX_TOKENS_JSON:-}
 TASK_TEMPERATURE_JSON=${TASK_TEMPERATURE_JSON:-}
 TASK_REPEATS_JSON=${TASK_REPEATS_JSON:-}
+TASK_JUDGE_STRATEGY_JSON=${TASK_JUDGE_STRATEGY_JSON:-}
 TEMPERATURE_FALLBACK=${TEMPERATURE_FALLBACK:-0.0}
+JUDGE_MODEL_ID=${JUDGE_MODEL_ID:-}
+JUDGE_API_URL=${JUDGE_API_URL:-}
+JUDGE_API_KEY=${JUDGE_API_KEY:-EMPTY}
+TASK_TIMEOUT_JSON=${TASK_TIMEOUT_JSON:-}
+TASK_TOP_P_JSON=${TASK_TOP_P_JSON:-}
 
 # ---------- 日志文件 ----------
 TASKS_UNDERSCORE=$(echo "$DATASETS" | tr ',' '-')
@@ -145,10 +162,88 @@ print(v if v is not None else '')
     echo "${REPEATS:-}"
 }
 
+# ---------- 按任务覆盖 judge_strategy ----------
+# 命中 TASK_JUDGE_STRATEGY_JSON 即返回对应值,否则返回全局 JUDGE_STRATEGY。
+# 用途:让 llm_judge_default=True 的任务(如 imo_answerbench)在 auto 下改走 rule,
+# 避免未配置裁判模型时报错;其余任务不受影响。
+_resolve_judge_strategy() {
+    local dataset="$1"
+    local fallback="${JUDGE_STRATEGY:-auto}"
+    if [ -n "$TASK_JUDGE_STRATEGY_JSON" ]; then
+        local per_task
+        per_task=$(python3 -c "
+import json, sys
+try:
+    m = json.loads('''${TASK_JUDGE_STRATEGY_JSON}''')
+except Exception:
+    m = {}
+v = m.get('${dataset}')
+print(v if v is not None else '')
+" 2>/dev/null || echo "")
+        if [ -n "$per_task" ]; then
+            echo "$per_task"
+            return
+        fi
+    fi
+    echo "$fallback"
+}
+
+# ---------- 按任务覆盖 timeout ----------
+# 命中 TASK_TIMEOUT_JSON 即返回对应值,否则返回全局默认 3600(秒 = 1 小时)。
+# 用途:mcp_atlas 多轮 AgentLoop 需更长单次模型调用超时,其余任务用默认值。
+_resolve_timeout() {
+    local dataset="$1"
+    local fallback="${TIMEOUT:-3600}"
+    if [ -n "$TASK_TIMEOUT_JSON" ]; then
+        local per_task
+        per_task=$(python3 -c "
+import json, sys
+try:
+    m = json.loads('''${TASK_TIMEOUT_JSON}''')
+except Exception:
+    m = {}
+v = m.get('${dataset}')
+print(v if v is not None else '')
+" 2>/dev/null || echo "")
+        if [ -n "$per_task" ]; then
+            echo "$per_task"
+            return
+        fi
+    fi
+    echo "$fallback"
+}
+
+# ---------- 按任务覆盖 top_p ----------
+# 命中 TASK_TOP_P_JSON 即返回对应值,否则返回全局 TOP_P。
+# 用途:deep_swe 等编码 agent 任务需 top_p=1.0,而全局默认 0.95。
+_resolve_top_p() {
+    local dataset="$1"
+    local fallback="${TOP_P:-0.95}"
+    if [ -n "$TASK_TOP_P_JSON" ]; then
+        local per_task
+        per_task=$(python3 -c "
+import json, sys
+try:
+    m = json.loads('''${TASK_TOP_P_JSON}''')
+except Exception:
+    m = {}
+v = m.get('${dataset}')
+print(v if v is not None else '')
+" 2>/dev/null || echo "")
+        if [ -n "$per_task" ]; then
+            echo "$per_task"
+            return
+        fi
+    fi
+    echo "$fallback"
+}
+
 # ---------- 组装 generation-config JSON ----------
 _build_generation_config() {
     local max_tokens="$1"
     local temperature="$2"
+    local timeout="${3:-3600}"
+    local top_p="${4:-${TOP_P}}"
 
     # shell 使用小写 true/false,Python 需要 True/False,在此转换避免 NameError。
     local enable_thinking_py
@@ -163,9 +258,9 @@ import json
 cfg = {
     'max_tokens': ${max_tokens:-32768},
     'temperature': ${temperature:-0.0},
-    'top_p': ${TOP_P},
+    'top_p': ${top_p},
     'top_k': ${TOP_K},
-    'timeout': 3600,
+    'timeout': ${timeout},
     'chat_template_kwargs': {'enable_thinking': ${enable_thinking_py}}
 }
 print(json.dumps(cfg, ensure_ascii=False))
@@ -192,9 +287,29 @@ run_task() {
     local REPEATS_ARG
     REPEATS_ARG=$(_resolve_repeats "$DATASET")
 
+    # 按任务覆盖 judge_strategy(命中 TASK_JUDGE_STRATEGY_JSON 则覆盖全局 JUDGE_STRATEGY)
+    local JUDGE_STRATEGY_ARG
+    JUDGE_STRATEGY_ARG=$(_resolve_judge_strategy "$DATASET")
+
+    # imo_answerbench 特殊处理:
+    #   llm_judge_default=True,在 auto 下会尝试调用裁判模型。
+    #   有裁判模型(JUDGE_MODEL_ID 非空)→ 保留 auto,自动启用 LLM judge;
+    #   无裁判模型(JUDGE_MODEL_ID 为空)→ 强制 rule,回退到 numeric math_equal 规则评分。
+    if [ "$DATASET" = "imo_answerbench" ] && [ -z "$JUDGE_MODEL_ID" ]; then
+        JUDGE_STRATEGY_ARG="rule"
+    fi
+
+    # 按任务覆盖 timeout(命中 TASK_TIMEOUT_JSON 则覆盖全局默认 3600)
+    local TIMEOUT_ARG
+    TIMEOUT_ARG=$(_resolve_timeout "$DATASET")
+
+    # 按任务覆盖 top_p(命中 TASK_TOP_P_JSON 则覆盖全局 TOP_P)
+    local TOP_P_ARG
+    TOP_P_ARG=$(_resolve_top_p "$DATASET")
+
     # 组装 generation-config JSON
     local gen_config
-    gen_config=$(_build_generation_config "$MAX_TOKENS_ARG" "$TEMPERATURE_ARG")
+    gen_config=$(_build_generation_config "$MAX_TOKENS_ARG" "$TEMPERATURE_ARG" "$TIMEOUT_ARG" "$TOP_P_ARG")
 
     # 组装 evalscope eval 命令的参数数组
     local cmd_args=(
@@ -207,7 +322,7 @@ run_task() {
         --generation-config "$gen_config"
         --eval-batch-size "$EVAL_BATCH_SIZE"
         --work-dir "$OUTPUT_BASE"
-        --judge-strategy "$JUDGE_STRATEGY"
+        --judge-strategy "$JUDGE_STRATEGY_ARG"
     )
 
     # ---- 需求 #2:样本数为空则不指定 --limit ----
@@ -227,6 +342,74 @@ run_task() {
         cmd_args+=(--dataset-args "$DATASET_ARGS")
     fi
 
+    # ---- deep_swe 专属:注入 pier_agent_kwargs + 环境变量(若用户未通过 DATASET_ARGS 指定)----
+    # deep_swe 绕过 EvalScope generation_config,仅将 model.name 传给 Pier,因此
+    # temperature/top_p/max_tokens/timeout 需通过 pier_agent_kwargs.config_yaml 传递。
+    # 对齐官方 GLM-5.2 配置:temperature=1.0, top_p=1.0, 400K context, 24h timeout(低性能机器可调大)。
+    # litellm 在 Docker 容器内运行,AgentConfig.env={} 不继承父进程环境变量,
+    # 因此 base_url/api_key 需写入 config_yaml 供 litellm 读取。
+    if [ "$DATASET" = "deep_swe" ] && [ -z "$DATASET_ARGS" ]; then
+        local deep_swe_args
+        deep_swe_args=$(TEMPERATURE="$TEMPERATURE_ARG" \
+                        TOP_P="$TOP_P_ARG" \
+                        MAX_TOKENS="$MAX_TOKENS_ARG" \
+                        TIMEOUT="$TIMEOUT_ARG" \
+                        BASE_URL="$BASE_URL" \
+                        API_KEY="${API_KEY}" \
+                        MODEL_NAME="$MODEL" \
+                        python3 -c "
+import json, os
+config_yaml = (
+    f'agent:\n'
+    f'  model:\n'
+    f'    temperature: {os.environ.get(\"TEMPERATURE\", \"1.0\")}\n'
+    f'    top_p: {os.environ.get(\"TOP_P\", \"1.0\")}\n'
+    f'    max_tokens: {os.environ.get(\"MAX_TOKENS\", \"409600\")}\n'
+    f'    timeout: {os.environ.get(\"TIMEOUT\", \"86400\")}\n'
+    f'    base_url: \"{os.environ.get(\"BASE_URL\", \"\")}\"\n'
+    f'    api_key: \"{os.environ.get(\"API_KEY\", \"EMPTY\")}\"\n'
+)
+args = {
+    'deep_swe': {
+        'extra_params': {
+            'pier_agent_kwargs': {
+                'model_class': 'litellm',
+                'config_yaml': config_yaml,
+            }
+        }
+    }
+}
+print(json.dumps(args, ensure_ascii=False))
+")
+        cmd_args+=(--dataset-args "$deep_swe_args")
+    fi
+
+    # ---- judge-model-args:全局,仅当配置了裁判模型时传入 ----
+    # 任何需要 LLM judge 的任务(mcp_atlas/imo_answerbench 等)都会使用此配置;
+    # rule-only 任务(mmlu_pro/gpqa_diamond 等)忽略此参数。
+    local judge_args_json=""
+    if [ -n "$JUDGE_MODEL_ID" ]; then
+        judge_args_json=$(JUDGE_MODEL_ID="$JUDGE_MODEL_ID" \
+                          JUDGE_API_URL="$JUDGE_API_URL" \
+                          JUDGE_API_KEY="$JUDGE_API_KEY" \
+                          python3 -c "
+import json, os
+args = {'model_id': os.environ['JUDGE_MODEL_ID']}
+api_url = os.environ.get('JUDGE_API_URL', '')
+if api_url:
+    args['api_url'] = api_url
+api_key = os.environ.get('JUDGE_API_KEY', 'EMPTY')
+args['api_key'] = api_key if api_key else 'EMPTY'
+print(json.dumps(args, ensure_ascii=False))
+")
+        cmd_args+=(--judge-model-args "$judge_args_json")
+    fi
+
+    # ---- mcp_atlas 专属:agent-config(native AgentLoop + function_calling)----
+    if [ "$DATASET" = "mcp_atlas" ]; then
+        cmd_args+=(--agent-config '{"mode":"native","strategy":"function_calling","max_steps":100}')
+    fi
+
     echo ""                                          | tee -a "$LOG_FILE"
     echo "========================================"   | tee -a "$LOG_FILE"
     echo "Running Task: $DATASET"                    | tee -a "$LOG_FILE"
@@ -241,13 +424,20 @@ run_task() {
     echo "  EVAL_BATCH_SIZE  : $EVAL_BATCH_SIZE"     | tee -a "$LOG_FILE"
     echo "  TEMPERATURE      : $TEMPERATURE_ARG"     | tee -a "$LOG_FILE"
     echo "  MAX_TOKENS       : ${MAX_TOKENS_ARG:-<unlimited>}" | tee -a "$LOG_FILE"
-    echo "  TOP_P            : $TOP_P"               | tee -a "$LOG_FILE"
+    echo "  TIMEOUT          : ${TIMEOUT_ARG}s"             | tee -a "$LOG_FILE"
+    echo "  TOP_P            : $TOP_P_ARG"               | tee -a "$LOG_FILE"
     echo "  TOP_K            : $TOP_K"               | tee -a "$LOG_FILE"
     echo "  ENABLE_THINKING  : $ENABLE_THINKING"     | tee -a "$LOG_FILE"
     echo "  REPEATS          : ${REPEATS_ARG:-<default 1>}"  | tee -a "$LOG_FILE"
-    echo "  JUDGE_STRATEGY   : $JUDGE_STRATEGY"      | tee -a "$LOG_FILE"
+    echo "  JUDGE_STRATEGY   : $JUDGE_STRATEGY_ARG"      | tee -a "$LOG_FILE"
     echo "  ENABLE_SANDBOX   : $ENABLE_SANDBOX"      | tee -a "$LOG_FILE"
     echo "  DATASET_ARGS     : ${DATASET_ARGS:-<none>}"  | tee -a "$LOG_FILE"
+    echo "  JUDGE_MODEL_ID   : ${JUDGE_MODEL_ID:-<none>}" | tee -a "$LOG_FILE"
+    echo "  JUDGE_API_URL    : ${JUDGE_API_URL:-<none>}"  | tee -a "$LOG_FILE"
+    echo "  judge-model-args : ${judge_args_json:-<none>}" | tee -a "$LOG_FILE"
+    if [ "$DATASET" = "deep_swe" ] && [ -z "$DATASET_ARGS" ]; then
+        echo "  deep_swe_args    : ${deep_swe_args}"          | tee -a "$LOG_FILE"
+    fi
     echo "  WORK_DIR         : ${OUTPUT_BASE}"       | tee -a "$LOG_FILE"
     echo "  generation-config: $gen_config"          | tee -a "$LOG_FILE"
     echo "========================================"   | tee -a "$LOG_FILE"
@@ -276,14 +466,20 @@ run_task() {
     echo "  TEMPERATURE       : <per-task; fallback=$TEMPERATURE_FALLBACK>"
     echo "  TASK_TEMPERATURE_JSON : ${TASK_TEMPERATURE_JSON:-<none>}"
     echo "  MAX_TOKENS        : ${MAX_TOKENS:-<unlimited>}"
+    echo "  TASK_TIMEOUT_JSON : ${TASK_TIMEOUT_JSON:-<none>}"
     echo "  TOP_P             : $TOP_P"
+    echo "  TASK_TOP_P_JSON   : ${TASK_TOP_P_JSON:-<none>}"
     echo "  TOP_K             : $TOP_K"
     echo "  ENABLE_THINKING   : $ENABLE_THINKING"
     echo "  REPEATS           : ${REPEATS:-<default 1>}"
     echo "  TASK_REPEATS_JSON : ${TASK_REPEATS_JSON:-<none>}"
     echo "  JUDGE_STRATEGY    : $JUDGE_STRATEGY"
+    echo "  TASK_JUDGE_STRATEGY_JSON : ${TASK_JUDGE_STRATEGY_JSON:-<none>}"
     echo "  ENABLE_SANDBOX    : $ENABLE_SANDBOX"
     echo "  DATASET_ARGS      : ${DATASET_ARGS:-<none>}"
+    echo "  JUDGE_MODEL_ID    : ${JUDGE_MODEL_ID:-<none>}"
+    echo "  JUDGE_API_URL     : ${JUDGE_API_URL:-<none>}"
+    echo "  JUDGE_API_KEY     : ${JUDGE_API_KEY:-<none>}"
     echo "  OUTPUT_BASE       : $OUTPUT_BASE"
     echo "  LOG_FILE          : $LOG_FILE"
     echo "========================================"

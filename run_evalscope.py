@@ -93,6 +93,14 @@ def parse_args():
         help="评分策略(默认 auto)",
     )
     parser.add_argument(
+        "--task-judge-strategy-json",
+        default="",
+        help='按任务覆盖 judge_strategy 的 JSON,例: {"imo_answerbench":"rule"}。'
+        "命中任务使用对应值,未命中任务用全局 judge-strategy;为空则全部用全局。"
+        "用途:让 llm_judge_default=True 的任务(如 imo_answerbench)改走 rule,"
+        "避免未配置裁判模型时报错",
+    )
+    parser.add_argument(
         "--enable-sandbox",
         default="false",
         choices=["true", "false"],
@@ -104,9 +112,34 @@ def parse_args():
         "--dataset-args", default="", help="数据集参数 JSON 字符串(空 = 不指定)"
     )
     parser.add_argument(
+        "--judge-model-id",
+        default="",
+        help="裁判模型名称(用于 mcp_atlas 等 LLM judge 任务,对应 judge_model_args.model_id)",
+    )
+    parser.add_argument(
+        "--judge-api-url",
+        default="",
+        help="裁判模型 OpenAI 兼容端点 URL(含 /v1 后缀,如 http://10.201.149.41:8080/v1)",
+    )
+    parser.add_argument(
+        "--judge-api-key",
+        default="EMPTY",
+        help="裁判模型 API Key(无需认证时填 EMPTY)",
+    )
+    parser.add_argument(
         "--task-max-tokens-json",
         default="",
         help='按任务覆盖 max_tokens 的 JSON,例: {"mmlu_pro":32768,"gpqa_diamond":32768}',
+    )
+    parser.add_argument(
+        "--task-timeout-json",
+        default="",
+        help='按任务覆盖 timeout(秒)的 JSON,例: {"mcp_atlas":3600}。命中任务使用对应值,未命中任务用默认 3600(1 小时)',
+    )
+    parser.add_argument(
+        "--task-top-p-json",
+        default="",
+        help='按任务覆盖 top_p 的 JSON,例: {"deep_swe":1.0}。命中任务使用对应值,未命中任务用全局 TOP_P',
     )
     parser.add_argument(
         "--description",
@@ -155,11 +188,22 @@ def main():
     if args.task_repeats_json:
         env["TASK_REPEATS_JSON"] = args.task_repeats_json
     env["JUDGE_STRATEGY"] = args.judge_strategy
+    if args.task_judge_strategy_json:
+        env["TASK_JUDGE_STRATEGY_JSON"] = args.task_judge_strategy_json
     env["ENABLE_SANDBOX"] = args.enable_sandbox
     if args.dataset_args:
         env["DATASET_ARGS"] = args.dataset_args
     if args.task_max_tokens_json:
         env["TASK_MAX_TOKENS_JSON"] = args.task_max_tokens_json
+    if args.task_timeout_json:
+        env["TASK_TIMEOUT_JSON"] = args.task_timeout_json
+    if args.task_top_p_json:
+        env["TASK_TOP_P_JSON"] = args.task_top_p_json
+    if args.judge_model_id:
+        env["JUDGE_MODEL_ID"] = args.judge_model_id
+    if args.judge_api_url:
+        env["JUDGE_API_URL"] = args.judge_api_url
+    env["JUDGE_API_KEY"] = args.judge_api_key or "EMPTY"
 
     cmd = ["bash", shell_script]
 
@@ -183,9 +227,15 @@ def main():
         "REPEATS",
         "TASK_REPEATS_JSON",
         "JUDGE_STRATEGY",
+        "TASK_JUDGE_STRATEGY_JSON",
         "ENABLE_SANDBOX",
         "DATASET_ARGS",
         "TASK_MAX_TOKENS_JSON",
+        "TASK_TIMEOUT_JSON",
+        "TASK_TOP_P_JSON",
+        "JUDGE_MODEL_ID",
+        "JUDGE_API_URL",
+        "JUDGE_API_KEY",
     ]:
         if k in env:
             print(f"  {k}={env[k]}")

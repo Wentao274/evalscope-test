@@ -11,6 +11,11 @@ pipeline {
         string(name: 'BASE_URL', defaultValue: 'http://10.201.149.37:8080', description: 'OpenAI 兼容端点根 URL(必填,不带 /v1 后缀,流水线会自动拼接)')
         password(name: 'API_KEY', defaultValue: '', description: 'API Key(可选,无需认证时留空)')
 
+        // 裁判模型(mcp_atlas 等 LLM judge 任务必填)
+        string(name: 'JUDGE_MODEL_ID', defaultValue: 'deepseek-v4-flash', description: '裁判模型名称(mcp_atlas 等 LLM judge 任务必填,对应 judge_model_args.model_id)')
+        string(name: 'JUDGE_API_URL', defaultValue: 'http://10.201.149.41:8080/v1', description: '裁判模型 OpenAI 兼容端点 URL(mcp_atlas 等 LLM judge 任务必填,含 /v1 后缀)')
+        password(name: 'JUDGE_API_KEY', defaultValue: 'EMPTY', description: '裁判模型 API Key(无需认证时填 EMPTY)')
+
         // 各基准一个 boolean(按需勾选;默认全开)
         booleanParam(name: 'TASK_MMLU_PRO',     defaultValue: true,  description: '运行 mmlu_pro (10 选项多学科多选,5-shot,accuracy)')
         booleanParam(name: 'TASK_GPQA_DIAMOND', defaultValue: true,  description: '运行 gpqa_diamond (博士级 4 选择,0-shot,accuracy)')
@@ -19,6 +24,13 @@ pipeline {
         booleanParam(name: 'TASK_MATH_500',     defaultValue: true,  description: '运行 math_500 (数学推理,500 题,0-shot,accuracy)')
         booleanParam(name: 'TASK_HELLASWAG',   defaultValue: true,  description: '运行 hellaswag (常识推理,4 选择,0-shot,accuracy)')
         booleanParam(name: 'TASK_HUMANEVAL',    defaultValue: true,  description: '运行 humaneval (Python 代码生成,164 题,0-shot,pass@1;需执行模型生成的代码,启用 sandbox 见 evalscope 文档)')
+        booleanParam(name: 'TASK_HUMANEVAL_PLUS', defaultValue: true,  description: '运行 humaneval_plus (HumanEval 增强版,164 题,测试用例数万级,0-shot,pass@1;review_timeout=300s,需 sandbox 且使用内置 numpy 的自定义 docker 镜像)')
+        booleanParam(name: 'TASK_HMMT25',        defaultValue: true,  description: '运行 hmmt25 (HMMT 2025年2月数学竞赛,30 题,0-shot,numeric accuracy;数学推理题,答案需 \\boxed{} 格式)')
+        booleanParam(name: 'TASK_HMMT26',        defaultValue: true,  description: '运行 hmmt26 (HMMT 2026年2月数学竞赛,33 题,0-shot,numeric accuracy;数学推理题,答案需 \\boxed{} 格式)')
+        booleanParam(name: 'TASK_IMO_ANSWERBENCH', defaultValue: true,  description: '运行 imo_answerbench (IMO 短名单奥数题,400 题,0-shot,numeric accuracy;llm_judge_default=True,有裁判模型时自动走 LLM judge,无裁判模型时回退 rule(numeric math_equal);答案含区间/集合/分数等复杂 LaTeX 形式,部分比对可能不如纯数字精确)')
+        booleanParam(name: 'TASK_MCP_ATLAS',          defaultValue: true,  description: '运行 mcp_atlas (Scale AI MCP 工具使用智能体,89 题,multi-turn function-calling,LLM judge coverage_score/pass_rate;需提前在 runner 上启动 MCP-Atlas agent-environment Docker 服务 http://localhost:1984,暴露 /enabled-servers /list-tools /call-tool;被测模型驱动 AgentLoop,裁判模型逐 claim 评判;依赖 JUDGE_MODEL_ID/JUDGE_API_URL/JUDGE_API_KEY 参数')
+
+        booleanParam(name: 'TASK_DEEP_SWE',           defaultValue: true,  description: '运行 deep_swe (仓库级软件工程编码智能体,113 题,multi-turn agent,verifier 二值奖励 acc;通过 Pier Python API 运行,需 Docker + pip install evalscope[deep_swe] + Python>=3.12;Pier 内置 mini-swe-agent 驱动,默认 litellm model_class 兼容 OpenAI chat/completions 端点;默认 temperature=1.0 top_p=1.0 timeout=24h max_tokens=400k(官方 GLM-5.2 为 2h,低性能机器可调大);每个任务在隔离容器中运行,2 CPU/8GB RAM/无网络,串行执行耗时较长)')
 
         string(name: 'EXAMPLES',        defaultValue: '',      description: '样本数限制(空 = 不限制;传给 evalscope --limit。int=数量,float=比例)')
         string(name: 'REPEATS',         defaultValue: '',      description: '重复次数(k-metrics,传给 evalscope --repeats。空 = 默认 1)')
@@ -29,10 +41,13 @@ pipeline {
         string(name: 'TOP_K',           defaultValue: '20',    description: 'top-k 采样(默认 20)')
         choice(name: 'ENABLE_THINKING', choices: ['false', 'true'], description: '启用 thinking 模式(默认 false)')
         choice(name: 'JUDGE_STRATEGY',  choices: ['auto', 'rule', 'llm', 'llm_recall'], description: '评分策略(默认 auto;多选题用 rule,主观题用 llm)')
+        text(name: 'TASK_JUDGE_STRATEGY_JSON', defaultValue: '', description: '按任务覆盖 judge_strategy 的 JSON。默认为空:imo_answerbench 在有裁判模型(JUDGE_MODEL_ID 非空)时走 auto 自动启用 LLM judge,无裁判模型时自动回退 rule(numeric math_equal);如需手动指定可追加,例: {"imo_answerbench":"rule","simple_qa":"llm"}(需配套 judge_model_args)')
         choice(name: 'ENABLE_SANDBOX', choices: ['true', 'false'], description: '启用 sandbox 执行(默认 true)。true 时给所有任务拼 --sandbox {"enabled": true},仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效。启用前环境检查 stage 会预装 evalscope[sandbox] 并校验 Docker 可用')
-        text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '{"gpqa_diamond":131072}', description: '按任务覆盖 max_tokens 的 JSON,默认 gpqa_diamond=131072,其余任务用 MAX_TOKENS 默认值;可按需追加,例: {"mmlu_pro":4096,"gpqa_diamond":131072}')
-        text(name: 'TASK_TEMPERATURE_JSON', defaultValue: '{"mmlu_pro":0.0,"gpqa_diamond":0.0,"ceval":0.0,"cmmlu":0.0,"math_500":0.6,"hellaswag":0.0,"humaneval":0.2}', description: '按任务指定采样温度的 JSON。默认值=各基准推荐温度:多选题/常识题 0.0(greedy 可复现),math_500 0.6(数学推理略带随机有助思考),humaneval 0.2(代码生成略带随机有助 pass@1 多样性)。可按模型调整,如 DSv4 reasoning 提高到 1.0、R1 系 0.6、instruct 0.0')
-        text(name: 'TASK_REPEATS_JSON', defaultValue: '', description: '按任务覆盖 repeats 的 JSON,例: {"humaneval":5}。命中任务使用对应值,未命中任务用全局 REPEATS;为空则全部用全局 REPEATS。推荐:humaneval 设 5 算 pass@1..pass@5,其余 greedy 基准(mmlu_pro/gpqa_diamond/ceval/cmmlu/hellaswag/math_500)保持 1 避免 N 倍空跑')
+        text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '{"gpqa_diamond":131072,"deep_swe":409600}', description: '按任务覆盖 max_tokens 的 JSON,默认 gpqa_diamond=131072,deep_swe=409600(400k,编码 agent 需大输出窗口),其余任务用 MAX_TOKENS 默认值;可按需追加,例: {"mmlu_pro":4096,"gpqa_diamond":131072}')
+        text(name: 'TASK_TIMEOUT_JSON', defaultValue: '{"mcp_atlas":3600,"deep_swe":86400}', description: '按任务覆盖模型调用超时(秒)的 JSON,默认 mcp_atlas=3600(1 小时,多轮 AgentLoop),deep_swe=86400(24 小时,仓库级编码 agent 串行构建+验证),其余任务用内置默认 3600;可按需追加,例: {"mcp_atlas":3600,"humaneval":1800}')
+        text(name: 'TASK_TOP_P_JSON', defaultValue: '{"deep_swe":1.0}', description: '按任务覆盖 top_p 的 JSON,默认 deep_swe=1.0(编码 agent 高随机性探索,全局默认 0.95);可按需追加,例: {"deep_swe":1.0,"humaneval":0.95}')
+        text(name: 'TASK_TEMPERATURE_JSON', defaultValue: '{"mmlu_pro":0.0,"gpqa_diamond":0.0,"ceval":0.0,"cmmlu":0.0,"math_500":0.6,"hellaswag":0.0,"humaneval":0.2,"humaneval_plus":0.2,"hmmt25":0.6,"hmmt26":0.6,"imo_answerbench":0.6,"mcp_atlas":0.0,"deep_swe":1.0}', description: '按任务指定采样温度的 JSON。默认值=各基准推荐温度:多选题/常识题 0.0(greedy 可复现),math_500/hmmt25/hmmt26/imo_answerbench 0.6(数学推理略带随机有助思考),humaneval/humaneval_plus 0.2(代码生成略带随机有助 pass@1 多样性),mcp_atlas 0.0(工具调用 greedy 可复现),deep_swe 1.0(编码 agent 高随机性探索)。可按模型调整,如 DSv4 reasoning 提高到 1.0、R1 系 0.6、instruct 0.0')
+        text(name: 'TASK_REPEATS_JSON', defaultValue: '', description: '按任务覆盖 repeats 的 JSON,例: {"humaneval":5,"humaneval_plus":5}。命中任务使用对应值,未命中任务用全局 REPEATS;为空则全部用全局 REPEATS。推荐:humaneval/humaneval_plus 设 5 算 pass@1..pass@5,其余 greedy 基准(mmlu_pro/gpqa_diamond/ceval/cmmlu/hellaswag/math_500/hmmt25/hmmt26/imo_answerbench)保持 1 避免 N 倍空跑')
         text(name: 'DATASET_ARGS',      defaultValue: '',      description: '数据集参数 JSON,例: {"mmlu_pro":{"subset_list":["math","physics"]}}')
 
         string(name: 'DESCRIPTION', defaultValue: '', description: '模型服务描述信息(仅用于邮件展示)')
@@ -69,6 +84,12 @@ pipeline {
                     println("任务 MATH_500:     ${params.TASK_MATH_500}")
                     println("任务 HELLASWAG:   ${params.TASK_HELLASWAG}")
                     println("任务 HUMANEVAL:   ${params.TASK_HUMANEVAL}")
+                    println("任务 HUMANEVAL_PLUS: ${params.TASK_HUMANEVAL_PLUS}")
+                    println("任务 HMMT25:       ${params.TASK_HMMT25}")
+                    println("任务 HMMT26:       ${params.TASK_HMMT26}")
+                    println("任务 IMO_ANSWERBENCH: ${params.TASK_IMO_ANSWERBENCH}")
+                    println("任务 MCP_ATLAS:      ${params.TASK_MCP_ATLAS}")
+                    println("任务 DEEP_SWE:       ${params.TASK_DEEP_SWE}")
                     println("样本限制:        ${params.EXAMPLES ?: '无限制'}")
                     println("repeats:         ${params.REPEATS ?: 'default 1'}")
                     println("eval-batch-size: ${params.EVAL_BATCH_SIZE}")
@@ -77,8 +98,13 @@ pipeline {
                     println("top_p / top_k:   ${params.TOP_P} / ${params.TOP_K}")
                     println("enable_thinking: ${params.ENABLE_THINKING}")
                     println("judge_strategy:  ${params.JUDGE_STRATEGY}")
+                    println("per-task judge_strategy JSON: ${params.TASK_JUDGE_STRATEGY_JSON ?: 'N/A'}")
+                    println("裁判模型:        ${params.JUDGE_MODEL_ID}")
+                    println("裁判模型API:     ${params.JUDGE_API_URL}")
                     println("enable_sandbox:  ${params.ENABLE_SANDBOX}")
                     println("per-task max_tokens JSON: ${params.TASK_MAX_TOKENS_JSON ?: 'N/A'}")
+                    println("per-task timeout JSON: ${params.TASK_TIMEOUT_JSON ?: 'N/A'}")
+                    println("per-task top_p JSON: ${params.TASK_TOP_P_JSON ?: 'N/A'}")
                     println("per-task temperature JSON: ${params.TASK_TEMPERATURE_JSON ?: 'N/A'}")
                     println("per-task repeats JSON:   ${params.TASK_REPEATS_JSON ?: 'N/A'}")
                     println("dataset_args:    ${params.DATASET_ARGS ?: 'N/A'}")
@@ -253,6 +279,12 @@ ENDSSH
                     if (params.TASK_MATH_500)     taskList.add('math_500')
                     if (params.TASK_HELLASWAG)   taskList.add('hellaswag')
                     if (params.TASK_HUMANEVAL)    taskList.add('humaneval')
+                    if (params.TASK_HUMANEVAL_PLUS) taskList.add('humaneval_plus')
+                    if (params.TASK_HMMT25)        taskList.add('hmmt25')
+                    if (params.TASK_HMMT26)        taskList.add('hmmt26')
+                    if (params.TASK_IMO_ANSWERBENCH) taskList.add('imo_answerbench')
+                    if (params.TASK_MCP_ATLAS)        taskList.add('mcp_atlas')
+                    if (params.TASK_DEEP_SWE)         taskList.add('deep_swe')
                     if (taskList.isEmpty()) {
                         error '至少需要选择一个测试任务'
                     }
@@ -262,6 +294,7 @@ ENDSSH
                     env.MODEL_DIR = modelDir
 
                     env.API_KEY_STR = params.API_KEY?.toString() ?: ''
+                    env.JUDGE_API_KEY_STR = params.JUDGE_API_KEY?.toString() ?: ''
 
                     sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
                         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
@@ -289,12 +322,18 @@ python3 run_evalscope.py \\
     --top-p "${params.TOP_P}" \\
     --top-k "${params.TOP_K}" \\
     --enable-thinking "${params.ENABLE_THINKING?.toString()?.toLowerCase()}" \\
-                    --repeats "${params.REPEATS}" \\
-                    --task-repeats-json '${params.TASK_REPEATS_JSON}' \\
-                    --judge-strategy "${params.JUDGE_STRATEGY}" \\
+    --repeats "${params.REPEATS}" \\
+    --task-repeats-json '${params.TASK_REPEATS_JSON}' \\
+    --judge-strategy "${params.JUDGE_STRATEGY}" \\
+    --task-judge-strategy-json '${params.TASK_JUDGE_STRATEGY_JSON}' \\
     --enable-sandbox "${params.ENABLE_SANDBOX?.toString()?.toLowerCase()}" \\
     --task-max-tokens-json '${params.TASK_MAX_TOKENS_JSON}' \\
+    --task-timeout-json '${params.TASK_TIMEOUT_JSON}' \\
+    --task-top-p-json '${params.TASK_TOP_P_JSON}' \\
     --dataset-args '${params.DATASET_ARGS}' \\
+    --judge-model-id "${params.JUDGE_MODEL_ID}" \\
+    --judge-api-url "${params.JUDGE_API_URL}" \\
+    --judge-api-key "${env.JUDGE_API_KEY_STR ?: 'EMPTY'}" \\
     --description "${params.DESCRIPTION}"
 echo "=== 测试脚本执行结束 ==="
 echo "=== 输出目录 ==="
@@ -551,7 +590,12 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                 <tr><th>top_p / top_k</th><td>${params.TOP_P} / ${params.TOP_K}</td></tr>
                 <tr><th>enable_thinking</th><td>${params.ENABLE_THINKING}</td></tr>
                 <tr><th>judge_strategy</th><td>${params.JUDGE_STRATEGY}</td></tr>
+                <tr><th>per-task judge_strategy JSON</th><td>${params.TASK_JUDGE_STRATEGY_JSON ?: 'N/A'}</td></tr>
+                <tr><th>裁判模型</th><td>${params.JUDGE_MODEL_ID}</td></tr>
+                <tr><th>裁判模型API</th><td>${params.JUDGE_API_URL}</td></tr>
                 <tr><th>per-task max_tokens JSON</th><td>${params.TASK_MAX_TOKENS_JSON ?: 'N/A'}</td></tr>
+                <tr><th>per-task timeout JSON</th><td>${params.TASK_TIMEOUT_JSON ?: 'N/A'}</td></tr>
+                <tr><th>per-task top_p JSON</th><td>${params.TASK_TOP_P_JSON ?: 'N/A'}</td></tr>
                 <tr><th>dataset_args</th><td>${params.DATASET_ARGS ?: 'N/A'}</td></tr>
                 <tr><th>执行时间</th><td>${currentBuild.durationString}</td></tr>
                 <tr><th>测试状态</th><td>${resultStatus}</td></tr>
