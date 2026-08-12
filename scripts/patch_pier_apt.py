@@ -80,12 +80,13 @@ REPLACEMENTS.append(
     )
 )
 
-# 3. Replace source env with export PATH (needed for pip --user binaries)
+# 3. Replace . "$HOME/.local/bin/env" with export PATH (needed for pip --user binaries)
+#    The original code uses `.` (POSIX source), not `source`.
 REPLACEMENTS.append(
     (
-        'source "$HOME/.local/bin/env"',
+        '. "$HOME/.local/bin/env"',
         f'export PATH="$HOME/.local/bin:$PATH"  # {MARKER}: replaced uv env with export',
-        "replace uv env source with export PATH",
+        "replace . env with export PATH",
     )
 )
 
@@ -182,6 +183,19 @@ def patch_compose_file(path: Path) -> bool:
         return True
 
     if COMPOSE_OLD not in content:
+        if "network: host" in content:
+            print(f"Already patched (network: host present): {path}")
+            return True
+        print(f"SKIP (compose pattern not found): {path}")
+        print("  The compose file may have been updated -- manual review needed")
+        return False
+
+    content = content.replace(COMPOSE_OLD, COMPOSE_NEW)
+    path.write_text(content, encoding="utf-8")
+    print(f"Patched compose: {path} (added network: host to build section)")
+    return True
+
+    if COMPOSE_OLD not in content:
         print(f"SKIP (compose pattern not found): {path}")
         print("  The compose file may have been updated — manual review needed")
         return False
@@ -193,35 +207,43 @@ def patch_compose_file(path: Path) -> bool:
 
 
 def patch_file(path: Path) -> bool:
-    """Patch *path* in-place.  Returns True on success."""
+    """Patch *path* in-place.  Returns True on success.
+
+    Each replacement is checked individually so partially-patched files
+    (e.g. from a previous run with a different search string) are handled
+    correctly: already-applied replacements are skipped, missing ones are applied.
+    """
     content = path.read_text(encoding="utf-8")
 
-    if MARKER in content:
-        print(f"Already patched: {path}")
-        return True
-
     applied = 0
+    already = 0
     for old, new, desc in REPLACEMENTS:
-        if old in content:
+        if new in content:
+            already += 1
+            print(f"  Already applied: {desc}")
+        elif old in content:
             content = content.replace(old, new)
             applied += 1
             print(f"  Applied: {desc}")
         else:
             print(f"  SKIP (not found): {desc}")
 
+    if applied == 0 and already > 0:
+        print(f"Already fully patched: {path} ({already} replacements)")
+        return True
+
     if applied == 0:
         print(f"ERROR: no replacements applied to {path}")
         return False
 
-    # Inject marker as a comment near the top of install_spec
-    marker_comment = f"        # {MARKER}\n"
-    # Insert after the install_spec method def line
-    marker_target = "    def install_spec(self) -> AgentInstallSpec:"
-    if marker_target in content:
-        content = content.replace(
-            marker_target,
-            marker_target + "\n" + marker_comment,
-        )
+    # Inject marker as a comment near the top of install_spec (if not present)
+    if MARKER not in content:
+        marker_target = "    def install_spec(self) -> AgentInstallSpec:"
+        if marker_target in content:
+            marker_comment = f"        # {MARKER}\n"
+            content = content.replace(
+                marker_target, marker_target + "\n" + marker_comment
+            )
 
     try:
         ast.parse(content)
@@ -230,7 +252,7 @@ def patch_file(path: Path) -> bool:
         return False
 
     path.write_text(content, encoding="utf-8")
-    print(f"Patched: {path} ({applied} replacements)")
+    print(f"Patched: {path} ({applied} new, {already} already applied)")
     return True
 
 
