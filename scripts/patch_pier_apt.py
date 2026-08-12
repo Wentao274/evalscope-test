@@ -4,18 +4,21 @@
 Three categories of patches:
 
 1. **apt step** (root_run in mini_swe_agent.py):
-   - Inject ``sed`` to switch Debian apt sources from HTTP→HTTPS (proxy CONNECT
-     tunnel works for HTTPS but not HTTP).
-   - Add ``python3-pip`` to the apt install list (needed by the pip-based
-     agent install below).
+   - Inject ``sed`` to switch Debian apt sources from HTTP to HTTPS (proxy
+     CONNECT tunnel works for HTTPS but not HTTP).
 
 2. **agent step** (agent_run + install_extra_packages in mini_swe_agent.py):
    - Replace ``curl https://astral.sh/uv/...install.sh | sh`` with
      ``python3 -m pip install --user --index-url=pypi.org mini-swe-agent``.
      The Astral CDN (astral.sh) is RST'd by enterprise proxies; official PyPI
      reliably serves packages through HTTP-CONNECT tunnels.
-   - Remove ``source "$HOME/.local/bin/env"`` (uv-specific, not needed).
+   - Replace all ``. "$HOME/.local/bin/env"`` and ``source "$HOME/.local/bin/env"``
+     with ``export PATH="$HOME/.local/bin:$PATH"``.  Uses ``; : SENTINEL`` (a shell
+     no-op) for idempotency tracking instead of ``# MARKER`` because ``#`` starts
+     a shell comment and would break multi-command lines (e.g. the runtime
+     command at line 895: ``. "$HOME/.local/bin/env"; mini-swe-agent ...``).
    - Remove ``uv tool install mini-swe-agent`` (done by pip above).
+   - Replace ``uv tool list`` version check with ``pip show`` (uv not installed).
    - Replace ``uv pip install --python "$python_bin" {packages}`` with
      ``"$python_bin" -m pip install --index-url=pypi.org {packages}``.
 
@@ -24,8 +27,7 @@ Three categories of patches:
      ``docker compose build`` uses the host network instead of the default
      bridge network.  The enterprise proxy at 100.64.1.68:1080 is unreachable
      from the bridge network (TLS handshake timeout), but works from the host
-     network.  This is equivalent to ``docker build --network=host`` which
-     already works for the egress-proxy pre-build.
+     network.
 
 Usage::
 
@@ -33,7 +35,9 @@ Usage::
     python3 scripts/patch_pier_apt.py /path/to/mini_swe_agent.py
     python3 scripts/patch_pier_apt.py --check   # exit 0 if already patched
 
-Idempotent: re-running on already-patched files is a no-op.
+Idempotent: re-running on already-patched files is a no-op.  Stale patches from
+previous builds (e.g. old aliyun/tsinghua mirror URLs or ``# MARKER`` comments
+that broke shell commands) are automatically migrated to the current format.
 """
 
 from __future__ import annotations
@@ -46,11 +50,30 @@ MARKER = "PATCHED_FOR_PROXY"
 
 PYPI = "https://pypi.org/simple/"
 
-# (old_substring, new_substring, description)
+# --- Migration patterns -------------------------------------------------------
+# Replace old mirror URLs and broken ``# MARKER`` comments with current values.
+# Applied *before* the main replacements so that stale partially-patched files
+# converge to the correct state.
+MIGRATIONS: list[tuple[str, str, str]] = [
+    ("https://mirrors.aliyun.com/pypi/simple/", PYPI, "aliyun -> pypi.org"),
+    ("https://pypi.tuna.tsinghua.edu.cn/simple/", PYPI, "tsinghua -> pypi.org"),
+    # Old ``# MARKER`` comments in the middle of shell commands broke execution
+    # (``#`` starts a comment, so everything after it -- including ``; mini-swe-agent``
+    # -- was silently ignored).  Replace with ``; : SENTINEL`` (a no-op that keeps
+    # the command chain intact).
+    (
+        f"  # {MARKER}: replaced uv env with export",
+        f"; : {MARKER}_MIGRATED",
+        "# MARKER -> ; : SENTINEL (env)",
+    ),
+]
+
+# --- Main replacements --------------------------------------------------------
+# Each tuple: (old_substring, new_substring, description)
+# ``content.replace()`` replaces ALL occurrences of ``old``.
 REPLACEMENTS: list[tuple[str, str, str]] = []
 
-# 1. apt: inject sed (HTTP->HTTPS) before apt-get (do NOT add python3-pip;
-#    swe-bench images already have pip, and apt-get update may fail through proxy)
+# 1. apt: inject sed (HTTP->HTTPS) before apt-get
 REPLACEMENTS.append(
     (
         '"  apt-get update && apt-get install -y curl build-essential git;"',
@@ -80,13 +103,26 @@ REPLACEMENTS.append(
     )
 )
 
-# 3. Replace . "$HOME/.local/bin/env" with export PATH (needed for pip --user binaries)
-#    The original code uses `.` (POSIX source), not `source`.
+# 3a. Replace `. "$HOME/.local/bin/env"` (POSIX source) — occurs at:
+#     line 605 (version check) and line 895 (runtime command).
+#     Uses `; :` (shell no-op) instead of `#` (shell comment) to avoid breaking
+#     the command chain (e.g. `. env; mini-swe-agent ...`).
 REPLACEMENTS.append(
     (
         '. "$HOME/.local/bin/env"',
-        f'export PATH="$HOME/.local/bin:$PATH"  # {MARKER}: replaced uv env with export',
+        f'export PATH="$HOME/.local/bin:$PATH"; : {MARKER}_DOT_ENV',
         "replace . env with export PATH",
+    )
+)
+
+# 3b. Replace `source "$HOME/.local/bin/env"` (bash source) — line 652 (install script).
+#     Separate from 3a because it has a different sentinel for independent
+#     idempotency tracking.
+REPLACEMENTS.append(
+    (
+        'source "$HOME/.local/bin/env"',
+        f'export PATH="$HOME/.local/bin:$PATH"; : {MARKER}_SRC_ENV',
+        "replace source env with export PATH",
     )
 )
 
@@ -105,6 +141,16 @@ REPLACEMENTS.append(
         "f'uv pip install --python \"$python_bin\" {packages}\\n'",
         f"f'\"$python_bin\" -m pip install --index-url={PYPI} {{packages}}\\n'",
         "uv pip -> pip in extra packages",
+    )
+)
+
+# 6. Version check: `uv tool list` -> `pip show` (uv is not installed after patching)
+#    `pip show` output: "Version: 0.1.2" -- parse_version regex `(\d+\.\d+\S*)` matches.
+REPLACEMENTS.append(
+    (
+        "uv tool list 2>/dev/null | grep mini-swe-agent",
+        "python3 -m pip show mini-swe-agent 2>/dev/null | grep Version",
+        "version check: uv tool list -> pip show",
     )
 )
 
@@ -127,9 +173,7 @@ def find_compose_file(module_path: Path | None = None) -> Path | None:
     Falls back to importing the pier package directly.
     """
     if module_path is not None:
-        # module_path = .../pier/agents/installed/mini_swe_agent.py
-        # pier root  = .../pier/
-        pier_root = module_path.parent.parent.parent  # remove agents/installed/
+        pier_root = module_path.parent.parent.parent
         compose = pier_root / "environments" / "docker" / "docker-compose-build.yaml"
         if compose.exists():
             return compose
@@ -147,25 +191,10 @@ def find_compose_file(module_path: Path | None = None) -> Path | None:
         return None
 
 
-COMPOSE_MARKER = "# PATCHED_FOR_PROXY: host network"
+# --- Compose file patch -------------------------------------------------------
 
-# The compose file patch: add `network: host` under `build:` section.
-# Current content:
-#   services:
-#     main:
-#       build:
-#         context: ${CONTEXT_DIR}
-#       pull_policy: build
-#       command: [ "sh", "-c", "sleep infinity" ]
-#
-# Patched content:
-#   services:
-#     main:
-#       build:
-#         context: ${CONTEXT_DIR}
-#         network: host  # PATCHED_FOR_PROXY: host network
-#       pull_policy: build
-#       command: [ "sh", "-c", "sleep infinity" ]
+COMPOSE_MARKER = f"# {MARKER}: host network"
+
 COMPOSE_OLD = "      context: ${CONTEXT_DIR}\n    pull_policy: build"
 COMPOSE_NEW = (
     f"      context: ${{CONTEXT_DIR}}\n"
@@ -175,7 +204,10 @@ COMPOSE_NEW = (
 
 
 def patch_compose_file(path: Path) -> bool:
-    """Patch docker-compose-build.yaml to use host network for builds.  Returns True on success."""
+    """Patch docker-compose-build.yaml to use host network for builds.
+
+    Returns True on success or if already patched.
+    """
     content = path.read_text(encoding="utf-8")
 
     if COMPOSE_MARKER in content:
@@ -195,26 +227,39 @@ def patch_compose_file(path: Path) -> bool:
     print(f"Patched compose: {path} (added network: host to build section)")
     return True
 
-    if COMPOSE_OLD not in content:
-        print(f"SKIP (compose pattern not found): {path}")
-        print("  The compose file may have been updated — manual review needed")
-        return False
 
-    content = content.replace(COMPOSE_OLD, COMPOSE_NEW)
-    path.write_text(content, encoding="utf-8")
-    print(f"Patched compose: {path} (added network: host to build section)")
-    return True
+# --- Agent module patch -------------------------------------------------------
+
+
+def migrate_urls(content: str) -> tuple[str, int]:
+    """Replace old mirror URLs and broken ``# MARKER`` comments.
+
+    Returns ``(content, count)`` where *count* is the number of migration
+    patterns that were applied.
+    """
+    count = 0
+    for old, new, desc in MIGRATIONS:
+        if old in content:
+            content = content.replace(old, new)
+            count += 1
+            print(f"  Migrated: {desc}")
+    return content, count
 
 
 def patch_file(path: Path) -> bool:
     """Patch *path* in-place.  Returns True on success.
 
-    Each replacement is checked individually so partially-patched files
-    (e.g. from a previous run with a different search string) are handled
-    correctly: already-applied replacements are skipped, missing ones are applied.
+    Each replacement is checked individually so partially-patched files (e.g.
+    from a previous run with a different ``new`` value) are handled correctly:
+    already-applied replacements are skipped, missing ones are applied, and
+    stale values from old builds are migrated first.
     """
     content = path.read_text(encoding="utf-8")
 
+    # Step 1: migrate old mirror URLs and broken # MARKER comments
+    content, migrated = migrate_urls(content)
+
+    # Step 2: apply replacements (check `new` first for idempotency)
     applied = 0
     already = 0
     for old, new, desc in REPLACEMENTS:
@@ -228,15 +273,8 @@ def patch_file(path: Path) -> bool:
         else:
             print(f"  SKIP (not found): {desc}")
 
-    if applied == 0 and already > 0:
-        print(f"Already fully patched: {path} ({already} replacements)")
-        return True
-
-    if applied == 0:
-        print(f"ERROR: no replacements applied to {path}")
-        return False
-
-    # Inject marker as a comment near the top of install_spec (if not present)
+    # Step 3: inject MARKER comment near install_spec (for --check visibility)
+    marker_added = False
     if MARKER not in content:
         marker_target = "    def install_spec(self) -> AgentInstallSpec:"
         if marker_target in content:
@@ -244,7 +282,18 @@ def patch_file(path: Path) -> bool:
             content = content.replace(
                 marker_target, marker_target + "\n" + marker_comment
             )
+            marker_added = True
 
+    # Step 4: decide outcome
+    if applied == 0 and already == 0 and migrated == 0 and not marker_added:
+        print(f"ERROR: no replacements applied to {path}")
+        return False
+
+    if applied == 0 and migrated == 0 and not marker_added:
+        print(f"Already fully patched: {path} ({already} replacements)")
+        return True
+
+    # Step 5: validate syntax before writing
     try:
         ast.parse(content)
     except SyntaxError as exc:
@@ -252,7 +301,14 @@ def patch_file(path: Path) -> bool:
         return False
 
     path.write_text(content, encoding="utf-8")
-    print(f"Patched: {path} ({applied} new, {already} already applied)")
+    parts = [f"{applied} applied"]
+    if already:
+        parts.append(f"{already} already")
+    if migrated:
+        parts.append(f"{migrated} migrated")
+    if marker_added:
+        parts.append("marker injected")
+    print(f"Patched: {path} ({', '.join(parts)})")
     return True
 
 
@@ -284,7 +340,6 @@ def main() -> int:
         print(f"Compose patched: {compose_ok}")
         return 0 if (agent_ok and compose_ok) else 1
 
-    # Patch both files; compose failure is non-fatal (agent patch is the critical one)
     agent_ok = patch_file(module_path)
     compose_ok = True
     if compose_path is not None and compose_path.exists():
