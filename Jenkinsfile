@@ -454,10 +454,10 @@ print('Docker 构建代理已配置: http://100.64.1.68:1080 (noProxy: localhost
             # 检测宿主机 apt mirror
             HOST_MIRROR=""
             if [ -f /etc/apt/sources.list ]; then
-                HOST_MIRROR=\$(grep -E '^deb ' /etc/apt/sources.list | head -1 | awk '{print \$2}' | sed 's|/ubuntu.*||' | sed 's|/$||')
+                HOST_MIRROR=\$(grep -E '^deb ' /etc/apt/sources.list | head -1 | awk '{print \$2}' | sed 's|/ubuntu.*||' | sed 's|/\$||')
             fi
             if [ -z "\${HOST_MIRROR}" ] && [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-                HOST_MIRROR=\$(awk -F': ' '/^URIs:/ {print \$2}' /etc/apt/sources.list.d/ubuntu.sources | head -1 | sed 's|/ubuntu.*||' | sed 's|/$||')
+                HOST_MIRROR=\$(awk -F': ' '/^URIs:/ {print \$2}' /etc/apt/sources.list.d/ubuntu.sources | head -1 | sed 's|/ubuntu.*||' | sed 's|/\$||')
             fi
             echo "宿主机 apt mirror: \${HOST_MIRROR:-<未检测到>}"
 
