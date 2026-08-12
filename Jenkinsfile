@@ -435,39 +435,6 @@ if [ "\${NEED_DOCKER}" = "true" ]; then
         NO_PROXY_LIST="\${NO_PROXY_LIST},\${MIRROR_HOST}"
     fi
 
-    # === 调查 Debian apt 主机连通性(swe-bench agent 容器 apt-get 失败排查)===
-    # Pier 的 mini_swe_agent.install_spec() 硬编码了 apt-get update && apt-get install -y curl build-essential git。
-    # swe-bench 容器(Debian bookworm)apt 源指向 http://deb.debian.org → 经代理 502 Bad Gateway。
-    # 调查两种路径: 1) 直连(无代理)HTTP; 2) 经代理 HTTPS(CONNECT 隧道,与 Docker pull 同机制)。
-    # 结果用于决定: 直连可用→加 noProxy; 否则→patch Pier 切换 apt HTTP→HTTPS。
-    DEBIAN_DIRECT=false
-    DEBIAN_HTTPS_PROXY=false
-    if [ "\${NEED_DEEP_SWE}" = "true" ]; then
-        echo "=== 调查 Debian apt 主机连通性 ==="
-        # 测试直连(无代理)HTTP 到 deb.debian.org
-        if curl -sSI --max-time 10 --noproxy '*' http://deb.debian.org/debian/dists/bookworm/Release 2>/dev/null | head -1 | grep -q '200'; then
-            DEBIAN_DIRECT=true
-            echo "  deb.debian.org direct (HTTP, no proxy): OK"
-        else
-            echo "  deb.debian.org direct (HTTP, no proxy): FAIL"
-        fi
-        if [ "\${DEBIAN_DIRECT}" = "true" ]; then
-            NO_PROXY_LIST="\${NO_PROXY_LIST},deb.debian.org,security.debian.org"
-            echo "  -> adding deb.debian.org/security.debian.org to noProxy (direct reachable)"
-        else
-            # 测试经代理 HTTPS 到 deb.debian.org
-            if curl -sSI --max-time 15 --proxy http://100.64.1.68:1080 https://deb.debian.org/debian/dists/bookworm/Release 2>/dev/null | head -1 | grep -q '200'; then
-                DEBIAN_HTTPS_PROXY=true
-                echo "  deb.debian.org via proxy HTTPS: OK"
-                echo "  -> will patch Pier to switch apt HTTP->HTTPS (see below)"
-            else
-                echo "  deb.debian.org via proxy HTTPS: FAIL"
-                echo "  [WARN] deb.debian.org unreachable (both direct and HTTPS-via-proxy)!"
-                echo "  -> will still attempt Pier patch (best-effort), deep_swe apt-get may fail"
-            fi
-        fi
-    fi
-
     # 配置 Docker 构建代理(Pier 的 docker build 需要通过代理访问 Docker Hub/pypi 等)
     # ~/.docker/config.json 的 proxies 配置会自动注入 HTTP_PROXY/HTTPS_PROXY 到 docker build 和 docker run
     echo "=== 配置 Docker 构建代理 ==="
@@ -559,23 +526,20 @@ DOCKERFILE
         fi
     fi
 
-    # === Patch Pier mini_swe_agent: apt sources HTTP→HTTPS ===
-    # 当 deb.debian.org 直连不可用时(需经代理), patch Pier 在 apt-get update 前
-    # 注入 sed 将所有 Debian apt 源从 HTTP 切换为 HTTPS。
-    # HTTPS 经代理 CONNECT 隧道(与 Docker pull 同机制)可正常工作。
-    # 脚本幂等: 已 patch 则跳过。
+    # === Patch Pier mini_swe_agent for proxy compatibility ===
+    # Patch two issues:
+    #   1. apt step: inject sed to switch Debian apt sources HTTP->HTTPS + add python3-pip
+    #   2. agent step: replace uv/curl install with pip install (aliyun mirror)
+    #      astral.sh (uv CDN) is RST'd by enterprise proxy; aliyun PyPI mirror works.
+    # Script is idempotent: already-patched modules are skipped.
     if [ "\${NEED_DEEP_SWE}" = "true" ]; then
-        if [ "\${DEBIAN_DIRECT}" = "true" ]; then
-            echo "Debian apt 直连可用(noProxy 已含 deb.debian.org),跳过 Pier apt patch"
-        else
-            echo "=== Patching Pier mini_swe_agent apt sources (HTTP->HTTPS) ==="
-            source ${params.WORK_DIR}/.venv/bin/activate
-            python3 ${params.WORK_DIR}/scripts/patch_pier_apt.py 2>&1
-            PATCH_EXIT=\$?
-            deactivate
-            if [ "\${PATCH_EXIT}" -ne 0 ]; then
-                echo "WARN: Pier apt patch failed(exit \${PATCH_EXIT}), deep_swe apt-get 可能失败"
-            fi
+        echo "=== Patching Pier mini_swe_agent for proxy compatibility ==="
+        source ${params.WORK_DIR}/.venv/bin/activate
+        python3 ${params.WORK_DIR}/scripts/patch_pier_apt.py 2>&1
+        PATCH_EXIT=\$?
+        deactivate
+        if [ "\${PATCH_EXIT}" -ne 0 ]; then
+            echo "WARN: Pier patch failed (exit \${PATCH_EXIT}), deep_swe may fail"
         fi
     fi
 else
@@ -738,6 +702,12 @@ if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
 else
     echo "TASK_MCP_ATLAS=false,跳过 mcp_atlas 服务检查"
 fi
+
+# === 记录当前容器快照(用于构建后精准清理) ===
+# 在 eval 开始前,记录所有已存在的容器 ID。
+# 构建结束后,对比快照找出本次新增的容器(deep_swe Pier 等),只清理这些,不影响其他构建。
+docker ps -aq > /tmp/eval_containers_before_${BUILD_NUMBER}
+echo "容器快照已保存: \$(wc -l < /tmp/eval_containers_before_${BUILD_NUMBER}) 个容器(用于构建后精准清理)"
 ENDSSH
 """
                 }
@@ -1129,6 +1099,64 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                             mimeType: 'text/html',
                             attachmentsPattern: attachPattern
                         )
+                    }
+                }
+            }
+        }
+
+        stage('清理测试容器') {
+            steps {
+                sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
+                    catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                        sh """
+ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << 'ENDSSH'
+echo "=== 清理本次构建启动的容器(BUILD #${BUILD_NUMBER}) ==="
+
+# 1. MCP-Atlas 容器:按名称精准清理(名称含构建编号,不会误删其他构建的容器)
+CONT_NAME="mcp-atlas-agent-env-${BUILD_NUMBER}"
+MCP_ID=\$(docker ps -a --filter "name=\${CONT_NAME}" --format '{{.ID}}' 2>/dev/null | head -1)
+if [ -n "\${MCP_ID}" ]; then
+    echo "清理 MCP-Atlas 容器: \${CONT_NAME} (\${MCP_ID})"
+    docker rm -f \${MCP_ID} 2>/dev/null || true
+else
+    echo "MCP-Atlas 容器 \${CONT_NAME} 不存在,跳过"
+fi
+
+# 2. eval 期间新增的容器(deep_swe Pier 容器等):对比快照,只清理新增的
+#    Pier 容器名含随机 UUID,无法按构建编号匹配,用快照 diff 精准识别
+SNAPSHOT_FILE="/tmp/eval_containers_before_${BUILD_NUMBER}"
+if [ ! -f "\${SNAPSHOT_FILE}" ]; then
+    echo "快照文件不存在(环境检查阶段可能被跳过),跳过 diff 清理"
+    echo "=== 清理完成 ==="
+    exit 0
+fi
+
+docker ps -aq > /tmp/eval_containers_after_${BUILD_NUMBER}
+sort "\${SNAPSHOT_FILE}" > /tmp/eval_before_sorted
+sort /tmp/eval_containers_after_${BUILD_NUMBER} > /tmp/eval_after_sorted
+
+# comm -13: 只显示 after 中有但 before 中没有的行(即新增容器)
+NEW_CONTAINERS=\$(comm -13 /tmp/eval_before_sorted /tmp/eval_after_sorted)
+
+if [ -n "\${NEW_CONTAINERS}" ]; then
+    NEW_COUNT=\$(echo "\${NEW_CONTAINERS}" | grep -c . )
+    echo "发现 \${NEW_COUNT} 个本次构建新增的容器,清理中:"
+    echo "\${NEW_CONTAINERS}" | while read -r cid; do
+        if [ -n "\$cid" ]; then
+            IMG=\$(docker inspect "\$cid" --format '{{.Config.Image}}' 2>/dev/null || echo "?")
+            docker rm -f "\$cid" 2>/dev/null && echo "  已清理: \$cid (\${IMG})" || echo "  清理失败: \$cid"
+        fi
+    done
+    echo "新增容器清理完成"
+else
+    echo "无新增容器需要清理"
+fi
+
+# 清理临时文件
+rm -f "\${SNAPSHOT_FILE}" /tmp/eval_containers_after_${BUILD_NUMBER} /tmp/eval_before_sorted /tmp/eval_after_sorted
+echo "=== 容器清理完成 ==="
+ENDSSH
+"""
                     }
                 }
             }
