@@ -371,6 +371,122 @@ if [ "\${NEED_DOCKER}" = "true" ]; then
         exit 1
     fi
     echo "Docker daemon 可用"
+
+    # deep_swe 需要 Docker Compose v2 插件(Pier 用 "docker compose" 语法管理环境)
+    if [ "\${NEED_DEEP_SWE}" = "true" ]; then
+        if docker compose version >/dev/null 2>&1; then
+            echo "Docker Compose v2 可用: \$(docker compose version --short 2>/dev/null)"
+        else
+            echo "Docker Compose v2 插件未安装(deep_swe 需要),尝试自动安装..."
+            COMPOSE_INSTALL_OK=false
+            # 优先用 apt 安装(需要访问 Docker 官方 apt 仓库)
+            if apt-get update -qq >/dev/null 2>&1; then
+                if apt-get install -y -qq docker-compose-plugin >/dev/null 2>&1; then
+                    COMPOSE_INSTALL_OK=true
+                fi
+            fi
+            # apt 失败,尝试直接下载二进制
+            if [ "\${COMPOSE_INSTALL_OK}" != "true" ]; then
+                echo "apt 安装失败,尝试直接下载 docker-compose 二进制..."
+                export https_proxy=http://100.64.1.68:1080
+                export http_proxy=http://100.64.1.68:1080
+                COMPOSE_VERSION="v2.29.7"
+                COMPOSE_URL="https://github.com/docker/compose/releases/download/\${COMPOSE_VERSION}/docker-compose-linux-x86_64"
+                mkdir -p /usr/local/lib/docker/cli-plugins
+                if curl -fsSL "\${COMPOSE_URL}" -o /usr/local/lib/docker/cli-plugins/docker-compose && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose; then
+                    COMPOSE_INSTALL_OK=true
+                fi
+                unset https_proxy
+                unset http_proxy
+            fi
+            if [ "\${COMPOSE_INSTALL_OK}" = "true" ] && docker compose version >/dev/null 2>&1; then
+                echo "Docker Compose v2 安装成功: \$(docker compose version --short 2>/dev/null)"
+            else
+                echo "ERROR: Docker Compose v2 自动安装失败。"
+                echo "请手动安装: apt-get install docker-compose-plugin"
+                echo "  或: mkdir -p /usr/local/lib/docker/cli-plugins && curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose"
+                exit 1
+            fi
+        fi
+    fi
+
+    # 配置 Docker 构建代理(Pier 的 docker build 需要通过代理访问 Docker Hub/pypi 等)
+    # 关键:在 noProxy 中加入 mirrors.aliyun.com — 代理无法处理 apt 流量(HTTP 502 / HTTPS 超时),
+    # 但 runner 在中国,可直接访问阿里云镜像站(无需代理)。这样 docker build 中的 apt-get 会直连 mirrors.aliyun.com。
+    echo "=== 配置 Docker 构建代理 ==="
+    mkdir -p ~/.docker
+    python3 -c "
+import json, os
+p = os.path.expanduser('~/.docker/config.json')
+c = {}
+if os.path.exists(p):
+    try:
+        c = json.load(open(p))
+    except Exception:
+        c = {}
+c['proxies'] = {'default': {'httpProxy': 'http://100.64.1.68:1080', 'httpsProxy': 'http://100.64.1.68:1080', 'noProxy': 'localhost,127.0.0.1,10.0.0.0/8,mirrors.aliyun.com'}}
+with open(p, 'w') as f:
+    json.dump(c, f, indent=2)
+print('Docker 构建代理已配置: http://100.64.1.68:1080 (noProxy: localhost,127.0.0.1,10.0.0.0/8,mirrors.aliyun.com)')
+"
+
+    # === Pre-build ubuntu:24.04 with aliyun mirror + pre-installed egress-proxy packages ===
+    # Pier 的 egress-proxy Dockerfile 生成时会:
+    #   FROM ubuntu:24.04
+    #   RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apache2-utils ca-certificates squid
+    # 问题:
+    #   1) 默认 ubuntu:24.04 用 HTTP 到 archive.ubuntu.com → 代理返回 502
+    #   2) 改成 HTTPS 到 mirrors.aliyun.com → base 镜像无 ca-certificates,SSL 握手失败
+    #   3) 代理对 apt 流量(HTTP/HTTPS)均不可靠
+    # 修复:
+    #   - noProxy 加入 mirrors.aliyun.com → docker build 中 apt 直连阿里云(不走代理)
+    #   - apt 源改成 http://mirrors.aliyun.com(HTTP,不需要 ca-certificates)
+    #   - 预装 squid/apache2-utils/ca-certificates → Pier 的 apt-get install 变成 no-op
+    #   - 用 label "egress-proxy-prebuilt" 标记已预装的镜像,避免重复构建
+    if [ "\${NEED_DEEP_SWE}" = "true" ]; then
+        echo "=== Pre-building ubuntu:24.04 with aliyun mirror + egress-proxy packages ==="
+        NEEDS_REBUILD=false
+        if ! docker image inspect ubuntu:24.04 >/dev/null 2>&1; then
+            NEEDS_REBUILD=true
+        elif ! docker inspect ubuntu:24.04 --format '{{json .Config.Labels}}' 2>/dev/null | grep -q "egress-proxy-prebuilt"; then
+            NEEDS_REBUILD=true
+        fi
+        if [ "\${NEEDS_REBUILD}" = "true" ]; then
+            # Pull base image (Docker Hub via proxy — HTTPS works for Docker pulls)
+            export https_proxy=http://100.64.1.68:1080
+            export http_proxy=http://100.64.1.68:1080
+            docker pull ubuntu:24.04
+            unset https_proxy http_proxy
+
+            # Build custom ubuntu:24.04:
+            #   1. Change apt sources to http://mirrors.aliyun.com (HTTP, no SSL needed)
+            #   2. Pre-install the three egress-proxy packages so Pier's apt-get install is a no-op
+            #   3. Label it so we skip rebuild on subsequent runs
+            # noProxy in ~/.docker/config.json ensures apt goes directly to mirrors.aliyun.com
+            docker build -t ubuntu:24.04 --label egress-proxy-prebuilt=true - <<'DOCKERFILE'
+FROM ubuntu:24.04
+RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.aliyun.com|g; s|http://security.ubuntu.com|http://mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
+RUN if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        sed -i 's|http://archive.ubuntu.com|http://mirrors.aliyun.com|g; s|http://security.ubuntu.com|http://mirrors.aliyun.com|g' /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apache2-utils ca-certificates squid && rm -rf /var/lib/apt/lists/*
+DOCKERFILE
+            echo "ubuntu:24.04 customized: aliyun HTTP mirror + squid/apache2-utils/ca-certificates pre-installed"
+
+            # Verify: try apt-get install (should be instant no-op since packages are pre-installed)
+            echo "Verifying pre-installed packages..."
+            if docker run --rm ubuntu:24.04 dpkg -s squid apache2-utils ca-certificates >/dev/null 2>&1; then
+                echo "Verification passed: squid, apache2-utils, ca-certificates all installed"
+            else
+                echo "ERROR: Pre-installed packages verification failed."
+                echo "The runner may not have direct access to mirrors.aliyun.com."
+                echo "Check: docker run --rm ubuntu:24.04 apt-get update"
+                exit 1
+            fi
+        else
+            echo "ubuntu:24.04 already pre-built with egress-proxy packages, skipping"
+        fi
+    fi
 else
     echo "无需 Docker,跳过"
 fi
@@ -378,9 +494,10 @@ fi
 echo "=== 检查 MCP-Atlas agent-environment 服务 ==="
 if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
     echo "TASK_MCP_ATLAS=true,检查 MCP-Atlas agent-environment 服务..."
+    CONT_NAME="mcp-atlas-agent-env-${BUILD_NUMBER}"
 
-    # 先检查服务是否已在运行
-    HTTP_CODE=\$(curl -s --connect-timeout 5 -o /dev/null -w "%{http_code}" http://localhost:1984/enabled-servers 2>/dev/null)
+    # 先检查服务是否已在运行(检查端口,而非容器名,因为容器名每次构建不同)
+    HTTP_CODE=\$(curl -s --connect-timeout 5 -o /dev/null -w "%{http_code}" http://localhost:1984/enabled-servers 2>/dev/null) || true
     if [ "\${HTTP_CODE}" = "200" ]; then
         echo "MCP-Atlas agent-environment 服务已运行(HTTP 200),预检通过"
         # 输出已启用的 server 列表
@@ -397,11 +514,24 @@ if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
             exit 1
         fi
 
-        # 清理可能存在的旧容器
-        OLD_CONTAINER=\$(docker ps -a --filter "publish=1984" --format "{{.ID}}" 2>/dev/null || echo "")
-        if [ -n "\${OLD_CONTAINER}" ]; then
-            echo "清理旧的 MCP-Atlas 容器: \${OLD_CONTAINER}"
-            docker rm -f \${OLD_CONTAINER} 2>/dev/null || true
+        # 清理所有旧的 MCP-Atlas 容器(按名称前缀匹配,覆盖所有历史构建)
+        echo "清理旧的 MCP-Atlas 容器(前缀 mcp-atlas-agent-env*)..."
+        OLD_CONTAINERS=\$(docker ps -a --filter "name=mcp-atlas-agent-env" --format "{{.ID}} {{.Names}}" 2>/dev/null || echo "")
+        if [ -n "\${OLD_CONTAINERS}" ]; then
+            echo "发现旧容器:"
+            echo "\${OLD_CONTAINERS}"
+            OLD_IDS=\$(echo "\${OLD_CONTAINERS}" | awk '{print \$1}')
+            docker rm -f \${OLD_IDS} 2>/dev/null || true
+            echo "旧容器已清理"
+        else
+            # 兜底:按端口匹配(可能有不同名称的旧容器占用 1984)
+            OLD_IDS=\$(docker ps -a --filter "publish=1984" --format "{{.ID}}" 2>/dev/null || echo "")
+            if [ -n "\${OLD_IDS}" ]; then
+                echo "清理占用端口 1984 的旧容器: \${OLD_IDS}"
+                docker rm -f \${OLD_IDS} 2>/dev/null || true
+            else
+                echo "无旧容器需要清理"
+            fi
         fi
 
         # 拉取镜像(代理)
@@ -431,25 +561,49 @@ if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
             echo "注入 MCP server API keys: \$(echo \${DOCKER_ENV_ARGS} | tr ' ' '\n' | grep -- '--env' | wc -l) 个"
         fi
 
-        # 启动容器
-        echo "启动 MCP-Atlas agent-environment 容器..."
+        # 启动容器(限制重启次数避免无限 crash-loop 掩盖错误)
+        # UV_NO_SYNC=1: 预构建镜像已含全部依赖,跳过 uv run 的项目级 re-sync
+        # UV_OFFLINE=1: 强制 uvx 使用预装缓存(install_mcp_packages.sh 已在镜像构建时装好),不尝试访问 pypi.org
+        # npm_config_offline=true: 强制 npx 使用预装缓存,不尝试访问 npm registry
+        # HTTPS_PROXY/HTTP_PROXY: MCP server 运行时访问外部 API(wikipedia/arxiv 等)用
+        # NO_PROXY: 内网地址(10.0.0.0/8)不走代理
+        echo "启动 MCP-Atlas agent-environment 容器(名称: \${CONT_NAME})..."
         docker run -d \
-            --name mcp-atlas-agent-env \
+            --name \${CONT_NAME} \
             -p 1984:1984 \
             \${DOCKER_ENV_ARGS} \
-            --restart unless-stopped \
+            --env UV_NO_SYNC=1 \
+            --env UV_OFFLINE=1 \
+            --env npm_config_offline=true \
+            --env HTTPS_PROXY=http://100.64.1.68:1080 \
+            --env HTTP_PROXY=http://100.64.1.68:1080 \
+            --env NO_PROXY=localhost,127.0.0.1,10.0.0.0/8 \
+            --restart on-failure:3 \
             ${params.MCP_ATLAS_IMAGE} 2>&1 || {
                 echo "ERROR: 启动 MCP-Atlas 容器失败。"
-                docker logs mcp-atlas-agent-env 2>/dev/null | tail -20
+                docker logs \${CONT_NAME} 2>&1 | tail -20 || true
                 exit 1
             }
+
+        # 快速检查容器是否立即退出(crash-loop 第一轮)
+        sleep 3
+        CONT_STATUS=\$(docker inspect \${CONT_NAME} --format '{{.State.Status}}' 2>/dev/null || echo "inspect_failed")
+        if [ "\${CONT_STATUS}" = "exited" ]; then
+            echo "ERROR: 容器在启动后 3 秒内即退出。"
+            echo "退出码: \$(docker inspect \${CONT_NAME} --format '{{.State.ExitCode}}' 2>/dev/null)"
+            echo "错误信息: \$(docker inspect \${CONT_NAME} --format '{{.State.Error}}' 2>/dev/null)"
+            echo "容器日志(最后 50 行):"
+            docker logs \${CONT_NAME} 2>&1 | tail -50 || true
+            exit 1
+        fi
+        echo "容器状态: \${CONT_STATUS},开始等待服务就绪..."
 
         # 等待服务就绪(官方文档说启动需要 1+ 分钟,最长等 3 分钟)
         echo "等待 MCP-Atlas agent-environment 启动(最长 180 秒)..."
         READY=false
         for i in \$(seq 1 36); do
             sleep 5
-            HTTP_CODE=\$(curl -s --connect-timeout 3 -o /dev/null -w "%{http_code}" http://localhost:1984/enabled-servers 2>/dev/null)
+            HTTP_CODE=\$(curl -s --connect-timeout 3 -o /dev/null -w "%{http_code}" http://localhost:1984/enabled-servers 2>/dev/null) || true
             if [ "\${HTTP_CODE}" = "200" ]; then
                 READY=true
                 echo "MCP-Atlas agent-environment 启动完成(等待 \$((i * 5)) 秒)"
@@ -460,10 +614,21 @@ if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
 
         if [ "\${READY}" != "true" ]; then
             echo "ERROR: MCP-Atlas agent-environment 在 180 秒内未就绪。"
-            echo "容器日志(最后 30 行):"
-            docker logs mcp-atlas-agent-env 2>/dev/null | tail -30
-            echo "---"
-            echo "请检查容器状态: docker logs mcp-atlas-agent-env"
+            echo ""
+            echo "=== 容器状态 ==="
+            docker ps -a --filter "name=mcp-atlas-agent-env" --format "table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || true
+            echo ""
+            echo "=== 容器详细信息 ==="
+            echo "Status:    \$(docker inspect \${CONT_NAME} --format '{{.State.Status}}' 2>/dev/null || echo 'N/A')"
+            echo "ExitCode:  \$(docker inspect \${CONT_NAME} --format '{{.State.ExitCode}}' 2>/dev/null || echo 'N/A')"
+            echo "RestartCount: \$(docker inspect \${CONT_NAME} --format '{{.RestartCount}}' 2>/dev/null || echo 'N/A')"
+            echo "Error:     \$(docker inspect \${CONT_NAME} --format '{{.State.Error}}' 2>/dev/null || echo 'N/A')"
+            echo ""
+            echo "=== 容器日志(最后 50 行) ==="
+            docker logs \${CONT_NAME} 2>&1 | tail -50 || true
+            echo "=== 日志结束 ==="
+            echo ""
+            echo "请检查容器状态: docker logs \${CONT_NAME}"
             exit 1
         fi
 
@@ -473,7 +638,7 @@ if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
         echo "预检通过"
     else
         echo "MCP-Atlas agent-environment 服务不可达(HTTP \${HTTP_CODE}),且 MCP_ATLAS_AUTO_DEPLOY=false。"
-        echo "请手动部署: docker pull ${params.MCP_ATLAS_IMAGE} && docker run -d -p 1984:1984 ${params.MCP_ATLAS_IMAGE}"
+        echo "请手动部署: docker pull ${params.MCP_ATLAS_IMAGE} && docker run -d -p 1984:1984 --env UV_NO_SYNC=1 --env UV_OFFLINE=1 --env npm_config_offline=true ${params.MCP_ATLAS_IMAGE}"
         echo "或设置 MCP_ATLAS_AUTO_DEPLOY=true 让 Jenkins 自动部署。"
         echo "mcp_atlas 任务将继续保留在任务列表中,但预期会失败。"
     fi
