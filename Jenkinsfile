@@ -411,8 +411,7 @@ if [ "\${NEED_DOCKER}" = "true" ]; then
     fi
 
     # 配置 Docker 构建代理(Pier 的 docker build 需要通过代理访问 Docker Hub/pypi 等)
-    # 关键:在 noProxy 中加入 mirrors.aliyun.com — 代理无法处理 apt 流量(HTTP 502 / HTTPS 超时),
-    # 但 runner 在中国,可直接访问阿里云镜像站(无需代理)。这样 docker build 中的 apt-get 会直连 mirrors.aliyun.com。
+    # ~/.docker/config.json 的 proxies 配置会自动注入 HTTP_PROXY/HTTPS_PROXY 到 docker build 和 docker run
     echo "=== 配置 Docker 构建代理 ==="
     mkdir -p ~/.docker
     python3 -c "
@@ -424,27 +423,27 @@ if os.path.exists(p):
         c = json.load(open(p))
     except Exception:
         c = {}
-c['proxies'] = {'default': {'httpProxy': 'http://100.64.1.68:1080', 'httpsProxy': 'http://100.64.1.68:1080', 'noProxy': 'localhost,127.0.0.1,10.0.0.0/8,mirrors.aliyun.com'}}
+c['proxies'] = {'default': {'httpProxy': 'http://100.64.1.68:1080', 'httpsProxy': 'http://100.64.1.68:1080', 'noProxy': 'localhost,127.0.0.1,10.0.0.0/8'}}
 with open(p, 'w') as f:
     json.dump(c, f, indent=2)
-print('Docker 构建代理已配置: http://100.64.1.68:1080 (noProxy: localhost,127.0.0.1,10.0.0.0/8,mirrors.aliyun.com)')
+print('Docker 构建代理已配置: http://100.64.1.68:1080 (noProxy: localhost,127.0.0.1,10.0.0.0/8)')
 "
 
-    # === Pre-build ubuntu:24.04 with aliyun mirror + pre-installed egress-proxy packages ===
+    # === Pre-build ubuntu:24.04 with host apt mirror + pre-installed egress-proxy packages ===
     # Pier 的 egress-proxy Dockerfile 生成时会:
     #   FROM ubuntu:24.04
     #   RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apache2-utils ca-certificates squid
     # 问题:
-    #   1) 默认 ubuntu:24.04 用 HTTP 到 archive.ubuntu.com → 代理返回 502
-    #   2) 改成 HTTPS 到 mirrors.aliyun.com → base 镜像无 ca-certificates,SSL 握手失败
-    #   3) 代理对 apt 流量(HTTP/HTTPS)均不可靠
-    # 修复:
-    #   - noProxy 加入 mirrors.aliyun.com → docker build 中 apt 直连阿里云(不走代理)
-    #   - apt 源改成 http://mirrors.aliyun.com(HTTP,不需要 ca-certificates)
-    #   - 预装 squid/apache2-utils/ca-certificates → Pier 的 apt-get install 变成 no-op
-    #   - 用 label "egress-proxy-prebuilt" 标记已预装的镜像,避免重复构建
+    #   1) 默认 ubuntu:24.04 用 HTTP 到 archive.ubuntu.com → 代理返回 502 Bad Gateway
+    #   2) 改 HTTPS 到 mirrors.aliyun.com → base 镜像无 ca-certificates,SSL 握手失败
+    #   3) 直连 mirrors.aliyun.com → runner 网络不通(Connection failed)
+    #   4) 代理对 apt 流量(HTTP/HTTPS)均不可靠
+    # 修复:检测宿主机自己的 apt mirror(宿主机 apt 能正常工作),用同一个 mirror 替换
+    #   ubuntu:24.04 的 apt 源,然后在 Docker build 中预装 squid/apache2-utils/ca-certificates。
+    #   宿主机(Ubuntu 22.04)和容器(Ubuntu 24.04)的 apt mirror 如果是同一个内网镜像站,
+    #   通常同时支持 jammy 和 noble 的包,所以容器内 apt-get update 可以直接访问该 mirror。
     if [ "\${NEED_DEEP_SWE}" = "true" ]; then
-        echo "=== Pre-building ubuntu:24.04 with aliyun mirror + egress-proxy packages ==="
+        echo "=== Pre-building ubuntu:24.04 with host apt mirror + egress-proxy packages ==="
         NEEDS_REBUILD=false
         if ! docker image inspect ubuntu:24.04 >/dev/null 2>&1; then
             NEEDS_REBUILD=true
@@ -452,35 +451,57 @@ print('Docker 构建代理已配置: http://100.64.1.68:1080 (noProxy: localhost
             NEEDS_REBUILD=true
         fi
         if [ "\${NEEDS_REBUILD}" = "true" ]; then
+            # 检测宿主机 apt mirror
+            HOST_MIRROR=""
+            if [ -f /etc/apt/sources.list ]; then
+                HOST_MIRROR=\$(grep -E '^deb ' /etc/apt/sources.list | head -1 | awk '{print \$2}' | sed 's|/ubuntu.*||' | sed 's|/$||')
+            fi
+            if [ -z "\${HOST_MIRROR}" ] && [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+                HOST_MIRROR=\$(awk -F': ' '/^URIs:/ {print \$2}' /etc/apt/sources.list.d/ubuntu.sources | head -1 | sed 's|/ubuntu.*||' | sed 's|/$||')
+            fi
+            echo "宿主机 apt mirror: \${HOST_MIRROR:-<未检测到>}"
+
             # Pull base image (Docker Hub via proxy — HTTPS works for Docker pulls)
             export https_proxy=http://100.64.1.68:1080
             export http_proxy=http://100.64.1.68:1080
             docker pull ubuntu:24.04
             unset https_proxy http_proxy
 
-            # Build custom ubuntu:24.04:
-            #   1. Change apt sources to http://mirrors.aliyun.com (HTTP, no SSL needed)
-            #   2. Pre-install the three egress-proxy packages so Pier's apt-get install is a no-op
-            #   3. Label it so we skip rebuild on subsequent runs
-            # noProxy in ~/.docker/config.json ensures apt goes directly to mirrors.aliyun.com
-            docker build -t ubuntu:24.04 --label egress-proxy-prebuilt=true - <<'DOCKERFILE'
+            if [ -n "\${HOST_MIRROR}" ]; then
+                # 用宿主机的 apt mirror 替换 ubuntu:24.04 的 apt 源
+                # 宿主机网络可直接访问该 mirror(内网镜像),Docker build 用 --network=host 共享宿主机网络
+                echo "使用宿主机 mirror 构建: \${HOST_MIRROR}"
+                docker build --network=host \
+                    --build-arg http_proxy= --build-arg https_proxy= --build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg no_proxy=* \
+                    -t ubuntu:24.04 --label egress-proxy-prebuilt=true - <<DOCKERFILE
 FROM ubuntu:24.04
-RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.aliyun.com|g; s|http://security.ubuntu.com|http://mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
-RUN if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
-        sed -i 's|http://archive.ubuntu.com|http://mirrors.aliyun.com|g; s|http://security.ubuntu.com|http://mirrors.aliyun.com|g' /etc/apt/sources.list.d/ubuntu.sources; \
-    fi
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apache2-utils ca-certificates squid && rm -rf /var/lib/apt/lists/*
+RUN echo "deb \${HOST_MIRROR}/ubuntu noble main restricted universe multiverse" > /etc/apt/sources.list && \
+    echo "deb \${HOST_MIRROR}/ubuntu noble-updates main restricted universe multiverse" >> /etc/apt/sources.list
+RUN rm -f /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+RUN http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apache2-utils ca-certificates squid && rm -rf /var/lib/apt/lists/*
 DOCKERFILE
-            echo "ubuntu:24.04 customized: aliyun HTTP mirror + squid/apache2-utils/ca-certificates pre-installed"
+            else
+                echo "WARN: 未检测到宿主机 apt mirror,尝试使用 --network=host + 默认源"
+                # --network=host 共享宿主机网络,可能可以访问宿主机能访问的 apt mirror
+                docker build --network=host \
+                    --build-arg http_proxy= --build-arg https_proxy= --build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg no_proxy=* \
+                    -t ubuntu:24.04 --label egress-proxy-prebuilt=true - <<'DOCKERFILE'
+FROM ubuntu:24.04
+RUN http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apache2-utils ca-certificates squid && rm -rf /var/lib/apt/lists/*
+DOCKERFILE
+            fi
 
-            # Verify: try apt-get install (should be instant no-op since packages are pre-installed)
+            echo "ubuntu:24.04 customized: host apt mirror + squid/apache2-utils/ca-certificates pre-installed"
+
+            # Verify packages are installed
             echo "Verifying pre-installed packages..."
             if docker run --rm ubuntu:24.04 dpkg -s squid apache2-utils ca-certificates >/dev/null 2>&1; then
                 echo "Verification passed: squid, apache2-utils, ca-certificates all installed"
             else
                 echo "ERROR: Pre-installed packages verification failed."
-                echo "The runner may not have direct access to mirrors.aliyun.com."
-                echo "Check: docker run --rm ubuntu:24.04 apt-get update"
+                echo "The host apt mirror may not support Ubuntu 24.04 (noble) packages."
+                echo "Host mirror: \${HOST_MIRROR:-<none>}"
+                echo "Manual fix: build a custom ubuntu:24.04 image with squid pre-installed."
                 exit 1
             fi
         else
