@@ -50,8 +50,8 @@ def parse_args():
     parser.add_argument("--examples", default="", help="样本数限制(空 = 不限制)")
     parser.add_argument(
         "--eval-batch-size",
-        default="1",
-        help="并发批大小(对应 evalscope --eval-batch-size,默认 1)",
+        default="8",
+        help="并发批大小(对应 evalscope --eval-batch-size,默认 8)",
     )
     parser.add_argument(
         "--task-temperature-json",

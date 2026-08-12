@@ -19,7 +19,7 @@
 # 其余 evalscope 参数通过环境变量传入(需求 #7):
 #   API_KEY          OpenAI 风格 api key,默认 EMPTY
 #   EVAL_TYPE        评估类型,默认 openai_api
-#   EVAL_BATCH_SIZE  并发批大小,默认 1
+#   EVAL_BATCH_SIZE  并发批大小,默认 8
 #   TOP_P            nucleus 概率,默认 0.95
 #   TOP_K            top-k 采样,默认 20
 #   ENABLE_THINKING  true / false,默认 false
@@ -66,7 +66,7 @@ API_KEY=${API_KEY:-EMPTY}
 EVAL_TYPE=${EVAL_TYPE:-openai_api}
 OUTPUT_BASE=${OUTPUT_BASE:-./output}
 EXAMPLES=${EXAMPLES:-}
-EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-32}
+EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-8}
 TOP_P=${TOP_P:-0.95}
 TOP_K=${TOP_K:-20}
 MAX_TOKENS=${MAX_TOKENS:-32768}

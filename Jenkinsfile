@@ -34,7 +34,7 @@ pipeline {
 
         string(name: 'EXAMPLES',        defaultValue: '',      description: '样本数限制(空 = 不限制;传给 evalscope --limit。int=数量,float=比例)')
         string(name: 'REPEATS',         defaultValue: '',      description: '重复次数(k-metrics,传给 evalscope --repeats。空 = 默认 1)')
-        string(name: 'EVAL_BATCH_SIZE', defaultValue: '32',    description: '并发批大小(对应 evalscope --eval-batch-size,默认 32)')
+        string(name: 'EVAL_BATCH_SIZE', defaultValue: '8',     description: '并发批大小(对应 evalscope --eval-batch-size,默认 8)')
         string(name: 'TEMPERATURE_FALLBACK', defaultValue: '0.0', description: '采样温度兜底值(仅当 TASK_TEMPERATURE_JSON 未命中某任务时使用;默认 0.0 = greedy)')
         string(name: 'MAX_TOKENS',      defaultValue: '32768', description: '生成最大 token 数(默认 32768;清空 = 不指定)')
         string(name: 'TOP_P',           defaultValue: '0.95',  description: 'nucleus top_p(默认 0.95)')
@@ -57,7 +57,7 @@ pipeline {
         // MCP-Atlas agent-environment 自动部署
         string(name: 'MCP_ATLAS_IMAGE', defaultValue: 'ghcr.io/scaleapi/mcp-atlas:1.2.7', description: 'MCP-Atlas agent-environment Docker 镜像(Scale AI 官方预构建)。当 TASK_MCP_ATLAS=true 且服务未运行时,Jenkins 自动拉取并启动此镜像,监听 localhost:1984。20 个无需 API key 的 MCP server 默认启用')
         choice(name: 'MCP_ATLAS_AUTO_DEPLOY', choices: ['true', 'false'], description: '自动部署 MCP-Atlas agent-environment(默认 true)。服务未运行时自动 pull + docker run;false 则仅检查不自动启动,需手动准备')
-        string(name: 'MCP_ATLAS_API_KEYS', defaultValue: '', description: '可选:MCP server API keys 环境变量,逗号分隔 KEY=VALUE 对。例: BRAVE_API_KEY=xxx,GITHUB_TOKEN=yyy。留空则仅启用 20 个无需 key 的 server(约 40-50 个任务可评测)')
+        string(name: 'MCP_ATLAS_API_KEYS', defaultValue: 'MONGODB_URI=mongodb://admin:abc123@host.docker.internal:27017/?authSource=admin,GITHUB_TOKEN=ghp_REPLACE_WITH_YOUR_TOKEN', description: 'MCP server API keys,逗号分隔 KEY=VALUE 对。默认值含:1) MongoDB(宿主机已部署,使用 host.docker.internal:27017,容器内经 --add-host 映射到宿主机;authSource=admin);2) GitHub PAT 占位符(替换 ghp_REPLACE_WITH_YOUR_TOKEN 为真实 token 即可启用 github server)。格式: KEY1=VALUE1,KEY2=VALUE2。其他可选 key:BRAVE_API_KEY=xxx — Brave Search(https://brave.com/search/api/)。删除某项则对应 server 不启用')
     }
     environment {
         SSH_CREDENTIALS = 'HOST_SSH_KEY'
@@ -410,6 +410,64 @@ if [ "\${NEED_DOCKER}" = "true" ]; then
         fi
     fi
 
+    # === 检测宿主机 apt mirror(用于 egress-proxy 预构建 + noProxy 配置)===
+    # 宿主机 apt 能正常工作的 mirror,Docker 容器经默认 bridge NAT 也能访问。
+    # 关键:必须将 mirror hostname 加入 noProxy — Docker 的 noProxy CIDR(如 10.0.0.0/8)
+    # 只对 IP-address 目标生效,不对 hostname 生效。若不加入,Pier 的 egress-proxy 构建中
+    # apt-get update 会经代理(100.64.1.68:1080)访问内网 mirror,代理返回 502 Bad Gateway。
+    HOST_MIRROR=""
+    if [ -f /etc/apt/sources.list ]; then
+        HOST_MIRROR=\$(grep -E '^deb ' /etc/apt/sources.list | head -1 | awk '{print \$2}' | sed 's|/ubuntu.*||' | sed 's|/\$||')
+    fi
+    if [ -z "\${HOST_MIRROR}" ] && [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+        HOST_MIRROR=\$(awk -F': ' '/^URIs:/ {print \$2}' /etc/apt/sources.list.d/ubuntu.sources | head -1 | sed 's|/ubuntu.*||' | sed 's|/\$||')
+    fi
+    echo "宿主机 apt mirror: \${HOST_MIRROR:-<未检测到>}"
+    # 从 mirror URL 提取 hostname(例 http://nexus.hd-04.zetyun.cn:8081/repository → nexus.hd-04.zetyun.cn)
+    MIRROR_HOST=""
+    if [ -n "\${HOST_MIRROR}" ]; then
+        MIRROR_HOST=\$(echo "\${HOST_MIRROR}" | sed -E 's|^[a-zA-Z]+://||; s|:[0-9]+.*||; s|/.*||')
+    fi
+    echo "Mirror hostname for noProxy: \${MIRROR_HOST:-<none>}"
+    # 构建 noProxy 列表:基础 + mirror hostname(让 egress-proxy 构建中的 apt 绕过代理直连 mirror)
+    NO_PROXY_LIST="localhost,127.0.0.1,10.0.0.0/8"
+    if [ -n "\${MIRROR_HOST}" ]; then
+        NO_PROXY_LIST="\${NO_PROXY_LIST},\${MIRROR_HOST}"
+    fi
+
+    # === 调查 Debian apt 主机连通性(swe-bench agent 容器 apt-get 失败排查)===
+    # Pier 的 mini_swe_agent.install_spec() 硬编码了 apt-get update && apt-get install -y curl build-essential git。
+    # swe-bench 容器(Debian bookworm)apt 源指向 http://deb.debian.org → 经代理 502 Bad Gateway。
+    # 调查两种路径: 1) 直连(无代理)HTTP; 2) 经代理 HTTPS(CONNECT 隧道,与 Docker pull 同机制)。
+    # 结果用于决定: 直连可用→加 noProxy; 否则→patch Pier 切换 apt HTTP→HTTPS。
+    DEBIAN_DIRECT=false
+    DEBIAN_HTTPS_PROXY=false
+    if [ "\${NEED_DEEP_SWE}" = "true" ]; then
+        echo "=== 调查 Debian apt 主机连通性 ==="
+        # 测试直连(无代理)HTTP 到 deb.debian.org
+        if curl -sSI --max-time 10 --noproxy '*' http://deb.debian.org/debian/dists/bookworm/Release 2>/dev/null | head -1 | grep -q '200'; then
+            DEBIAN_DIRECT=true
+            echo "  deb.debian.org direct (HTTP, no proxy): OK"
+        else
+            echo "  deb.debian.org direct (HTTP, no proxy): FAIL"
+        fi
+        if [ "\${DEBIAN_DIRECT}" = "true" ]; then
+            NO_PROXY_LIST="\${NO_PROXY_LIST},deb.debian.org,security.debian.org"
+            echo "  -> adding deb.debian.org/security.debian.org to noProxy (direct reachable)"
+        else
+            # 测试经代理 HTTPS 到 deb.debian.org
+            if curl -sSI --max-time 15 --proxy http://100.64.1.68:1080 https://deb.debian.org/debian/dists/bookworm/Release 2>/dev/null | head -1 | grep -q '200'; then
+                DEBIAN_HTTPS_PROXY=true
+                echo "  deb.debian.org via proxy HTTPS: OK"
+                echo "  -> will patch Pier to switch apt HTTP->HTTPS (see below)"
+            else
+                echo "  deb.debian.org via proxy HTTPS: FAIL"
+                echo "  [WARN] deb.debian.org unreachable (both direct and HTTPS-via-proxy)!"
+                echo "  -> will still attempt Pier patch (best-effort), deep_swe apt-get may fail"
+            fi
+        fi
+    fi
+
     # 配置 Docker 构建代理(Pier 的 docker build 需要通过代理访问 Docker Hub/pypi 等)
     # ~/.docker/config.json 的 proxies 配置会自动注入 HTTP_PROXY/HTTPS_PROXY 到 docker build 和 docker run
     echo "=== 配置 Docker 构建代理 ==="
@@ -423,10 +481,10 @@ if os.path.exists(p):
         c = json.load(open(p))
     except Exception:
         c = {}
-c['proxies'] = {'default': {'httpProxy': 'http://100.64.1.68:1080', 'httpsProxy': 'http://100.64.1.68:1080', 'noProxy': 'localhost,127.0.0.1,10.0.0.0/8'}}
+c['proxies'] = {'default': {'httpProxy': 'http://100.64.1.68:1080', 'httpsProxy': 'http://100.64.1.68:1080', 'noProxy': '\${NO_PROXY_LIST}'}}
 with open(p, 'w') as f:
     json.dump(c, f, indent=2)
-print('Docker 构建代理已配置: http://100.64.1.68:1080 (noProxy: localhost,127.0.0.1,10.0.0.0/8)')
+print('Docker 构建代理已配置: http://100.64.1.68:1080 (noProxy: \${NO_PROXY_LIST})')
 "
 
     # === Pre-build ubuntu:24.04 with host apt mirror + pre-installed egress-proxy packages ===
@@ -451,15 +509,7 @@ print('Docker 构建代理已配置: http://100.64.1.68:1080 (noProxy: localhost
             NEEDS_REBUILD=true
         fi
         if [ "\${NEEDS_REBUILD}" = "true" ]; then
-            # 检测宿主机 apt mirror
-            HOST_MIRROR=""
-            if [ -f /etc/apt/sources.list ]; then
-                HOST_MIRROR=\$(grep -E '^deb ' /etc/apt/sources.list | head -1 | awk '{print \$2}' | sed 's|/ubuntu.*||' | sed 's|/\$||')
-            fi
-            if [ -z "\${HOST_MIRROR}" ] && [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-                HOST_MIRROR=\$(awk -F': ' '/^URIs:/ {print \$2}' /etc/apt/sources.list.d/ubuntu.sources | head -1 | sed 's|/ubuntu.*||' | sed 's|/\$||')
-            fi
-            echo "宿主机 apt mirror: \${HOST_MIRROR:-<未检测到>}"
+            # HOST_MIRROR 已在前面检测(同时用于 noProxy 配置)
 
             # Pull base image (Docker Hub via proxy — HTTPS works for Docker pulls)
             export https_proxy=http://100.64.1.68:1080
@@ -506,6 +556,26 @@ DOCKERFILE
             fi
         else
             echo "ubuntu:24.04 already pre-built with egress-proxy packages, skipping"
+        fi
+    fi
+
+    # === Patch Pier mini_swe_agent: apt sources HTTP→HTTPS ===
+    # 当 deb.debian.org 直连不可用时(需经代理), patch Pier 在 apt-get update 前
+    # 注入 sed 将所有 Debian apt 源从 HTTP 切换为 HTTPS。
+    # HTTPS 经代理 CONNECT 隧道(与 Docker pull 同机制)可正常工作。
+    # 脚本幂等: 已 patch 则跳过。
+    if [ "\${NEED_DEEP_SWE}" = "true" ]; then
+        if [ "\${DEBIAN_DIRECT}" = "true" ]; then
+            echo "Debian apt 直连可用(noProxy 已含 deb.debian.org),跳过 Pier apt patch"
+        else
+            echo "=== Patching Pier mini_swe_agent apt sources (HTTP->HTTPS) ==="
+            source ${params.WORK_DIR}/.venv/bin/activate
+            python3 ${params.WORK_DIR}/scripts/patch_pier_apt.py 2>&1
+            PATCH_EXIT=\$?
+            deactivate
+            if [ "\${PATCH_EXIT}" -ne 0 ]; then
+                echo "WARN: Pier apt patch failed(exit \${PATCH_EXIT}), deep_swe apt-get 可能失败"
+            fi
         fi
     fi
 else
@@ -587,10 +657,12 @@ if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
         # UV_OFFLINE=1: 强制 uvx 使用预装缓存(install_mcp_packages.sh 已在镜像构建时装好),不尝试访问 pypi.org
         # npm_config_offline=true: 强制 npx 使用预装缓存,不尝试访问 npm registry
         # HTTPS_PROXY/HTTP_PROXY: MCP server 运行时访问外部 API(wikipedia/arxiv 等)用
-        # NO_PROXY: 内网地址(10.0.0.0/8)不走代理
+        # NO_PROXY: 内网地址(10.0.0.0/8)及 host.docker.internal(宿主机 MongoDB)不走代理
+        # --add-host host.docker.internal:host-gateway: 让容器能通过 host.docker.internal 访问宿主机服务(如 MongoDB)
         echo "启动 MCP-Atlas agent-environment 容器(名称: \${CONT_NAME})..."
         docker run -d \
             --name \${CONT_NAME} \
+            --add-host=host.docker.internal:host-gateway \
             -p 1984:1984 \
             \${DOCKER_ENV_ARGS} \
             --env UV_NO_SYNC=1 \
@@ -598,7 +670,7 @@ if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
             --env npm_config_offline=true \
             --env HTTPS_PROXY=http://100.64.1.68:1080 \
             --env HTTP_PROXY=http://100.64.1.68:1080 \
-            --env NO_PROXY=localhost,127.0.0.1,10.0.0.0/8 \
+            --env NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,host.docker.internal \
             --restart on-failure:3 \
             ${params.MCP_ATLAS_IMAGE} 2>&1 || {
                 echo "ERROR: 启动 MCP-Atlas 容器失败。"
