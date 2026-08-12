@@ -178,3 +178,7 @@ ragas_mini_testset_score.json
 # Docker build artifacts (pre-cloned agent sources)
 evalscope/agent/external/dockerfiles/hermes-agent-src/
 evalscope/agent/external/dockerfiles/hermes-install.sh
+
+# Pier source reference (extracted from installed wheel for debugging)
+.pier_src/
+.pier_dl/
