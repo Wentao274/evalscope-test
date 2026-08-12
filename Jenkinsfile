@@ -264,26 +264,21 @@ if [ ! -d "${params.WORK_DIR}/.venv" ]; then
         fi
     fi
     EXTRAS_OK=false
-    for INDEX_URL in "https://mirrors.aliyun.com/pypi/simple/" "https://pypi.tuna.tsinghua.edu.cn/simple/" "https://pypi.org/simple/"; do
-        echo "尝试从 \${INDEX_URL} 安装 evalscope(extras: \${EXTRAS:-none})..."
-        if [ -n "\${EXTRAS}" ]; then
-            if UV_INDEX_URL="\${INDEX_URL}" uv pip install -e ".[\${EXTRAS}]" 2>&1; then
-                EXTRAS_OK=true
-                break
-            fi
-        else
-            if UV_INDEX_URL="\${INDEX_URL}" uv pip install -e . 2>&1; then
-                EXTRAS_OK=true
-                break
-            fi
+    echo "从官方源 https://pypi.org/simple/ 安装 evalscope(extras: \${EXTRAS:-none})..."
+    if [ -n "\${EXTRAS}" ]; then
+        if UV_INDEX_URL="https://pypi.org/simple/" uv pip install -e ".[\${EXTRAS}]" 2>&1; then
+            EXTRAS_OK=true
         fi
-        echo "从 \${INDEX_URL} 安装失败,尝试下一个源..."
-    done
+    else
+        if UV_INDEX_URL="https://pypi.org/simple/" uv pip install -e . 2>&1; then
+            EXTRAS_OK=true
+        fi
+    fi
     unset https_proxy
     unset http_proxy
     deactivate
     if [ "\${EXTRAS_OK}" != "true" ]; then
-        echo "ERROR: evalscope 安装失败,所有 PyPI 源均不可用。"
+        echo "ERROR: evalscope 安装失败(官方源 pypi.org 不可用)。"
         echo "请检查网络/代理配置。"
         exit 1
     fi
@@ -301,16 +296,14 @@ else
             export https_proxy=http://100.64.1.68:1080
             export http_proxy=http://100.64.1.68:1080
             SANDBOX_OK=false
-            for INDEX_URL in "https://mirrors.aliyun.com/pypi/simple/" "https://pypi.tuna.tsinghua.edu.cn/simple/" "https://pypi.org/simple/"; do
-                if UV_INDEX_URL="\${INDEX_URL}" uv pip install -r requirements/sandbox.txt 2>&1; then
-                    SANDBOX_OK=true
-                    break
-                fi
-            done
+            echo "从官方源 https://pypi.org/simple/ 补装 sandbox 依赖..."
+            if UV_INDEX_URL="https://pypi.org/simple/" uv pip install -r requirements/sandbox.txt 2>&1; then
+                SANDBOX_OK=true
+            fi
             unset https_proxy
             unset http_proxy
             if [ "\${SANDBOX_OK}" != "true" ]; then
-                echo "ERROR: sandbox 依赖补装失败,所有 PyPI 源均不可用。"
+                echo "ERROR: sandbox 依赖补装失败(官方源 pypi.org 不可用)。"
                 exit 1
             fi
             echo "sandbox 依赖补装完成"
@@ -326,16 +319,14 @@ else
             export https_proxy=http://100.64.1.68:1080
             export http_proxy=http://100.64.1.68:1080
             DEEP_SWE_OK=false
-            for INDEX_URL in "https://mirrors.aliyun.com/pypi/simple/" "https://pypi.tuna.tsinghua.edu.cn/simple/" "https://pypi.org/simple/"; do
-                if UV_INDEX_URL="\${INDEX_URL}" uv pip install -r evalscope/benchmarks/deep_swe/requirements.txt 2>&1; then
-                    DEEP_SWE_OK=true
-                    break
-                fi
-            done
+            echo "从官方源 https://pypi.org/simple/ 补装 deep_swe 依赖..."
+            if UV_INDEX_URL="https://pypi.org/simple/" uv pip install -r evalscope/benchmarks/deep_swe/requirements.txt 2>&1; then
+                DEEP_SWE_OK=true
+            fi
             unset https_proxy
             unset http_proxy
             if [ "\${DEEP_SWE_OK}" != "true" ]; then
-                echo "ERROR: deep_swe 依赖补装失败,所有 PyPI 源均不可用。"
+                echo "ERROR: deep_swe 依赖补装失败(官方源 pypi.org 不可用)。"
                 exit 1
             fi
             if ! python3 -c "import pier" 2>/dev/null; then
@@ -458,15 +449,15 @@ print('Docker 构建代理已配置: http://100.64.1.68:1080 (noProxy: \${NO_PRO
     # Pier 的 egress-proxy Dockerfile 生成时会:
     #   FROM ubuntu:24.04
     #   RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apache2-utils ca-certificates squid
-    # 问题:
+    # 问题(官方源 + 代理对 apt 不可用):
     #   1) 默认 ubuntu:24.04 用 HTTP 到 archive.ubuntu.com → 代理返回 502 Bad Gateway
-    #   2) 改 HTTPS 到 mirrors.aliyun.com → base 镜像无 ca-certificates,SSL 握手失败
-    #   3) 直连 mirrors.aliyun.com → runner 网络不通(Connection failed)
-    #   4) 代理对 apt 流量(HTTP/HTTPS)均不可靠
-    # 修复:检测宿主机自己的 apt mirror(宿主机 apt 能正常工作),用同一个 mirror 替换
-    #   ubuntu:24.04 的 apt 源,然后在 Docker build 中预装 squid/apache2-utils/ca-certificates。
-    #   宿主机(Ubuntu 22.04)和容器(Ubuntu 24.04)的 apt mirror 如果是同一个内网镜像站,
-    #   通常同时支持 jammy 和 noble 的包,所以容器内 apt-get update 可以直接访问该 mirror。
+    #   2) 改 HTTPS → base 镜像无 ca-certificates,SSL 握手失败
+    #   3) 代理对 apt 流量(HTTP/HTTPS)均不可靠
+    # 修复:检测宿主机自己的 apt mirror(内网 Nexus,直连无需代理),用同一个 mirror
+    #   替换 ubuntu:24.04 的 apt 源,然后在 Docker build(--network=host)中预装
+    #   squid/apache2-utils/ca-certificates。
+    # 注意:这是唯一使用内网 mirror 而非官方源+代理的环节,因为代理对 apt 不可靠。
+    #   所有 PyPI 依赖(pip install)均走官方源 pypi.org + 代理。
     if [ "\${NEED_DEEP_SWE}" = "true" ]; then
         echo "=== Pre-building ubuntu:24.04 with host apt mirror + egress-proxy packages ==="
         NEEDS_REBUILD=false
@@ -526,14 +517,16 @@ DOCKERFILE
         fi
     fi
 
-    # === Patch Pier mini_swe_agent for proxy compatibility ===
-    # Patch two issues:
-    #   1. apt step: inject sed to switch Debian apt sources HTTP->HTTPS + add python3-pip
-    #   2. agent step: replace uv/curl install with pip install (aliyun mirror)
-    #      astral.sh (uv CDN) is RST'd by enterprise proxy; aliyun PyPI mirror works.
-    # Script is idempotent: already-patched modules are skipped.
+    # === Patch Pier for proxy compatibility ===
+    # Patch three issues:
+    #   1. apt step: inject sed to switch Debian apt sources HTTP->HTTPS
+    #   2. agent step: replace uv/curl install with pip install (official PyPI)
+    #      astral.sh (uv CDN) is RST'd by enterprise proxy; official PyPI works through proxy CONNECT tunnel.
+    #   3. docker-compose-build.yaml: add `network: host` under `build:` so that
+    #      `docker compose build` uses host network (proxy unreachable from bridge).
+    # Script is idempotent: already-patched files are skipped.
     if [ "\${NEED_DEEP_SWE}" = "true" ]; then
-        echo "=== Patching Pier mini_swe_agent for proxy compatibility ==="
+        echo "=== Patching Pier for proxy compatibility (agent + compose) ==="
         source ${params.WORK_DIR}/.venv/bin/activate
         python3 ${params.WORK_DIR}/scripts/patch_pier_apt.py 2>&1
         PATCH_EXIT=\$?
