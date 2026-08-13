@@ -23,7 +23,7 @@
 #   TOP_P            nucleus 概率,默认 0.95
 #   TOP_K            top-k 采样,默认 20
 #   ENABLE_THINKING  true / false,默认 false
-#   TEMPERATURE_FALLBACK  按任务温度未配置时的兜底值,默认 0.0
+#   TEMPERATURE_FALLBACK  按任务温度未配置时的兜底值,默认 1.0
 #   REPEATS          重复次数(k-metrics),空 = 不指定
 #   TASK_REPEATS_JSON     可选 JSON,形如 {"humaneval":5},按任务覆盖 REPEATS
 #   DATASETS         逗号分隔的多任务列表(本次运行的全部任务)
@@ -79,7 +79,7 @@ TASK_MAX_TOKENS_JSON=${TASK_MAX_TOKENS_JSON:-}
 TASK_TEMPERATURE_JSON=${TASK_TEMPERATURE_JSON:-}
 TASK_REPEATS_JSON=${TASK_REPEATS_JSON:-}
 TASK_JUDGE_STRATEGY_JSON=${TASK_JUDGE_STRATEGY_JSON:-}
-TEMPERATURE_FALLBACK=${TEMPERATURE_FALLBACK:-0.0}
+TEMPERATURE_FALLBACK=${TEMPERATURE_FALLBACK:-1.0}
 JUDGE_MODEL_ID=${JUDGE_MODEL_ID:-}
 JUDGE_API_URL=${JUDGE_API_URL:-}
 JUDGE_API_KEY=${JUDGE_API_KEY:-EMPTY}
@@ -116,10 +116,10 @@ print(v if v is not None else '')
 
 # ---------- 按任务指定采样温度 ----------
 # 与 _resolve_max_tokens 同构:命中 TASK_TEMPERATURE_JSON 即返回对应值,
-# 否则返回 TEMPERATURE_FALLBACK(默认 0.0 = greedy,保证精度评测可复现)。
+# 否则返回 TEMPERATURE_FALLBACK(默认 1.0,适配 thinking 模式推理模型)。
 _resolve_temperature() {
     local dataset="$1"
-    local fallback="${TEMPERATURE_FALLBACK:-0.0}"
+    local fallback="${TEMPERATURE_FALLBACK:-1.0}"
     if [ -n "$TASK_TEMPERATURE_JSON" ]; then
         local per_task
         per_task=$(python3 -c "

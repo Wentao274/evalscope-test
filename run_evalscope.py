@@ -45,7 +45,7 @@ def parse_args():
     parser.add_argument(
         "--tasks",
         default="mmlu_pro",
-        help="任务列表,逗号分隔(默认 mmlu_pro)。可选: mmlu_pro, gpqa_diamond",
+        help="任务列表,逗号分隔(默认 mmlu_pro)。可选: mmlu_pro, aime26, gpqa_diamond, ceval, cmmlu, math_500, hellaswag, humaneval, humaneval_plus, hmmt25, hmmt26, imo_answerbench, mcp_atlas, deep_swe",
     )
     parser.add_argument("--examples", default="", help="样本数限制(空 = 不限制)")
     parser.add_argument(
@@ -60,8 +60,8 @@ def parse_args():
     )
     parser.add_argument(
         "--temperature-fallback",
-        default="0.0",
-        help="TASK_TEMPERATURE_JSON 未命中任务时的兜底采样温度(默认 0.0 = greedy)",
+        default="1.0",
+        help="TASK_TEMPERATURE_JSON 未命中任务时的兜底采样温度(默认 1.0,适配 thinking 模式推理模型)",
     )
     parser.add_argument(
         "--max-tokens",

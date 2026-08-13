@@ -114,16 +114,23 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `BASE_URL` | `--api-url` | `http://10.201.149.34:8000/v1` | 端点(自动拼 /v1) |
 | `API_KEY` | `--api-key` | 空 → `EMPTY` | 鉴权 |
 | `TASK_MMLU_PRO` | `--datasets mmlu_pro` | true | 勾选后逗号拼接 |
+| `TASK_AIME26` | `--datasets aime26` | true | 勾选后逗号拼接(AIME 2026 数学竞赛,30 题) |
 | `TASK_GPQA_DIAMOND` | `--datasets gpqa_diamond` | true | 勾选后逗号拼接 |
 | `TASK_CEVAL` | `--datasets ceval` | true | 勾选后逗号拼接 |
 | `TASK_CMMLU` | `--datasets cmmlu` | true | 勾选后逗号拼接 |
 | `TASK_MATH_500` | `--datasets math_500` | true | 勾选后逗号拼接 |
 | `TASK_HELLASWAG` | `--datasets hellaswag` | true | 勾选后逗号拼接 |
 | `TASK_HUMANEVAL` | `--datasets humaneval` | true | 勾选后逗号拼接(Python 代码生成,需执行模型生成代码,建议 sandbox) |
+| `TASK_HUMANEVAL_PLUS` | `--datasets humaneval_plus` | true | 勾选后逗号拼接(HumanEval 增强版,需 sandbox) |
+| `TASK_HMMT25` | `--datasets hmmt25` | true | 勾选后逗号拼接(HMMT 2025 数学竞赛,30 题) |
+| `TASK_HMMT26` | `--datasets hmmt26` | true | 勾选后逗号拼接(HMMT 2026 数学竞赛,33 题) |
+| `TASK_IMO_ANSWERBENCH` | `--datasets imo_answerbench` | true | 勾选后逗号拼接(IMO 奥数题,有裁判模型走 LLM judge,否则回退 rule) |
+| `TASK_MCP_ATLAS` | `--datasets mcp_atlas` | true | 勾选后逗号拼接(MCP 工具使用智能体,需 LLM judge + Docker) |
+| `TASK_DEEP_SWE` | `--datasets deep_swe` | true | 勾选后逗号拼接(仓库级编码 agent,需 Docker + Python>=3.12) |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 空 = 默认 1;全局重复次数,按任务覆盖见 `TASK_REPEATS_JSON` |
 | `EVAL_BATCH_SIZE` | `--eval-batch-size` | `32` | 并发批大小 |
-| `TEMPERATURE_FALLBACK` | (shell 内温度兜底) | `0.0` | `TASK_TEMPERATURE_JSON` 未命中任务时用此值 |
+| `TEMPERATURE_FALLBACK` | (shell 内温度兜底) | `1.0` | `TASK_TEMPERATURE_JSON` 未命中任务时用此值,默认 1.0 适配 thinking 模式 |
 | `TASK_TEMPERATURE_JSON` | (shell 内 per-task 覆盖) | 见默认值 | 例 `{"mmlu_pro":0.0,"math_500":0.6}` |
 | `MAX_TOKENS` | `--generation-config max_tokens` | `32768` | 注入 generation-config |
 | `TOP_P` | `--generation-config top_p` | `0.95` | 注入 generation-config |
@@ -138,43 +145,52 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 
 **为什么有 `TASK_MAX_TOKENS_JSON` / `TASK_TEMPERATURE_JSON` / `TASK_REPEATS_JSON`:** evalscope 的
 `max_tokens` / `temperature` / `repeats` 都是全局的,但不同基准对生成长度需求差异极大
-(mmlu_pro 推理长、gpqa 短),且不同任务对采样温度偏好不同(多选题用
-`temperature=0.0` greedy 保证可复现,数学推理 `math_500` 用 `0.6` 略带随机
-有助思考模型发散),而 `repeats` 仅对带 k-度量聚合器的基准(如 humaneval 的
-`mean_and_pass_at_k`)有意义——其余 greedy 基准重复多次只是 N 倍空跑、得分不变。
+(mmlu_pro 推理长、gpqa 短),且不同模型族对采样温度偏好不同(thinking 模式推理模型
+GLM-5.2/DeepSeek-V4/Kimi-K3 官方均推荐 `1.0`;R1 系用 `0.6`;非 thinking instruct 用 `0.0`),
+而 `repeats` 仅对带 k-度量聚合器的基准(如 humaneval 的
+`mean_and_pass_at_k`)有意义——其余单次基准重复多次只是 N 倍空跑、得分不变。
 `evalscope_main.sh:_resolve_max_tokens` / `_resolve_temperature` / `_resolve_repeats`
 在循环每个任务时按 JSON 覆盖,比多次 Jenkins 构建省事。
 
-**默认推荐温度**(已预填在 `TASK_TEMPERATURE_JSON`):
+**默认推荐温度**(已预填在 `TASK_TEMPERATURE_JSON`,默认 `1.0` 适配 thinking 模式):
 
-| 任务 | 推荐温度 | 理由 |
+| 任务 | 推荐温度(thinking) | 理由 |
 |------|----------|------|
-| `mmlu_pro` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` | `0.0` | 多选题/常识题,greedy 解码保证可复现、最大化准确率 |
-| `math_500` | `0.6` | 数学推理,带 thinking 时略带随机有助模型发散推理路径 |
-| `humaneval` | `0.2` | 代码生成,略带随机有助 pass@1 多样性(HumanEval 论文常用值) |
+| 全部任务 | `1.0` | GLM-5.2/DeepSeek-V4/Kimi-K3 thinking 模式官方推荐值;Kimi-K3 强制 1.0 |
+
+**按模型族微调**:
+
+| 模型族 | 温度 | 说明 |
+|------|------|------|
+| GLM-5.2 / DeepSeek-V4 / Kimi-K3(thinking) | `1.0` | 官方推荐/强制值 |
+| DeepSeek-R1 / Qwen3-thinking | `0.6` | R1 系推荐 0.5-0.7,0.6 最优 |
+| 非 thinking instruct 模型 | `0.0` | greedy 保证可复现 |
 
 **默认推荐 repeats**(默认 `REPEATS` 为空 = 全部 1,按需用 `TASK_REPEATS_JSON` 覆盖):
 
 | 任务 | 推荐 repeats | 理由 |
 |------|-------------|------|
-| `mmlu_pro` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` | `1` | greedy + `mean` 聚合,重复多次输入不变、得分不变,纯 N 倍空跑 |
-| `math_500` | `1` | `mean` 聚合(非 k-metric);想降噪应降温度而非加 repeats |
-| `humaneval` | `1`(pass@1)或 `5`(pass@k) | 唯一带 `mean_and_pass_at_k` 聚合器的基准;`repeats=k` 才能算 `pass@1..pass@k` |
-
-按模型族微调:DSv3.2/V4 reasoning 系可整体提高到 `1.0`,R1 系用 `0.6`,
-通用 instruct(非 thinking)用 `0.0`。
+| `mmlu_pro` / `aime26` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` / `math_500` / `hmmt25` / `hmmt26` / `imo_answerbench` / `mcp_atlas` / `deep_swe` | `1` | 单次评测,重复多次得分不变,纯 N 倍空跑 |
+| `humaneval` / `humaneval_plus` | `1`(pass@1)或 `5`(pass@k) | 带 `mean_and_pass_at_k` 聚合器;`repeats=k` 才能算 `pass@1..pass@k` |
 
 ### 4.1 各基准的默认配置(来自 adapter)
 
 | 基准 | dataset_id | 默认 few-shot | metric | 说明 |
 |------|------------|----------------|--------|------|
 | `mmlu_pro` | `TIGER-Lab/MMLU-Pro` | 5-shot | `acc` | 10 选项多学科多选,要求 step-by-step 推理 |
+| `aime26` | `evalscope/aime26` | 0-shot | `acc` | AIME 2026 美国数学邀请赛,30 题,numeric accuracy |
 | `gpqa_diamond` | `AI-ModelScope/gpqa_diamond` | 0-shot | `acc` | 博士级 4 选择,198 题,答案随机打乱 |
 | `ceval` | `evalscope/ceval` | 5-shot | `acc` | 中文多学科多选,52 学科 |
 | `cmmlu` | `evalscope/cmmlu` | 0-shot | `acc` | 中文多学科多选,67 学科 |
 | `math_500` | `AI-ModelScope/MATH-500` | 0-shot | `acc` | 数学推理,500 题,5 个难度等级 |
 | `hellaswag` | `evalscope/hellaswag` | 0-shot | `acc` | 常识推理,4 选择句补全 |
 | `humaneval` | `opencompass/humaneval` (openai_humaneval) | 0-shot | `acc` / pass@k | Python 代码生成,164 题,执行模型生成代码判 pass;建议 `ENABLE_SANDBOX=true`(否则本地子进程执行,仅 reliability_guard 非真沙箱) |
+| `humaneval_plus` | `evalscope/humaneval_plus` | 0-shot | `acc` / pass@k | HumanEval 增强版,164 题,测试用例数万级,需 sandbox 且使用内置 numpy 的自定义 docker 镜像 |
+| `hmmt25` | `evalscope/hmmt_feb_2025` | 0-shot | `acc` | HMMT 2025年2月数学竞赛,30 题,numeric accuracy |
+| `hmmt26` | `evalscope/hmmt_feb_2026` | 0-shot | `acc` | HMMT 2026年2月数学竞赛,33 题,numeric accuracy |
+| `imo_answerbench` | `modelscope/IMO'25-AnswerBench` | 0-shot | `acc` | IMO 短名单奥数题,400 题,有裁判模型走 LLM judge,否则回退 rule(numeric math_equal) |
+| `mcp_atlas` | `scaleapi/mcp-atlas` | 0-shot | `coverage_score`/`pass_rate` | MCP 工具使用智能体,89 题,multi-turn function-calling,需 LLM judge + MCP-Atlas Docker 服务 |
+| `deep_swe` | `evalscope/deep-swe` | 0-shot | `acc` | 仓库级软件工程编码智能体,113 题,通过 Pier 运行,需 Docker + Python>=3.12 |
 
 这些默认值不传任何 flag 时生效;Jenkins 任一对应参数填了非空值就覆盖默认。
 
@@ -289,7 +305,7 @@ evalscope 默认使用 **ModelScope** 作为数据源,缓存到:
 | 数据集下载失败 | 设置 `MODELSCOPE_CACHE` 换路径;或 `DATASET_ARGS` 指定 `local_path`;或切 `dataset_hub=huggingface` |
 | 邮件 metrics 全 N/A | `find reports/<tester>/<build> -name '*.json' -path '*/reports/*'` 看是否拉到 report JSON;若拉到但 N/A,检查 `dataset_name` 字段名 |
 | `no_answer` 比例高 | `max_tokens` 太小被截断,加大 `MAX_TOKENS` 或用 `TASK_MAX_TOKENS_JSON` 按任务调 |
-| reasoning 模型温度选不对 | 改 `TASK_TEMPERATURE_JSON` 按模型族调:DSv3.2/V4 reasoning 用 `1.0`,R1 系用 `0.6`,通用 instruct 用 `0.0` |
+| reasoning 模型温度选不对 | 改 `TASK_TEMPERATURE_JSON` 按模型族调:GLM-5.2/DeepSeek-V4/Kimi-K3 thinking 用 `1.0`,R1 系用 `0.6`,通用 instruct 用 `0.0` |
 | 想要 humaneval 的 pass@5 但不想让其他基准空跑 | 设 `REPEATS` 空 + `TASK_REPEATS_JSON={"humaneval":5}`;只对 humaneval 生效 |
 | 远程 venv 缺包 | 删 `.venv` 重跑环境检查 stage,Jenkins 会自动 `uv pip install -e .` |
 | evalscope 命令找不到 | 确认 `source .venv/bin/activate` 后 `which evalscope` 有输出;否则重装 |
