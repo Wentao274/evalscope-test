@@ -224,11 +224,27 @@ class DeepSWEAdapter(AgentAdapter):
         or a provider-specific API key env var (e.g. ``OPENAI_API_KEY``).
         Since ``AgentConfig.env`` does not inherit parent process env, we
         must explicitly pass the API key here.
+
+        When ``model_class`` is ``litellm`` and the model name has an
+        ``openai/`` prefix, litellm looks for ``OPENAI_API_KEY`` and
+        ``OPENAI_API_BASE`` in the container environment.  The values in
+        ``config_yaml`` (``api_key`` / ``base_url``) are not reliably mapped
+        to litellm's auth parameters, so we also set the standard OpenAI env
+        vars here.
         """
         env: Dict[str, str] = {}
         api = getattr(model, "api", None)
         api_key = getattr(api, "api_key", None) if api else None
-        env["MSWEA_API_KEY"] = api_key or "EMPTY"
+        base_url = getattr(api, "base_url", None) if api else None
+
+        resolved_key = api_key or "EMPTY"
+        env["MSWEA_API_KEY"] = resolved_key
+        env["OPENAI_API_KEY"] = resolved_key
+
+        if base_url:
+            env["OPENAI_API_BASE"] = base_url
+            env["OPENAI_BASE_URL"] = base_url
+
         return env
 
     def match_score(
