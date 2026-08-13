@@ -154,6 +154,22 @@ REPLACEMENTS.append(
     )
 )
 
+# 7. apt-get install: add --no-upgrade + || true
+#    The swe-bench image already has curl, build-essential, and git installed.
+#    Without --no-upgrade, apt tries to UPGRADE them (download .deb files), which
+#    fails because the proxy at 100.64.1.68:1080 cannot handle TLS for .deb
+#    downloads (apt-get update succeeds for index files, but apt-get install
+#    fails for .deb packages).  With --no-upgrade, apt skips already-installed
+#    packages entirely (no .deb download needed).  `|| true` makes the command
+#    non-fatal as a safety net.
+REPLACEMENTS.append(
+    (
+        "apt-get install -y curl build-essential git",
+        "apt-get install -y --no-upgrade curl build-essential git || true",
+        "apt: add --no-upgrade to skip .deb downloads for installed packages",
+    )
+)
+
 
 def find_module() -> Path | None:
     """Locate the installed pier mini_swe_agent module."""
