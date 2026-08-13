@@ -360,14 +360,13 @@ run_task() {
                         python3 -c "
 import json, os
 config_yaml = (
-    f'agent:\n'
-    f'  model:\n'
-    f'    temperature: {os.environ.get(\"TEMPERATURE\", \"1.0\")}\n'
-    f'    top_p: {os.environ.get(\"TOP_P\", \"1.0\")}\n'
-    f'    max_tokens: {os.environ.get(\"MAX_TOKENS\", \"409600\")}\n'
-    f'    timeout: {os.environ.get(\"TIMEOUT\", \"86400\")}\n'
-    f'    base_url: \"{os.environ.get(\"BASE_URL\", \"\")}\"\n'
-    f'    api_key: \"{os.environ.get(\"API_KEY\", \"EMPTY\")}\"\n'
+    f'model:\n'
+    f'  temperature: {os.environ.get(\"TEMPERATURE\", \"1.0\")}\n'
+    f'  top_p: {os.environ.get(\"TOP_P\", \"1.0\")}\n'
+    f'  max_tokens: {os.environ.get(\"MAX_TOKENS\", \"409600\")}\n'
+    f'  timeout: {os.environ.get(\"TIMEOUT\", \"86400\")}\n'
+    f'  base_url: \"{os.environ.get(\"BASE_URL\", \"\")}\"\n'
+    f'  api_key: \"{os.environ.get(\"API_KEY\", \"EMPTY\")}\"\n'
 )
 args = {
     'deep_swe': {
