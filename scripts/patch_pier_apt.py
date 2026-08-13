@@ -24,16 +24,28 @@ Three categories of patches:
 
 3. **docker-compose-build.yaml** (in pier/environments/docker/):
    - Add ``network: host`` under the ``build:`` section so that
-     ``docker compose build`` uses the host network instead of the default
-     bridge network.  The enterprise proxy at 100.64.1.68:1080 is unreachable
-     from the bridge network (TLS handshake timeout), but works from the host
-     network.
+      ``docker compose build`` uses the host network instead of the default
+      bridge network.  The enterprise proxy at 100.64.1.68:1080 is unreachable
+      from the bridge network (TLS handshake timeout), but works from the host
+      network.
+
+4. **docker.py** (in pier/environments/docker/):
+   - Inject ``self.task_env_config.allow_internet = True`` at the top of
+     ``_prepare_egress_proxy_compose`` so that the egress proxy (squid with
+     ``dstdomain`` ACL) is never set up and the ``network_mode: none`` overlay
+     is never applied.  DeepSWE tasks set ``network_mode = "no-network"`` in
+     their ``task.toml``, which triggers the egress proxy; but the LLM API
+     endpoint is an IP address (e.g. ``10.201.149.90``) which squid's
+     ``dstdomain`` ACL cannot match, and the agent container is on the
+     ``pier-egress-internal`` network (``internal: True``) so it cannot bypass
+     the proxy.  Forcing ``allow_internet = True`` lets the agent container
+     reach the LLM API directly.
 
 Usage::
 
-    python3 scripts/patch_pier_apt.py           # auto-detect & patch both files
+    python3 scripts/patch_pier_apt.py           # auto-detect & patch all files
     python3 scripts/patch_pier_apt.py /path/to/mini_swe_agent.py
-    python3 scripts/patch_pier_apt.py --check   # exit 0 if already patched
+    python3 scripts/patch_pier_apt.py --check   # exit 0 if all already patched
 
 Idempotent: re-running on already-patched files is a no-op.  Stale patches from
 previous builds (e.g. old aliyun/tsinghua mirror URLs or ``# MARKER`` comments
@@ -207,6 +219,27 @@ def find_compose_file(module_path: Path | None = None) -> Path | None:
         return None
 
 
+def find_docker_file(module_path: Path | None = None) -> Path | None:
+    """Locate docker.py in the installed pier package.
+
+    Derives the path from *module_path* (mini_swe_agent.py) by walking up to
+    the pier package root, then descending into environments/docker/.
+    Falls back to importing the pier package directly.
+    """
+    if module_path is not None:
+        pier_root = module_path.parent.parent.parent
+        docker = pier_root / "environments" / "docker" / "docker.py"
+        if docker.exists():
+            return docker
+
+    try:
+        import pier  # type: ignore
+
+        return Path(pier.__file__).parent / "environments" / "docker" / "docker.py"
+    except Exception:
+        return None
+
+
 # --- Compose file patch -------------------------------------------------------
 
 COMPOSE_MARKER = f"# {MARKER}: host network"
@@ -241,6 +274,62 @@ def patch_compose_file(path: Path) -> bool:
     content = content.replace(COMPOSE_OLD, COMPOSE_NEW)
     path.write_text(content, encoding="utf-8")
     print(f"Patched compose: {path} (added network: host to build section)")
+    return True
+
+
+# --- Docker environment patch -------------------------------------------------
+
+DOCKER_MARKER = f"# {MARKER}: force allow_internet"
+
+DOCKER_OLD = (
+    "    def _prepare_egress_proxy_compose(self) -> None:\n"
+    "        allowlist = self.network_allowlist"
+)
+DOCKER_NEW = (
+    "    def _prepare_egress_proxy_compose(self) -> None:\n"
+    f"        self.task_env_config.allow_internet = True  {DOCKER_MARKER}\n"
+    "        allowlist = self.network_allowlist"
+)
+
+
+def patch_docker_file(path: Path) -> bool:
+    """Patch docker.py to force allow_internet=True.
+
+    DeepSWE tasks set ``network_mode = "no-network"`` in their ``task.toml``,
+    which resolves to ``allow_internet = False``.  When ``allow_internet`` is
+    False and the network allowlist has domains (from ``config_yaml.base_url``),
+    Pier sets up an egress proxy (squid with ``dstdomain`` ACL).  The LLM API
+    endpoint is an IP address which ``dstdomain`` cannot match, and the agent
+    container is on an internal-only network so it cannot bypass the proxy.
+
+    This patch forces ``allow_internet = True`` so the egress proxy is never
+    set up and the agent container has direct network access to the LLM API.
+
+    Returns True on success or if already patched.
+    """
+    content = path.read_text(encoding="utf-8")
+
+    if DOCKER_MARKER in content:
+        print(f"Already patched: {path}")
+        return True
+
+    if DOCKER_OLD not in content:
+        print(f"SKIP (docker.py pattern not found): {path}")
+        print("  The docker.py file may have been updated -- manual review needed")
+        return False
+
+    content = content.replace(DOCKER_OLD, DOCKER_NEW)
+
+    try:
+        ast.parse(content)
+    except SyntaxError as exc:
+        print(f"ERROR: patched docker.py would have a syntax error: {exc}")
+        return False
+
+    path.write_text(content, encoding="utf-8")
+    print(
+        f"Patched docker: {path} (forced allow_internet=True in _prepare_egress_proxy_compose)"
+    )
     return True
 
 
@@ -344,6 +433,7 @@ def main() -> int:
     print(f"Pier agent module: {module_path}")
 
     compose_path = find_compose_file(module_path)
+    docker_path = find_docker_file(module_path)
 
     if check_only:
         agent_ok = MARKER in module_path.read_text(encoding="utf-8")
@@ -352,9 +442,15 @@ def main() -> int:
             if compose_path and compose_path.exists()
             else False
         )
+        docker_ok = (
+            DOCKER_MARKER in docker_path.read_text(encoding="utf-8")
+            if docker_path and docker_path.exists()
+            else False
+        )
         print(f"Agent patched: {agent_ok}")
         print(f"Compose patched: {compose_ok}")
-        return 0 if (agent_ok and compose_ok) else 1
+        print(f"Docker patched: {docker_ok}")
+        return 0 if (agent_ok and compose_ok and docker_ok) else 1
 
     agent_ok = patch_file(module_path)
     compose_ok = True
@@ -363,7 +459,13 @@ def main() -> int:
     else:
         print("WARN: docker-compose-build.yaml not found, skipping compose patch")
 
-    return 0 if agent_ok else 1
+    docker_ok = True
+    if docker_path is not None and docker_path.exists():
+        docker_ok = patch_docker_file(docker_path)
+    else:
+        print("WARN: docker.py not found, skipping docker patch")
+
+    return 0 if (agent_ok and compose_ok and docker_ok) else 1
 
 
 if __name__ == "__main__":

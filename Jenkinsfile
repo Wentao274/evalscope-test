@@ -518,15 +518,17 @@ DOCKERFILE
     fi
 
     # === Patch Pier for proxy compatibility ===
-    # Patch three issues:
+    # Patch four issues:
     #   1. apt step: inject sed to switch Debian apt sources HTTP->HTTPS
     #   2. agent step: replace uv/curl install with pip install (official PyPI)
     #      astral.sh (uv CDN) is RST'd by enterprise proxy; official PyPI works through proxy CONNECT tunnel.
     #   3. docker-compose-build.yaml: add `network: host` under `build:` so that
     #      `docker compose build` uses host network (proxy unreachable from bridge).
+    #   4. docker.py: force allow_internet=True in _prepare_egress_proxy_compose so that
+    #      DeepSWE tasks (which set network_mode=no-network) can reach the LLM API endpoint.
     # Script is idempotent: already-patched files are skipped.
     if [ "\${NEED_DEEP_SWE}" = "true" ]; then
-        echo "=== Patching Pier for proxy compatibility (agent + compose) ==="
+        echo "=== Patching Pier for proxy compatibility (agent + compose + docker) ==="
         source ${params.WORK_DIR}/.venv/bin/activate
         python3 ${params.WORK_DIR}/scripts/patch_pier_apt.py 2>&1
         PATCH_EXIT=\$?
@@ -809,6 +811,38 @@ scp -o StrictHostKeyChecking=no \
     ${localDir}/
 echo "=== 拉取结果 ==="
 find ${localDir}/ -type f
+
+echo ""
+echo "=== DeepSWE 诊断: exception.txt ==="
+for f in \$(find ${localDir}/ -name "exception.txt" -type f); do
+    echo "--- \$f ---"
+    cat "\$f" 2>/dev/null || echo "(unable to read)"
+    echo ""
+done
+
+echo ""
+echo "=== DeepSWE 诊断: mini-swe-agent.txt (最后50行) ==="
+for f in \$(find ${localDir}/ -name "mini-swe-agent.txt" -type f); do
+    echo "--- \$f ---"
+    tail -50 "\$f" 2>/dev/null || echo "(unable to read)"
+    echo ""
+done
+
+echo ""
+echo "=== DeepSWE 诊断: reward.txt ==="
+for f in \$(find ${localDir}/ -name "reward.txt" -type f); do
+    echo "--- \$f ---"
+    cat "\$f" 2>/dev/null || echo "(unable to read)"
+    echo ""
+done
+
+echo ""
+echo "=== DeepSWE 诊断: trial.log (最后30行) ==="
+for f in \$(find ${localDir}/ -name "trial.log" -type f); do
+    echo "--- \$f ---"
+    tail -30 "\$f" 2>/dev/null || echo "(unable to read)"
+    echo ""
+done
 """
                             }
 
@@ -883,10 +917,13 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                             // evalscope 的 report 文件名为 <dataset_name>.json,位于 reports/<model_name>/ 下
                             // glob 递归匹配 reports/**/<dataset>.json
                             def reportFiles = findFiles(glob: "${logFileBase}/**/reports/**/*.json")
+                            // readJSON returns net.sf.json.JSONNull for JSON null values, which is truthy
+                            // in Groovy and throws MissingPropertyException when accessing fields on it.
+                            def norm = { v -> v == null || v instanceof net.sf.json.JSONNull ? null : v }
                             for (def rf : reportFiles) {
                                 def json = readJSON(file: rf.path)
-                                def taskName = json.dataset_name ?: json.name ?: "unknown"
-                                def score = json.score
+                                def taskName = norm(json.dataset_name) ?: norm(json.name) ?: "unknown"
+                                def score = norm(json.score)
                                 def scoreStr = "N/A"
                                 if (score != null) {
                                     scoreStr = String.format("%.2f%%", (score as Double) * 100)
@@ -896,28 +933,28 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 
                                 // 单任务详情行(包含 metric / category / subset 明细)
                                 def detailRows = ""
-                                def metrics = json.metrics ?: []
+                                def metrics = norm(json.metrics) ?: []
                                 for (def m : metrics) {
-                                    def metricName = m.name ?: "score"
-                                    def metricScore = m.score
+                                    def metricName = norm(m.name) ?: "score"
+                                    def metricScore = norm(m.score)
                                     def metricScoreStr = metricScore != null ? String.format("%.2f%%", (metricScore as Double) * 100) : "N/A"
                                     detailRows += "<tr class=\"score-highlight\"><td>${taskName}</td><td>${metricName} (overall)</td><td>${metricScoreStr}</td></tr>"
-                                    def categories = m.categories ?: []
+                                    def categories = norm(m.categories) ?: []
                                     for (def c : categories) {
-                                        def catName = c.name
+                                        def catName = norm(c.name)
                                         if (catName instanceof List) {
                                             catName = catName.collect { it.toString() }.join(' / ')
                                         }
-                                        def catScore = c.score
+                                        def catScore = norm(c.score)
                                         def catScoreStr = catScore != null ? String.format("%.2f%%", (catScore as Double) * 100) : "N/A"
-                                        def catNum = c.num ?: 0
+                                        def catNum = norm(c.num) ?: 0
                                         detailRows += "<tr><td>${taskName}</td><td>${catName} (n=${catNum})</td><td>${catScoreStr}</td></tr>"
-                                        def subsets = c.subsets ?: []
+                                        def subsets = norm(c.subsets) ?: []
                                         for (def s : subsets) {
-                                            def subName = s.name
-                                            def subScore = s.score
+                                            def subName = norm(s.name)
+                                            def subScore = norm(s.score)
                                             def subScoreStr = subScore != null ? String.format("%.4f", (subScore as Double) * 100) + "%" : "N/A"
-                                            def subNum = s.num ?: 0
+                                            def subNum = norm(s.num) ?: 0
                                             if (subName != null) {
                                                 detailRows += "<tr><td>${taskName}</td><td>&nbsp;&nbsp;&nbsp;${subName} (n=${subNum})</td><td>${subScoreStr}</td></tr>"
                                             }
@@ -934,25 +971,25 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             <p style="font-size: 12px; color: #666;">report: ${rf.path}</p>
 """
                                 // 性能指标
-                                def perf = json.perf_metrics
-                                if (perf != null && perf.summary != null) {
+                                def perf = norm(json.perf_metrics)
+                                if (perf != null && norm(perf.summary) != null) {
                                     def sum = perf.summary
-                                    def latency = sum.latency
-                                    def throughput = sum.throughput
-                                    def usage = sum.usage
-                                    def ttft = sum.ttft
-                                    def nSamples = sum.n_samples ?: 'N/A'
+                                    def latency = norm(sum.latency)
+                                    def throughput = norm(sum.throughput)
+                                    def usage = norm(sum.usage)
+                                    def ttft = norm(sum.ttft)
+                                    def nSamples = norm(sum.n_samples) ?: 'N/A'
                                     def perfLines = "samples: ${nSamples}"
-                                    if (latency != null && latency.avg != null) {
+                                    if (latency != null && norm(latency.avg) != null) {
                                         perfLines += " | latency avg: ${latency.avg}s"
                                     }
-                                    if (throughput != null && throughput.avg_output_tps != null) {
+                                    if (throughput != null && norm(throughput.avg_output_tps) != null) {
                                         perfLines += " | output tps: ${throughput.avg_output_tps}"
                                     }
-                                    if (ttft != null && ttft.avg != null) {
+                                    if (ttft != null && norm(ttft.avg) != null) {
                                         perfLines += " | TTFT avg: ${ttft.avg}s"
                                     }
-                                    if (usage != null && usage.total_tokens_count != null) {
+                                    if (usage != null && norm(usage.total_tokens_count) != null) {
                                         perfLines += " | total tokens: ${usage.total_tokens_count}"
                                     }
                                     taskMetricsHtml += """
