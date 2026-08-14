@@ -1,6 +1,7 @@
 """
 The logic in this file largely borrows from Qwen2.5-Math codebase at https://github.com/QwenLM/Qwen2.5-Math:
 """
+
 # flake8: noqa
 import re
 import regex
@@ -21,13 +22,13 @@ def convert_word_number(text: str) -> str:
 
 
 def _fix_fracs(string):
-    substrs = string.split('\\frac')
+    substrs = string.split("\\frac")
     new_str = substrs[0]
     if len(substrs) > 1:
         substrs = substrs[1:]
         for substr in substrs:
-            new_str += '\\frac'
-            if len(substr) > 0 and substr[0] == '{':
+            new_str += "\\frac"
+            if len(substr) > 0 and substr[0] == "{":
                 new_str += substr
             else:
                 try:
@@ -36,73 +37,77 @@ def _fix_fracs(string):
                     return string
                 a = substr[0]
                 b = substr[1]
-                if b != '{':
+                if b != "{":
                     if len(substr) > 2:
                         post_substr = substr[2:]
-                        new_str += '{' + a + '}{' + b + '}' + post_substr
+                        new_str += "{" + a + "}{" + b + "}" + post_substr
                     else:
-                        new_str += '{' + a + '}{' + b + '}'
+                        new_str += "{" + a + "}{" + b + "}"
                 else:
                     if len(substr) > 2:
                         post_substr = substr[2:]
-                        new_str += '{' + a + '}' + b + post_substr
+                        new_str += "{" + a + "}" + b + post_substr
                     else:
-                        new_str += '{' + a + '}' + b
+                        new_str += "{" + a + "}" + b
     string = new_str
     return string
 
 
 def _fix_a_slash_b(string):
-    if len(string.split('/')) != 2:
+    if len(string.split("/")) != 2:
         return string
-    a = string.split('/')[0]
-    b = string.split('/')[1]
+    a = string.split("/")[0]
+    b = string.split("/")[1]
     try:
-        if 'sqrt' not in a:
+        if "sqrt" not in a:
             a = int(a)
-        if 'sqrt' not in b:
+        if "sqrt" not in b:
             b = int(b)
-        assert string == '{}/{}'.format(a, b)
-        new_string = '\\frac{' + str(a) + '}{' + str(b) + '}'
+        assert string == "{}/{}".format(a, b)
+        new_string = "\\frac{" + str(a) + "}{" + str(b) + "}"
         return new_string
     except Exception:
         return string
 
 
 def _fix_sqrt(string):
-    _string = re.sub(r'\\sqrt(\w+)', r'\\sqrt{\1}', string)
+    _string = re.sub(r"\\sqrt(\w+)", r"\\sqrt{\1}", string)
     return _string
 
 
 def strip_answer_string(string):
     string = str(string).strip()
     # linebreaks
-    string = string.replace('\n', '')
+    string = string.replace("\n", "")
 
     # right "."
-    string = string.rstrip('.')
+    string = string.rstrip(".")
 
     # remove inverse spaces
     # replace \\ with \
-    string = string.replace('\\!', '')
+    string = string.replace("\\!", "")
     # string = string.replace("\\ ", "")
     # string = string.replace("\\\\", "\\")
 
     # matrix
-    string = re.sub(r'\\begin\{array\}\{.*?\}', r'\\begin{pmatrix}', string)
-    string = re.sub(r'\\end\{array\}', r'\\end{pmatrix}', string)
-    string = string.replace('bmatrix', 'pmatrix')
+    string = re.sub(r"\\begin\{array\}\{.*?\}", r"\\begin{pmatrix}", string)
+    string = re.sub(r"\\end\{array\}", r"\\end{pmatrix}", string)
+    string = string.replace("bmatrix", "pmatrix")
 
     # replace tfrac and dfrac with frac
-    string = string.replace('tfrac', 'frac')
-    string = string.replace('dfrac', 'frac')
-    string = (string.replace('\\neq', '\\ne').replace('\\leq', '\\le').replace('\\geq', '\\ge'))
+    string = string.replace("tfrac", "frac")
+    string = string.replace("dfrac", "frac")
+    string = (
+        string.replace("\\neq", "\\ne")
+        .replace("\\leq", "\\le")
+        .replace("\\geq", "\\ge")
+    )
 
     # remove \left and \right
-    string = string.replace('\\left', '')
-    string = string.replace('\\right', '')
-    string = string.replace('\\{', '{')
-    string = string.replace('\\}', '}')
+    string = string.replace("\\left", "")
+    string = string.replace("\\right", "")
+    string = string.replace("\\{", "{")
+    string = string.replace("\\}", "}")
 
     # Function to replace number words with corresponding digits
     def replace_match(match):
@@ -112,92 +117,98 @@ def strip_answer_string(string):
         else:
             return convert_word_number(word)
 
-    string = re.sub(r'\\text\{([a-zA-Z]+)\}', replace_match, string)
+    string = re.sub(r"\\text\{([a-zA-Z]+)\}", replace_match, string)
 
     # Before removing unit, check if the unit is squared (for surface area)
-    string = re.sub(r'(cm|inches)\}\^2', r'\1}', string)
+    string = re.sub(r"(cm|inches)\}\^2", r"\1}", string)
 
     # Remove unit: miles, dollars if after is not none
-    _string = re.sub(r'\\text{.*?}$', '', string).strip()
-    if _string != '' and _string != string:
+    _string = re.sub(r"\\text{.*?}$", "", string).strip()
+    if _string != "" and _string != string:
         # print("Warning: unit not removed: '{}' -> '{}'".format(string, _string))
         string = _string
 
     # Remove circ (degrees)
-    string = string.replace('^{\\circ}', '')
-    string = string.replace('^\\circ', '')
+    string = string.replace("^{\\circ}", "")
+    string = string.replace("^\\circ", "")
 
     # remove dollar signs
-    string = string.replace('\\$', '')
-    string = string.replace('$', '')
-    string = string.replace('\\(', '').replace('\\)', '')
+    string = string.replace("\\$", "")
+    string = string.replace("$", "")
+    string = string.replace("\\(", "").replace("\\)", "")
 
     # convert word number to digit
     string = convert_word_number(string)
 
     # replace "\\text{...}" to "..."
-    string = re.sub(r'\\text\{(.*?)\}', r'\1', string)
-    for key in ['x=', 'y=', 'z=', 'x\\in', 'y\\in', 'z\\in', 'x\\to', 'y\\to', 'z\\to']:
-        string = string.replace(key, '')
-    string = string.replace('\\emptyset', r'{}')
-    string = string.replace('(-\\infty,\\infty)', '\\mathbb{R}')
+    string = re.sub(r"\\text\{(.*?)\}", r"\1", string)
+    for key in ["x=", "y=", "z=", "x\\in", "y\\in", "z\\in", "x\\to", "y\\to", "z\\to"]:
+        string = string.replace(key, "")
+    string = string.replace("\\emptyset", r"{}")
+    string = string.replace("(-\\infty,\\infty)", "\\mathbb{R}")
 
     # remove percentage
-    string = string.replace('\\%', '')
-    string = string.replace('\%', '')
-    string = string.replace('%', '')
+    string = string.replace("\\%", "")
+    string = string.replace(r"\%", "")
+    string = string.replace("%", "")
 
     # " 0." equivalent to " ." and "{0." equivalent to "{." Alternatively, add "0" if "." is the start of the string
-    string = string.replace(' .', ' 0.')
-    string = string.replace('{.', '{0.')
+    string = string.replace(" .", " 0.")
+    string = string.replace("{.", "{0.")
 
     # cdot
     # string = string.replace("\\cdot", "")
     if (
-        string.startswith('{') and string.endswith('}') and string.isalnum()
-        or string.startswith('(') and string.endswith(')') and string.isalnum()
-        or string.startswith('[') and string.endswith(']') and string.isalnum()
+        string.startswith("{")
+        and string.endswith("}")
+        and string.isalnum()
+        or string.startswith("(")
+        and string.endswith(")")
+        and string.isalnum()
+        or string.startswith("[")
+        and string.endswith("]")
+        and string.isalnum()
     ):
         string = string[1:-1]
 
     # inf
-    string = string.replace('infinity', '\\infty')
-    if '\\infty' not in string:
-        string = string.replace('inf', '\\infty')
-    string = string.replace('+\\inity', '\\infty')
+    string = string.replace("infinity", "\\infty")
+    if "\\infty" not in string:
+        string = string.replace("inf", "\\infty")
+    string = string.replace("+\\inity", "\\infty")
 
     # and
-    string = string.replace('and', '')
-    string = string.replace('\\mathbf', '')
+    string = string.replace("and", "")
+    string = string.replace("\\mathbf", "")
 
     # use regex to remove \mbox{...}
-    string = re.sub(r'\\mbox{.*?}', '', string)
+    string = re.sub(r"\\mbox{.*?}", "", string)
 
     # quote
-    string = string.replace("'", '')
-    string = string.replace('"', '')
+    string = string.replace("'", "")
+    string = string.replace('"', "")
 
     # i, j
-    if 'j' in string and 'i' not in string:
-        string = string.replace('j', 'i')
+    if "j" in string and "i" not in string:
+        string = string.replace("j", "i")
 
     # replace a.000b where b is not number or b is end, with ab, use regex
-    string = re.sub(r'(\d+)\.0*([^\d])', r'\1\2', string)
-    string = re.sub(r'(\d+)\.0*$', r'\1', string)
+    string = re.sub(r"(\d+)\.0*([^\d])", r"\1\2", string)
+    string = re.sub(r"(\d+)\.0*$", r"\1", string)
 
     # if empty, return empty string
     if len(string) == 0:
         return string
-    if string[0] == '.':
-        string = '0' + string
+    if string[0] == ".":
+        string = "0" + string
 
     # to consider: get rid of e.g. "k = " or "q = " at beginning
-    if len(string.split('=')) == 2:
-        if len(string.split('=')[0]) <= 2:
-            string = string.split('=')[1]
+    if len(string.split("=")) == 2:
+        if len(string.split("=")[0]) <= 2:
+            string = string.split("=")[1]
 
     string = _fix_sqrt(string)
-    string = string.replace(' ', '')
+    string = string.replace(" ", "")
 
     # \frac1b or \frac12 --> \frac{1}{b} and \frac{1}{2}, etc. Even works with \frac1{72} (but not \frac{72}1). Also does a/b --> \\frac{a}{b}
     string = _fix_fracs(string)
@@ -206,51 +217,51 @@ def strip_answer_string(string):
     string = _fix_a_slash_b(string)
 
     # Remove unnecessary '\' before integers
-    string = re.sub(r'\\(?=\-?\d+(\\|\)|,|\]|$))', '', string)
+    string = re.sub(r"\\(?=\-?\d+(\\|\)|,|\]|$))", "", string)
 
     # Remove grade level (e.g., 12th grade) and just maintain the integer
-    string = re.sub(r'thgrade$', '', string)
+    string = re.sub(r"thgrade$", "", string)
 
     # Normalize thousands-formatted numbers (e.g., 70,000 or -1,234,567.89) by removing commas
     # This must run before the "list of integers" sorting to avoid misclassifying numbers with thousand separators.
-    if re.fullmatch(r'\s*-?\d{1,3}(?:,\d{3})+(?:\.\d+)?\s*', string):
-        string = string.replace(',', '')
+    if re.fullmatch(r"\s*-?\d{1,3}(?:,\d{3})+(?:\.\d+)?\s*", string):
+        string = string.replace(",", "")
 
     # If the answer is a list of integers (without parenthesis), sort them
-    if re.fullmatch(r'(\s*-?\d+\s*,)*\s*-?\d+\s*', string):
+    if re.fullmatch(r"(\s*-?\d+\s*,)*\s*-?\d+\s*", string):
         # Split the string into a list of integers
         try:
-            integer_list = list(map(int, string.split(',')))
+            integer_list = list(map(int, string.split(",")))
         except Exception:
-            integer_list = list(map(int, '-1,-1'.split(',')))
+            integer_list = list(map(int, "-1,-1".split(",")))
 
         # Sort the list in ascending order
         sorted_list = sorted(integer_list)
 
         # Join the sorted list back into a comma-separated string
-        string = ','.join(map(str, sorted_list))
+        string = ",".join(map(str, sorted_list))
 
     return string
 
 
 def extract_answer(pred_str, use_last_number=True):
-    pred_str = pred_str.replace('\u043a\u0438', '')
-    if 'final answer is $' in pred_str and '$. I hope' in pred_str:
+    pred_str = pred_str.replace("\u043a\u0438", "")
+    if "final answer is $" in pred_str and "$. I hope" in pred_str:
         # minerva_math
-        tmp = pred_str.split('final answer is $', 1)[1]
-        pred = tmp.split('$. I hope', 1)[0].strip()
-    elif 'boxed' in pred_str:
-        ans = pred_str.split('boxed')[-1]
+        tmp = pred_str.split("final answer is $", 1)[1]
+        pred = tmp.split("$. I hope", 1)[0].strip()
+    elif "boxed" in pred_str:
+        ans = pred_str.split("boxed")[-1]
         if len(ans) == 0:
-            return ''
-        elif ans[0] == '{':
+            return ""
+        elif ans[0] == "{":
             stack = 1
-            a = ''
+            a = ""
             for c in ans[1:]:
-                if c == '{':
+                if c == "{":
                     stack += 1
                     a += c
-                elif c == '}':
+                elif c == "}":
                     stack -= 1
                     if stack == 0:
                         break
@@ -258,63 +269,63 @@ def extract_answer(pred_str, use_last_number=True):
                 else:
                     a += c
         else:
-            a = ans.split('$')[0].strip()
+            a = ans.split("$")[0].strip()
         pred = a
-    elif 'he answer is' in pred_str:
-        pred = pred_str.split('he answer is')[-1].strip()
-    elif 'final answer is' in pred_str:
-        pred = pred_str.split('final answer is')[-1].strip()
-    elif '答案是' in pred_str:
+    elif "he answer is" in pred_str:
+        pred = pred_str.split("he answer is")[-1].strip()
+    elif "final answer is" in pred_str:
+        pred = pred_str.split("final answer is")[-1].strip()
+    elif "答案是" in pred_str:
         # Handle Chinese few-shot multiple choice problem answer extraction
-        pred = pred_str.split('答案是')[1].strip().split('\n\n')[0].strip()
-    elif 'ANSWER:' in pred_str:
-        pred = pred_str.split('ANSWER:')[-1].strip()
+        pred = pred_str.split("答案是")[1].strip().split("\n\n")[0].strip()
+    elif "ANSWER:" in pred_str:
+        pred = pred_str.split("ANSWER:")[-1].strip()
     else:  # use the last number
         if use_last_number:
-            pattern = '-?\d*\.?\d+'
-            pred = re.findall(pattern, pred_str.replace(',', ''))
+            pattern = r"-?\d*\.?\d+"
+            pred = re.findall(pattern, pred_str.replace(",", ""))
             if len(pred) >= 1:
                 pred = pred[-1]
             else:
-                pred = ''
+                pred = ""
         else:
-            pred = ''
+            pred = ""
 
     # multiple line
     # pred = pred.split("\n")[0]
-    pred = re.sub(r'\n\s*', '', pred)
-    if pred != '' and pred[0] == ':':
+    pred = re.sub(r"\n\s*", "", pred)
+    if pred != "" and pred[0] == ":":
         pred = pred[1:]
-    if pred != '' and pred[-1] == '.':
+    if pred != "" and pred[-1] == ".":
         pred = pred[:-1]
-    if pred != '' and pred[-1] == '/':
+    if pred != "" and pred[-1] == "/":
         pred = pred[:-1]
     pred = strip_answer_string(pred)
     return pred
 
 
 def choice_answer_clean(pred: str):
-    pred = pred.strip('\n').rstrip('.').rstrip('/').strip(' ').lstrip(':')
+    pred = pred.strip("\n").rstrip(".").rstrip("/").strip(" ").lstrip(":")
     # Clean the answer based on the dataset
-    tmp = re.findall(r'\b(A|B|C|D|E)\b', pred.upper())
+    tmp = re.findall(r"\b(A|B|C|D|E)\b", pred.upper())
     if tmp:
         pred = tmp
     else:
-        pred = [pred.strip().strip('.')]
+        pred = [pred.strip().strip(".")]
     pred = pred[-1]
     # Remove the period at the end, again!
-    pred = pred.rstrip('.').rstrip('/')
+    pred = pred.rstrip(".").rstrip("/")
     return pred
 
 
 def parse_digits(num):
-    num = regex.sub(',', '', str(num))
+    num = regex.sub(",", "", str(num))
     try:
         return float(num)
     except Exception:
-        if num.endswith('%'):
+        if num.endswith("%"):
             num = num[:-1]
-            if num.endswith('\\'):
+            if num.endswith("\\"):
                 num = num[:-1]
             try:
                 return float(num) / 100
@@ -330,15 +341,15 @@ def is_digit(num):
 
 def str_to_pmatrix(input_str):
     input_str = input_str.strip()
-    matrix_str = re.findall(r'\{.*,.*\}', input_str)
+    matrix_str = re.findall(r"\{.*,.*\}", input_str)
     pmatrix_list = []
 
     for m in matrix_str:
-        m = m.strip('{}')
-        pmatrix = r'\begin{pmatrix}' + m.replace(',', '\\') + r'\end{pmatrix}'
+        m = m.strip("{}")
+        pmatrix = r"\begin{pmatrix}" + m.replace(",", "\\") + r"\end{pmatrix}"
         pmatrix_list.append(pmatrix)
 
-    return ', '.join(pmatrix_list)
+    return ", ".join(pmatrix_list)
 
 
 def math_equal(
@@ -357,7 +368,10 @@ def math_equal(
         return False
     if str(prediction.strip().lower()) == str(reference.strip().lower()):
         return True
-    if (reference in ['A', 'B', 'C', 'D', 'E'] and choice_answer_clean(prediction) == reference):
+    if (
+        reference in ["A", "B", "C", "D", "E"]
+        and choice_answer_clean(prediction) == reference
+    ):
         return True
 
     try:  # 1. numerical equal
@@ -391,61 +405,93 @@ def math_equal(
     prediction = str(prediction).strip()
 
     ## pmatrix (amps)
-    if 'pmatrix' in prediction and 'pmatrix' not in reference:
+    if "pmatrix" in prediction and "pmatrix" not in reference:
         reference = str_to_pmatrix(reference)
 
     ## deal with [], (), {}
     pred_str, ref_str = prediction, reference
-    if (prediction.startswith('[') and prediction.endswith(']') and not reference.startswith('(')
-        ) or (prediction.startswith('(') and prediction.endswith(')') and not reference.startswith('[')):
-        pred_str = pred_str.strip('[]()')
-        ref_str = ref_str.strip('[]()')
-    for s in ['{', '}', '(', ')']:
-        ref_str = ref_str.replace(s, '')
-        pred_str = pred_str.replace(s, '')
+    if (
+        prediction.startswith("[")
+        and prediction.endswith("]")
+        and not reference.startswith("(")
+    ) or (
+        prediction.startswith("(")
+        and prediction.endswith(")")
+        and not reference.startswith("[")
+    ):
+        pred_str = pred_str.strip("[]()")
+        ref_str = ref_str.strip("[]()")
+    for s in ["{", "}", "(", ")"]:
+        ref_str = ref_str.replace(s, "")
+        pred_str = pred_str.replace(s, "")
     if pred_str.lower() == ref_str.lower():
         return True
 
     ## [a, b] vs. [c, d], return a==c and b==d
     if (
-        regex.match(r'(\(|\[).+(\)|\])', prediction) is not None
-        and regex.match(r'(\(|\[).+(\)|\])', reference) is not None
+        regex.match(r"(\(|\[).+(\)|\])", prediction) is not None
+        and regex.match(r"(\(|\[).+(\)|\])", reference) is not None
     ):
-        pred_parts = prediction[1:-1].split(',')
-        ref_parts = reference[1:-1].split(',')
+        pred_parts = prediction[1:-1].split(",")
+        ref_parts = reference[1:-1].split(",")
         if len(pred_parts) == len(ref_parts):
-            if all([
-                math_equal(pred_parts[i], ref_parts[i], include_percentage, is_close) for i in range(len(pred_parts))
-            ]):
+            if all(
+                [
+                    math_equal(
+                        pred_parts[i], ref_parts[i], include_percentage, is_close
+                    )
+                    for i in range(len(pred_parts))
+                ]
+            ):
                 return True
-    if ((prediction.startswith('\\begin{pmatrix}') or prediction.startswith('\\begin{bmatrix}'))
-        and (prediction.endswith('\\end{pmatrix}') or prediction.endswith('\\end{bmatrix}'))
-        and (reference.startswith('\\begin{pmatrix}') or reference.startswith('\\begin{bmatrix}'))
-        and (reference.endswith('\\end{pmatrix}') or reference.endswith('\\end{bmatrix}'))):
+    if (
+        (
+            prediction.startswith("\\begin{pmatrix}")
+            or prediction.startswith("\\begin{bmatrix}")
+        )
+        and (
+            prediction.endswith("\\end{pmatrix}")
+            or prediction.endswith("\\end{bmatrix}")
+        )
+        and (
+            reference.startswith("\\begin{pmatrix}")
+            or reference.startswith("\\begin{bmatrix}")
+        )
+        and (
+            reference.endswith("\\end{pmatrix}") or reference.endswith("\\end{bmatrix}")
+        )
+    ):
         pred_lines = [
             line.strip()
-            for line in prediction[len('\\begin{pmatrix}'):-len('\\end{pmatrix}')].split('\\\\')
+            for line in prediction[
+                len("\\begin{pmatrix}") : -len("\\end{pmatrix}")
+            ].split("\\\\")
             if line.strip()
         ]
         ref_lines = [
             line.strip()
-            for line in reference[len('\\begin{pmatrix}'):-len('\\end{pmatrix}')].split('\\\\')
+            for line in reference[
+                len("\\begin{pmatrix}") : -len("\\end{pmatrix}")
+            ].split("\\\\")
             if line.strip()
         ]
         matched = True
         if len(pred_lines) == len(ref_lines):
             for pred_line, ref_line in zip(pred_lines, ref_lines):
-                pred_parts = pred_line.split('&')
-                ref_parts = ref_line.split('&')
+                pred_parts = pred_line.split("&")
+                ref_parts = ref_line.split("&")
                 if len(pred_parts) == len(ref_parts):
-                    if not all([
-                        math_equal(
-                            pred_parts[i],
-                            ref_parts[i],
-                            include_percentage,
-                            is_close,
-                        ) for i in range(len(pred_parts))
-                    ]):
+                    if not all(
+                        [
+                            math_equal(
+                                pred_parts[i],
+                                ref_parts[i],
+                                include_percentage,
+                                is_close,
+                            )
+                            for i in range(len(pred_parts))
+                        ]
+                    ):
                         matched = False
                         break
                 else:
@@ -457,18 +503,30 @@ def math_equal(
         if matched:
             return True
 
-    if prediction.count('=') == 1 and reference.count('=') == 1:
-        pred = prediction.split('=')
-        pred = f'{pred[0].strip()} - ({pred[1].strip()})'
-        ref = reference.split('=')
-        ref = f'{ref[0].strip()} - ({ref[1].strip()})'
-        if symbolic_equal(pred, ref) or symbolic_equal(f'-({pred})', ref):
+    if prediction.count("=") == 1 and reference.count("=") == 1:
+        pred = prediction.split("=")
+        pred = f"{pred[0].strip()} - ({pred[1].strip()})"
+        ref = reference.split("=")
+        ref = f"{ref[0].strip()} - ({ref[1].strip()})"
+        if symbolic_equal(pred, ref) or symbolic_equal(f"-({pred})", ref):
             return True
-    elif (prediction.count('=') == 1 and len(prediction.split('=')[0].strip()) <= 2 and '=' not in reference):
-        if math_equal(prediction.split('=')[1], reference, include_percentage, is_close):
+    elif (
+        prediction.count("=") == 1
+        and len(prediction.split("=")[0].strip()) <= 2
+        and "=" not in reference
+    ):
+        if math_equal(
+            prediction.split("=")[1], reference, include_percentage, is_close
+        ):
             return True
-    elif (reference.count('=') == 1 and len(reference.split('=')[0].strip()) <= 2 and '=' not in prediction):
-        if math_equal(prediction, reference.split('=')[1], include_percentage, is_close):
+    elif (
+        reference.count("=") == 1
+        and len(reference.split("=")[0].strip()) <= 2
+        and "=" not in prediction
+    ):
+        if math_equal(
+            prediction, reference.split("=")[1], include_percentage, is_close
+        ):
             return True
 
     if symbolic_equal(prediction, reference):
@@ -486,7 +544,7 @@ def symbolic_equal(a, b):
     def _parse(s):
         for f in [parse_latex, parse_expr, latex2sympy]:
             try:
-                return f(s.replace('\\\\', '\\'))
+                return f(s.replace("\\\\", "\\"))
             except Exception:
                 try:
                     return f(s)
@@ -538,8 +596,8 @@ def symbolic_equal(a, b):
     return False
 
 
-if __name__ == '__main__':
-    print(math_equal('\n\\boxed{70,\\!000}\n', '70000'))
-    print(extract_answer('The answer is \\boxed{70,\\!000}'))
-    print(strip_answer_string(extract_answer('The answer is \\boxed{70,\\!000}')))
-    print(math_equal(extract_answer('The answer is \\boxed{70,\\!000}'), '70000'))
+if __name__ == "__main__":
+    print(math_equal("\n\\boxed{70,\\!000}\n", "70000"))
+    print(extract_answer("The answer is \\boxed{70,\\!000}"))
+    print(strip_answer_string(extract_answer("The answer is \\boxed{70,\\!000}")))
+    print(math_equal(extract_answer("The answer is \\boxed{70,\\!000}"), "70000"))
