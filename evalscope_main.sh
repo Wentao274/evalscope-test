@@ -50,7 +50,17 @@
 #   pier_agent_kwargs.config_yaml 注入(因 AgentConfig.env={} 不继承父进程环境,
 #   litellm 在 Docker 容器内需从 config_yaml 读取端点信息)。
 #
-# 注:Jenkinsfile 未暴露的 evalscope knob(min_p / seed / timeout / use_cache)
+#   USE_CACHE        [断点续跑] 上次运行的输出目录(绝对路径),非空时启用续跑:
+#                    已完成的题目直接复用其 prediction / review 缓存,只跑未完成的题目。
+#                    evalscope 内部会把 work_dir 改写为该路径(run.py:use_cache 分支),
+#                    结果写回原目录;因此 OUTPUT_BASE 在 USE_CACHE 模式下仅用于
+#                    shell 自身的工作目录,evalscope 真实报告/预测/评分将落在
+#                    USE_CACHE 指向的目录里。LOG_FILE 也切到该目录以便 Jenkins 一次拉取。
+#   RERUN_REVIEW     true / false,默认 false。仅 USE_CACHE 非空时生效:
+#                    true 时强制重算评分(删除 reviews 缓存),predictions 缓存仍复用;
+#                    适合仅换了评分逻辑 / judge 模型的场景。false 时完全复用上次的评分。
+#
+# 注:Jenkinsfile 未暴露的 evalscope knob(min_p / seed / timeout)
 #   不再透传,统一用 evalscope 自身默认值。
 
 set -o pipefail
@@ -86,10 +96,22 @@ JUDGE_API_KEY=${JUDGE_API_KEY:-EMPTY}
 TASK_TIMEOUT_JSON=${TASK_TIMEOUT_JSON:-}
 TASK_TOP_P_JSON=${TASK_TOP_P_JSON:-}
 
+# [断点续跑] USE_CACHE 非空时启用续跑;RERUN_REVIEW 控制是否重新打分
+USE_CACHE=${USE_CACHE:-}
+RERUN_REVIEW=${RERUN_REVIEW:-false}
+
 # ---------- 日志文件 ----------
+# USE_CACHE 模式下 evalscope 把 work_dir 改写为 USE_CACHE 路径,reports/predictions/
+# reviews 都落在那里。让 shell tee 日志也写到同一目录,这样 Jenkinsfile 拉取阶段
+# 只需 scp 一个目录就能同时拿到报告 + 日志,避免本地布局错位导致邮件 glob 匹配失败。
 TASKS_UNDERSCORE=$(echo "$DATASETS" | tr ',' '-')
-LOG_FILE="${OUTPUT_BASE}/evalscope-${TASKS_UNDERSCORE}.log"
-mkdir -p "${OUTPUT_BASE}"
+if [ -n "$USE_CACHE" ]; then
+    LOG_FILE="${USE_CACHE}/evalscope-${TASKS_UNDERSCORE}.log"
+    mkdir -p "$USE_CACHE"
+else
+    LOG_FILE="${OUTPUT_BASE}/evalscope-${TASKS_UNDERSCORE}.log"
+    mkdir -p "${OUTPUT_BASE}"
+fi
 
 # ---------- 按任务覆盖的 max_tokens ----------
 _resolve_max_tokens() {
@@ -321,9 +343,21 @@ run_task() {
         --datasets "$DATASET"
         --generation-config "$gen_config"
         --eval-batch-size "$EVAL_BATCH_SIZE"
-        --work-dir "$OUTPUT_BASE"
         --judge-strategy "$JUDGE_STRATEGY_ARG"
     )
+
+    # ---- 断点续跑:USE_CACHE 非空时改用 --use-cache 取代 --work-dir ----
+    # evalscope 内部会把 work_dir 重写为 use_cache 路径(run.py:use_cache 分支),
+    # 结果写回原目录,因此此时不再追加 --work-dir,避免两个目录相互覆盖。
+    # RERUN_REVIEW=true 时单独强制重算评分,predictions 缓存仍复用。
+    if [ -n "$USE_CACHE" ]; then
+        cmd_args+=(--use-cache "$USE_CACHE")
+        if [ "$RERUN_REVIEW" = 'true' ]; then
+            cmd_args+=(--rerun-review)
+        fi
+    else
+        cmd_args+=(--work-dir "$OUTPUT_BASE")
+    fi
 
     # ---- 需求 #2:样本数为空则不指定 --limit ----
     [ -n "$EXAMPLES" ] && cmd_args+=(--limit "$EXAMPLES")
@@ -438,6 +472,8 @@ print(json.dumps(args, ensure_ascii=False))
         echo "  deep_swe_args    : ${deep_swe_args}"          | tee -a "$LOG_FILE"
     fi
     echo "  WORK_DIR         : ${OUTPUT_BASE}"       | tee -a "$LOG_FILE"
+    echo "  USE_CACHE        : ${USE_CACHE:-<none>}"  | tee -a "$LOG_FILE"
+    echo "  RERUN_REVIEW     : ${RERUN_REVIEW}"       | tee -a "$LOG_FILE"
     echo "  generation-config: $gen_config"          | tee -a "$LOG_FILE"
     echo "========================================"   | tee -a "$LOG_FILE"
     echo "Command: evalscope ${cmd_args[*]}"         | tee -a "$LOG_FILE"
@@ -480,6 +516,8 @@ print(json.dumps(args, ensure_ascii=False))
     echo "  JUDGE_API_URL     : ${JUDGE_API_URL:-<none>}"
     echo "  JUDGE_API_KEY     : ${JUDGE_API_KEY:-<none>}"
     echo "  OUTPUT_BASE       : $OUTPUT_BASE"
+    echo "  USE_CACHE         : ${USE_CACHE:-<none>}"
+    echo "  RERUN_REVIEW      : ${RERUN_REVIEW}"
     echo "  LOG_FILE          : $LOG_FILE"
     echo "========================================"
 } | tee "$LOG_FILE"

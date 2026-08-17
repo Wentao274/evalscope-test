@@ -11,14 +11,20 @@
 与 sgl-eval-test/run_sgleval.py 的差异:
    - 本仓库编排脚本命名为 run_evalscope.py(避免与其他测试框架的 run_eval.py 混淆,
      Jenkinsfile 清理残留进程时按全字符串 run_evalscope.py 匹配,不会误杀其他框架)
-   - evalscope 的 generation-config 是单个 JSON 字符串,拆分为 max_tokens /
-     top_p / top_k / enable_thinking 等独立参数后注入;采样温度改为
-     按任务通过 TASK_TEMPERATURE_JSON 指定(无全局 TEMPERATURE)。仅保留
-     Jenkinsfile 暴露的参数,min_p / seed / timeout / use_cache 等未暴露
-     的 knob 不再透传(用 evalscope 自身默认值)
-   - 多任务由 --tasks 逗号分隔,在一次 bash 调用里串行执行
-   - evalscope 的 --limit 等价于 sgl-eval 的 --num-examples
-   - evalscope 的 --repeats 等价于 sgl-eval 的 --n-repeats
+    - evalscope 的 generation-config 是单个 JSON 字符串,拆分为 max_tokens /
+      top_p / top_k / enable_thinking 等独立参数后注入;采样温度改为
+      按任务通过 TASK_TEMPERATURE_JSON 指定(无全局 TEMPERATURE)。仅保留
+      Jenkinsfile 暴露的参数,min_p / seed / timeout 等未暴露
+      的 knob 不再透传(用 evalscope 自身默认值)
+    - 多任务由 --tasks 逗号分隔,在一次 bash 调用里串行执行
+    - evalscope 的 --limit 等价于 sgl-eval 的 --num-examples
+    - evalscope 的 --repeats 等价于 sgl-eval 的 --n-repeats
+    - evalscope 的 --use-cache 等价于 sgl-eval 的 --use-cache:
+      断点续跑,复用上次运行目录里的 prediction / review 缓存,只跑未完成的题目。
+      配合 --rerun-review 时只重算评分,predictions 仍复用。
+      注意 evalscope 内部会把 work_dir 改写为 use_cache 路径(run.py:use_cache 分支),
+      结果写回原目录,因此 USE_CACHE 非空时 OUTPUT_BASE 仅用于 shell 工作目录,
+      evalscope 真正使用的是 USE_CACHE 指向的目录。
 """
 
 import argparse
@@ -146,6 +152,25 @@ def parse_args():
         default="",
         help="模型服务描述信息(仅用于邮件展示,不影响执行)",
     )
+    parser.add_argument(
+        "--use-cache",
+        default="",
+        help=(
+            "[断点续跑] 上次运行的输出目录,相对当前工作目录或绝对路径。"
+            "非空时启用续跑:已完成的题目直接复用缓存,只跑未完成的题目。"
+            "典型填法: output/<tester>/<build_number>/<chip>/<model>/<timestamp>"
+        ),
+    )
+    parser.add_argument(
+        "--rerun-review",
+        action="store_true",
+        default=False,
+        help=(
+            "仅 --use-cache 启用时生效。"
+            "开启时强制重算评分(删除 reviews 缓存),predictions 缓存仍复用;"
+            "适合仅换了评分逻辑 / judge 模型的场景"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -205,6 +230,12 @@ def main():
         env["JUDGE_API_URL"] = args.judge_api_url
     env["JUDGE_API_KEY"] = args.judge_api_key or "EMPTY"
 
+    # ---- 断点续跑:USE_CACHE 非空时转绝对路径,避免 evalscope 因 cwd 不一致而找不到目录 ----
+    if args.use_cache:
+        env["USE_CACHE"] = os.path.abspath(args.use_cache)
+    # ---- RERUN_REVIEW 转成 shell 友好的 true/false 字符串 ----
+    env["RERUN_REVIEW"] = "true" if args.rerun_review else "false"
+
     cmd = ["bash", shell_script]
 
     print(f"Output directory: {output_dir}")
@@ -236,6 +267,8 @@ def main():
         "JUDGE_MODEL_ID",
         "JUDGE_API_URL",
         "JUDGE_API_KEY",
+        "USE_CACHE",
+        "RERUN_REVIEW",
     ]:
         if k in env:
             print(f"  {k}={env[k]}")

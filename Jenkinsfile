@@ -51,6 +51,9 @@ pipeline {
         text(name: 'TASK_REPEATS_JSON', defaultValue: '', description: '按任务覆盖 repeats 的 JSON,例: {"humaneval":5,"humaneval_plus":5}。命中任务使用对应值,未命中任务用全局 REPEATS;为空则全部用全局 REPEATS。推荐:humaneval/humaneval_plus 设 5 算 pass@1..pass@5,其余 greedy 基准(mmlu_pro/aime26/gpqa_diamond/ceval/cmmlu/hellaswag/math_500/hmmt25/hmmt26/imo_answerbench)保持 1 避免 N 倍空跑')
         text(name: 'DATASET_ARGS',      defaultValue: '',      description: '数据集参数 JSON,例: {"mmlu_pro":{"subset_list":["math","physics"]}}')
 
+        string(name: 'USE_CACHE',     defaultValue: '', description: '[断点续跑] 上次运行的输出目录(相对 WORK_DIR 或绝对路径),非空时启用续跑:已完成的题目直接复用缓存,只跑未完成的题目。典型填法: output/<tester>/<build_number>/<chip>/<model>/<timestamp>')
+        booleanParam(name: 'RERUN_REVIEW', defaultValue: false, description: '仅 USE_CACHE 启用时生效。开启时强制重算评分(删除 reviews 缓存),predictions 缓存仍复用;适合仅换了评分逻辑 / judge 模型的场景')
+
         string(name: 'DESCRIPTION', defaultValue: '', description: '模型服务描述信息(仅用于邮件展示)')
         text(name: 'RECIPIENTS',    defaultValue: 'liwt@zetyun.com', description: '报告邮件接收者(逗号分隔)')
         string(name: 'WORK_DIR',    defaultValue: '/dingofs/data2/userdata/liwt/maas-image/evalscope-test', description: '远程仓库目录,请不要改动')
@@ -115,6 +118,8 @@ pipeline {
                     println("per-task temperature JSON: ${params.TASK_TEMPERATURE_JSON ?: 'N/A'}")
                     println("per-task repeats JSON:   ${params.TASK_REPEATS_JSON ?: 'N/A'}")
                     println("dataset_args:    ${params.DATASET_ARGS ?: 'N/A'}")
+                    println("use_cache:        ${params.USE_CACHE ?: 'N/A (全新跑)'}")
+                    println("rerun_review:     ${params.RERUN_REVIEW}")
                     println("模型描述:        ${params.DESCRIPTION}")
                     println("邮件接收者:      ${params.RECIPIENTS}")
                     println("工作目录:        ${params.WORK_DIR}")
@@ -781,10 +786,21 @@ python3 run_evalscope.py \\
     --judge-model-id "${params.JUDGE_MODEL_ID}" \\
     --judge-api-url "${params.JUDGE_API_URL}" \\
     --judge-api-key "${env.JUDGE_API_KEY_STR ?: 'EMPTY'}" \\
+    --use-cache "${params.USE_CACHE}" \\
+    ${params.RERUN_REVIEW ? '--rerun-review' : ''} \\
     --description "${params.DESCRIPTION}"
 echo "=== 测试脚本执行结束 ==="
 echo "=== 输出目录 ==="
 find output/${params.TESTER}/${BUILD_NUMBER}/${params.CHIP}/${env.MODEL_DIR}/ -type f
+if [ -n "${params.USE_CACHE}" ]; then
+    echo "=== USE_CACHE 模式: evalscope 实际结果目录(报告/预测/评分落在此处) ==="
+    USE_CACHE_ABS="${params.USE_CACHE}"
+    # 相对路径转 WORK_DIR 绝对路径,与 run_evalscope.py 中 abspath 处理一致
+    if [ -n "\${USE_CACHE_ABS##/*}" ]; then
+        USE_CACHE_ABS="${params.WORK_DIR}/\${USE_CACHE_ABS}"
+    fi
+    find "\${USE_CACHE_ABS}" -type f 2>/dev/null || echo "WARN: USE_CACHE 目录不存在或为空"
+fi
 ENDSSH
 """
                         }
@@ -802,10 +818,73 @@ ENDSSH
                             def localDir = "reports/${params.TESTER}/${BUILD_NUMBER}/${params.CHIP}"
                             def localBuildsDir = "builds/${BUILD_NUMBER}"
                             env.RESULT_DIR = "output/${params.TESTER}/${BUILD_NUMBER}/${params.CHIP}/${env.MODEL_DIR}"
-                            echo "拉取测试结果目录: ${remoteDir}"
+
+                            // USE_CACHE 模式下 evalscope 实际把结果写到 USE_CACHE 目录
+                            // (run.py 把 work_dir 改写为 use_cache 路径),日志也被
+                            // evalscope_main.sh 重定向到 USE_CACHE/evalscope-*.log。
+                            // 因此拉取目标切换为 USE_CACHE(转绝对路径),本地布局保持
+                            // reports/<tester>/<build_number>/<chip>/<MODEL_DIR>/ 不变,
+                            // 让邮件阶段的 glob **/reports/**/*.json 继续匹配。
+                            def useCacheRemote = ''
+                            if (params.USE_CACHE?.trim()) {
+                                useCacheRemote = params.USE_CACHE.trim()
+                                if (!useCacheRemote.startsWith('/')) {
+                                    useCacheRemote = "${params.WORK_DIR}/${useCacheRemote}"
+                                }
+                            }
+
+                            echo "拉取测试结果目录: ${useCacheRemote ?: remoteDir}"
 
                             if (env.CONNECTIVITY_FAILED == 'true') {
                                 echo "=== 连通性检查未通过,跳过测试结果目录拉取,仅拉取连通性预检日志 ==="
+                            } else if (useCacheRemote) {
+                                // USE_CACHE 模式:把 USE_CACHE 整个目录 scp 到临时目录,
+                                // 再用 cp -r src/. dst 合并到 localDir/<MODEL_DIR>/,
+                                // 让下面的 DeepSWE 诊断 find 和邮件 glob 继续匹配原布局。
+                                env.RESULT_DIR = useCacheRemote.replaceAll("^${params.WORK_DIR}/", '')
+                                sh """
+set -e
+mkdir -p ${localDir}/${env.MODEL_DIR}
+echo "=== USE_CACHE 模式:从 ${useCacheRemote} 拉取 evalscope 实际结果 ==="
+scp -r -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST}:${useCacheRemote} ${localDir}/${env.MODEL_DIR}_use_cache_tmp
+# 合并内容(包括隐藏文件),避免额外嵌套一层 timestamp basename 导致邮件 glob 错位
+cp -r ${localDir}/${env.MODEL_DIR}_use_cache_tmp/. ${localDir}/${env.MODEL_DIR}/
+rm -rf ${localDir}/${env.MODEL_DIR}_use_cache_tmp
+echo "=== 拉取结果 ==="
+find ${localDir}/ -type f
+
+echo ""
+echo "=== DeepSWE 诊断: exception.txt ==="
+for f in \$(find ${localDir}/ -name "exception.txt" -type f); do
+    echo "--- \$f ---"
+    cat "\$f" 2>/dev/null || echo "(unable to read)"
+    echo ""
+done
+
+echo ""
+echo "=== DeepSWE 诊断: mini-swe-agent.txt (最后50行) ==="
+for f in \$(find ${localDir}/ -name "mini-swe-agent.txt" -type f); do
+    echo "--- \$f ---"
+    tail -50 "\$f" 2>/dev/null || echo "(unable to read)"
+    echo ""
+done
+
+echo ""
+echo "=== DeepSWE 诊断: reward.txt ==="
+for f in \$(find ${localDir}/ -name "reward.txt" -type f); do
+    echo "--- \$f ---"
+    cat "\$f" 2>/dev/null || echo "(unable to read)"
+    echo ""
+done
+
+echo ""
+echo "=== DeepSWE 诊断: trial.log (最后30行) ==="
+for f in \$(find ${localDir}/ -name "trial.log" -type f); do
+    echo "--- \$f ---"
+    tail -30 "\$f" 2>/dev/null || echo "(unable to read)"
+    echo ""
+done
+"""
                             } else {
                                 sh """
 mkdir -p ${localDir}
@@ -1079,6 +1158,8 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                 <tr><th>per-task timeout JSON</th><td>${params.TASK_TIMEOUT_JSON ?: 'N/A'}</td></tr>
                 <tr><th>per-task top_p JSON</th><td>${params.TASK_TOP_P_JSON ?: 'N/A'}</td></tr>
                 <tr><th>dataset_args</th><td>${params.DATASET_ARGS ?: 'N/A'}</td></tr>
+                <tr><th>use_cache</th><td>${params.USE_CACHE ?: 'N/A (全新跑)'}</td></tr>
+                <tr><th>rerun_review</th><td>${params.RERUN_REVIEW}</td></tr>
                 <tr><th>MCP-Atlas 镜像</th><td>${params.MCP_ATLAS_IMAGE}</td></tr>
                 <tr><th>MCP-Atlas 自动部署</th><td>${params.MCP_ATLAS_AUTO_DEPLOY}</td></tr>
                 <tr><th>MCP-Atlas API Keys</th><td>${params.MCP_ATLAS_API_KEYS ?: 'N/A(仅启用 20 个无 key server)'}</td></tr>
