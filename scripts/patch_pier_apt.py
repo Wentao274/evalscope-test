@@ -25,7 +25,7 @@ Three categories of patches:
 3. **docker-compose-build.yaml** (in pier/environments/docker/):
    - Add ``network: host`` under the ``build:`` section so that
       ``docker compose build`` uses the host network instead of the default
-      bridge network.  The enterprise proxy at 100.64.1.68:1080 is unreachable
+      bridge network.  The enterprise proxy at 10.201.136.68:1080 is unreachable
       from the bridge network (TLS handshake timeout), but works from the host
       network.
 
@@ -169,7 +169,7 @@ REPLACEMENTS.append(
 # 7. apt-get install: add --no-upgrade + || true
 #    The swe-bench image already has curl, build-essential, and git installed.
 #    Without --no-upgrade, apt tries to UPGRADE them (download .deb files), which
-#    fails because the proxy at 100.64.1.68:1080 cannot handle TLS for .deb
+#    fails because the proxy at 10.201.136.68:1080 cannot handle TLS for .deb
 #    downloads (apt-get update succeeds for index files, but apt-get install
 #    fails for .deb packages).  With --no-upgrade, apt skips already-installed
 #    packages entirely (no .deb download needed).  `|| true` makes the command

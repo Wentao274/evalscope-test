@@ -456,8 +456,8 @@ FileNotFoundError: ScaleAI/MCP-Atlas
 **解决**:
 ```bash
 # 配置代理(如需要)
-export https_proxy=http://100.64.1.68:1080
-export http_proxy=http://100.64.1.68:1080
+export https_proxy=http://10.201.136.68:1080
+export http_proxy=http://10.201.136.68:1080
 
 # 手动下载
 python3 -c "from modelscope import dataset_snapshot_download; dataset_snapshot_download('ScaleAI/MCP-Atlas', cache_dir='~/.cache/modelscope/hub/datasets')"

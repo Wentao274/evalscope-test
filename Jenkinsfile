@@ -252,8 +252,8 @@ if [ -d "${params.WORK_DIR}/.venv" ]; then
 fi
 
 if [ ! -d "${params.WORK_DIR}/.venv" ]; then
-    export https_proxy=http://100.64.1.68:1080
-    export http_proxy=http://100.64.1.68:1080
+    export https_proxy=http://10.201.136.68:1080
+    export http_proxy=http://10.201.136.68:1080
     echo "创建虚拟环境 (Python \${REQUIRED_PY})..."
     cd ${params.WORK_DIR}
     uv venv --python \${REQUIRED_PY}
@@ -300,8 +300,8 @@ else
     if [ "\${NEED_SANDBOX}" = "true" ]; then
         if ! python3 -c "import evalscope.api.sandbox" 2>/dev/null && ! pip show evalscope 2>/dev/null | grep -q "sandbox"; then
             echo "补装 sandbox 依赖..."
-            export https_proxy=http://100.64.1.68:1080
-            export http_proxy=http://100.64.1.68:1080
+            export https_proxy=http://10.201.136.68:1080
+            export http_proxy=http://10.201.136.68:1080
             SANDBOX_OK=false
             echo "从官方源 https://pypi.org/simple/ 补装 sandbox 依赖..."
             if UV_INDEX_URL="https://pypi.org/simple/" uv pip install -r requirements/sandbox.txt 2>&1; then
@@ -323,8 +323,8 @@ else
     if [ "\${NEED_DEEP_SWE}" = "true" ]; then
         if ! python3 -c "import pier" 2>/dev/null; then
             echo "补装 deep_swe 依赖(datacurve-pier)..."
-            export https_proxy=http://100.64.1.68:1080
-            export http_proxy=http://100.64.1.68:1080
+            export https_proxy=http://10.201.136.68:1080
+            export http_proxy=http://10.201.136.68:1080
             DEEP_SWE_OK=false
             echo "从官方源 https://pypi.org/simple/ 补装 deep_swe 依赖..."
             if UV_INDEX_URL="https://pypi.org/simple/" uv pip install -r evalscope/benchmarks/deep_swe/requirements.txt 2>&1; then
@@ -386,8 +386,8 @@ if [ "\${NEED_DOCKER}" = "true" ]; then
             # apt 失败,尝试直接下载二进制
             if [ "\${COMPOSE_INSTALL_OK}" != "true" ]; then
                 echo "apt 安装失败,尝试直接下载 docker-compose 二进制..."
-                export https_proxy=http://100.64.1.68:1080
-                export http_proxy=http://100.64.1.68:1080
+                export https_proxy=http://10.201.136.68:1080
+                export http_proxy=http://10.201.136.68:1080
                 COMPOSE_VERSION="v2.29.7"
                 COMPOSE_URL="https://github.com/docker/compose/releases/download/\${COMPOSE_VERSION}/docker-compose-linux-x86_64"
                 mkdir -p /usr/local/lib/docker/cli-plugins
@@ -412,7 +412,7 @@ if [ "\${NEED_DOCKER}" = "true" ]; then
     # 宿主机 apt 能正常工作的 mirror,Docker 容器经默认 bridge NAT 也能访问。
     # 关键:必须将 mirror hostname 加入 noProxy — Docker 的 noProxy CIDR(如 10.0.0.0/8)
     # 只对 IP-address 目标生效,不对 hostname 生效。若不加入,Pier 的 egress-proxy 构建中
-    # apt-get update 会经代理(100.64.1.68:1080)访问内网 mirror,代理返回 502 Bad Gateway。
+    # apt-get update 会经代理(10.201.136.68:1080)访问内网 mirror,代理返回 502 Bad Gateway。
     HOST_MIRROR=""
     if [ -f /etc/apt/sources.list ]; then
         HOST_MIRROR=\$(grep -E '^deb ' /etc/apt/sources.list | head -1 | awk '{print \$2}' | sed 's|/ubuntu.*||' | sed 's|/\$||')
@@ -446,10 +446,10 @@ if os.path.exists(p):
         c = json.load(open(p))
     except Exception:
         c = {}
-c['proxies'] = {'default': {'httpProxy': 'http://100.64.1.68:1080', 'httpsProxy': 'http://100.64.1.68:1080', 'noProxy': '\${NO_PROXY_LIST}'}}
+c['proxies'] = {'default': {'httpProxy': 'http://10.201.136.68:1080', 'httpsProxy': 'http://10.201.136.68:1080', 'noProxy': '\${NO_PROXY_LIST}'}}
 with open(p, 'w') as f:
     json.dump(c, f, indent=2)
-print('Docker 构建代理已配置: http://100.64.1.68:1080 (noProxy: \${NO_PROXY_LIST})')
+print('Docker 构建代理已配置: http://10.201.136.68:1080 (noProxy: \${NO_PROXY_LIST})')
 "
 
     # === Pre-build ubuntu:24.04 with host apt mirror + pre-installed egress-proxy packages ===
@@ -477,8 +477,8 @@ print('Docker 构建代理已配置: http://100.64.1.68:1080 (noProxy: \${NO_PRO
             # HOST_MIRROR 已在前面检测(同时用于 noProxy 配置)
 
             # Pull base image (Docker Hub via proxy — HTTPS works for Docker pulls)
-            export https_proxy=http://100.64.1.68:1080
-            export http_proxy=http://100.64.1.68:1080
+            export https_proxy=http://10.201.136.68:1080
+            export http_proxy=http://10.201.136.68:1080
             docker pull ubuntu:24.04
             unset https_proxy http_proxy
 
@@ -640,8 +640,8 @@ if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
             --env UV_NO_SYNC=1 \
             --env UV_OFFLINE=1 \
             --env npm_config_offline=true \
-            --env HTTPS_PROXY=http://100.64.1.68:1080 \
-            --env HTTP_PROXY=http://100.64.1.68:1080 \
+            --env HTTPS_PROXY=http://10.201.136.68:1080 \
+            --env HTTP_PROXY=http://10.201.136.68:1080 \
             --env NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,host.docker.internal \
             --restart on-failure:3 \
             ${params.MCP_ATLAS_IMAGE} 2>&1 || {
