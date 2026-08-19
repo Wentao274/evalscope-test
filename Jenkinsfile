@@ -463,7 +463,7 @@ print('Docker 构建代理已配置: http://10.201.136.68:1080 (noProxy: \${NO_P
     NEEDS_DAEMON_PROXY_UPDATE=false
 
     # 检查当前 daemon 的代理环境变量
-    CURRENT_DAEMON_PROXY=\$(systemctl show docker --property=Environment 2>/dev/null | grep -oP 'HTTPS_PROXY=\K[^"]+' || echo "")
+    CURRENT_DAEMON_PROXY=\$(systemctl show docker --property=Environment 2>/dev/null | grep -oP 'HTTPS_PROXY=\S+' | cut -d= -f2 || echo "")
     echo "当前 Docker daemon 代理: \${CURRENT_DAEMON_PROXY:-<无>}"
     if [ "\${CURRENT_DAEMON_PROXY}" != "http://10.201.136.68:1080" ]; then
         NEEDS_DAEMON_PROXY_UPDATE=true
