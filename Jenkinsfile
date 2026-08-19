@@ -627,6 +627,9 @@ if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
         # 启动容器(限制重启次数避免无限 crash-loop 掩盖错误)
         # UV_NO_SYNC=1: 预构建镜像已含全部依赖,跳过 uv run 的项目级 re-sync
         # UV_OFFLINE=1: 强制 uvx 使用预装缓存(install_mcp_packages.sh 已在镜像构建时装好),不尝试访问 pypi.org
+        # UV_PYTHON=3.12: 镜像预装依赖(MCP server uv tool 环境)均基于 cpython-3.12.12 构建;镜像内另含
+        #   cpython-3.13.12,uvx 默认会选最新版 Python 重新解析依赖,导致 numpy 等 cp313 wheel 缺失 →
+        #   退回访问 pypi.org → 离线/代理下超时,服务无法在 180s 内就绪。锁定 3.12 让 uvx 命中预装缓存。
         # npm_config_offline=true: 强制 npx 使用预装缓存,不尝试访问 npm registry
         # HTTPS_PROXY/HTTP_PROXY: MCP server 运行时访问外部 API(wikipedia/arxiv 等)用
         # NO_PROXY: 内网地址(10.0.0.0/8)及 host.docker.internal(宿主机 MongoDB)不走代理
@@ -639,6 +642,7 @@ if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
             \${DOCKER_ENV_ARGS} \
             --env UV_NO_SYNC=1 \
             --env UV_OFFLINE=1 \
+            --env UV_PYTHON=3.12 \
             --env npm_config_offline=true \
             --env HTTPS_PROXY=http://10.201.136.68:1080 \
             --env HTTP_PROXY=http://10.201.136.68:1080 \
@@ -703,7 +707,7 @@ if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
         echo "预检通过"
     else
         echo "MCP-Atlas agent-environment 服务不可达(HTTP \${HTTP_CODE}),且 MCP_ATLAS_AUTO_DEPLOY=false。"
-        echo "请手动部署: docker pull ${params.MCP_ATLAS_IMAGE} && docker run -d -p 1984:1984 --env UV_NO_SYNC=1 --env UV_OFFLINE=1 --env npm_config_offline=true ${params.MCP_ATLAS_IMAGE}"
+        echo "请手动部署: docker pull ${params.MCP_ATLAS_IMAGE} && docker run -d -p 1984:1984 --env UV_NO_SYNC=1 --env UV_OFFLINE=1 --env UV_PYTHON=3.12 --env npm_config_offline=true ${params.MCP_ATLAS_IMAGE}"
         echo "或设置 MCP_ATLAS_AUTO_DEPLOY=true 让 Jenkins 自动部署。"
         echo "mcp_atlas 任务将继续保留在任务列表中,但预期会失败。"
     fi

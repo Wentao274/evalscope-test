@@ -132,11 +132,17 @@ MONGODB_URI=mongodb://user:pass@host:port/dbname
 
 ### B.3 启动 agent-environment Docker 服务
 
+> **重要**：镜像内同时预装了 cpython-3.12 和 cpython-3.13，所有 MCP server 的 uv tool 环境基于 3.12 构建。`uvx` 默认会选最新 Python 重新解析依赖，导致 numpy 等 cp313 wheel 缺失后回退访问 pypi.org（离线/受限网络下超时，服务无法就绪）。**必须传 `--env UV_PYTHON=3.12` 锁定到预装版本**，否则 180 秒健康检查会超时。
+
 ```bash
 # 方式 1:直接 docker run(最简单)
 docker run -d \
     --name mcp-atlas-agent-env \
     -p 1984:1984 \
+    --env UV_NO_SYNC=1 \
+    --env UV_OFFLINE=1 \
+    --env UV_PYTHON=3.12 \
+    --env npm_config_offline=true \
     --restart unless-stopped \
     ghcr.io/scaleapi/mcp-atlas:1.2.7
 
@@ -144,6 +150,10 @@ docker run -d \
 docker run -d \
     --name mcp-atlas-agent-env \
     -p 1984:1984 \
+    --env UV_NO_SYNC=1 \
+    --env UV_OFFLINE=1 \
+    --env UV_PYTHON=3.12 \
+    --env npm_config_offline=true \
     --env BRAVE_API_KEY=your_key \
     --env GITHUB_TOKEN=your_token \
     --restart unless-stopped \
