@@ -452,6 +452,52 @@ with open(p, 'w') as f:
 print('Docker 构建代理已配置: http://10.201.136.68:1080 (noProxy: \${NO_PROXY_LIST})')
 "
 
+    # 配置 Docker daemon 代理(systemd drop-in)
+    # ~/.docker/config.json 只影响 docker run 的容器环境变量和 docker build 的 build-arg,
+    # 但 docker build / docker pull 拉取 base image 时用的是 dockerd 自身的环境变量(来自 systemd drop-in)。
+    # 如果 dockerd 的代理地址过期(如 100.64.1.68:1080),buildkit 拉取 base image 会超时。
+    # 这里检测并更新 systemd drop-in,如果代理地址已变更则重启 Docker daemon。
+    echo "=== 检查 Docker daemon 代理(systemd drop-in) ==="
+    DROPIN_DIR=/etc/systemd/system/docker.service.d
+    DROPIN_FILE=\${DROPIN_DIR}/http-proxy.conf
+    NEEDS_DAEMON_PROXY_UPDATE=false
+
+    # 检查当前 daemon 的代理环境变量
+    CURRENT_DAEMON_PROXY=\$(systemctl show docker --property=Environment 2>/dev/null | grep -oP 'HTTPS_PROXY=\K[^"]+' || echo "")
+    echo "当前 Docker daemon 代理: \${CURRENT_DAEMON_PROXY:-<无>}"
+    if [ "\${CURRENT_DAEMON_PROXY}" != "http://10.201.136.68:1080" ]; then
+        NEEDS_DAEMON_PROXY_UPDATE=true
+    fi
+
+    if [ "\${NEEDS_DAEMON_PROXY_UPDATE}" = "true" ]; then
+        echo "Docker daemon 代理需要更新 → 写入 systemd drop-in"
+        mkdir -p \${DROPIN_DIR}
+        cat > "\${DROPIN_FILE}" << 'PROXY_EOF'
+[Service]
+Environment="HTTP_PROXY=http://10.201.136.68:1080"
+Environment="HTTPS_PROXY=http://10.201.136.68:1080"
+Environment="NO_PROXY=localhost,127.0.0.1,10.0.0.0/8"
+PROXY_EOF
+        systemctl daemon-reload
+        echo "正在重启 Docker daemon(应用新代理地址)..."
+        systemctl restart docker
+        # 等待 Docker 恢复
+        for i in \$(seq 1 12); do
+            if docker info >/dev/null 2>&1; then
+                echo "Docker daemon 已恢复(\${i} 秒)"
+                break
+            fi
+            sleep 1
+        done
+        if ! docker info >/dev/null 2>&1; then
+            echo "ERROR: Docker daemon 在重启后 12 秒内未恢复"
+            exit 1
+        fi
+        echo "Docker daemon 代理已更新为 http://10.201.136.68:1080"
+    else
+        echo "Docker daemon 代理已是最新,无需更新"
+    fi
+
     # === Pre-build ubuntu:24.04 with host apt mirror + pre-installed egress-proxy packages ===
     # Pier 的 egress-proxy Dockerfile 生成时会:
     #   FROM ubuntu:24.04
