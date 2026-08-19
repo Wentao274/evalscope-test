@@ -554,14 +554,26 @@ if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
     CONT_NAME="mcp-atlas-agent-env-${BUILD_NUMBER}"
 
     # 先检查服务是否已在运行(检查端口,而非容器名,因为容器名每次构建不同)
+    # 仅 HTTP 200 不够:旧容器可能因 uvx Python 版本问题导致部分 server offline,
+    # 仍在 1984 响应但可用 server 不足。同时校验 online server 数量。
     HTTP_CODE=\$(curl -s --connect-timeout 5 -o /dev/null -w "%{http_code}" http://localhost:1984/enabled-servers 2>/dev/null) || true
+    ONLINE_COUNT=0
     if [ "\${HTTP_CODE}" = "200" ]; then
-        echo "MCP-Atlas agent-environment 服务已运行(HTTP 200),预检通过"
+        ONLINE_COUNT=\$(curl -s http://localhost:1984/enabled-servers 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); s=d.get('servers',d); print(sum(1 for v in (s.values() if isinstance(s,dict) else [x[1] for x in s if isinstance(x,list)]) if v=='OK'))" 2>/dev/null || echo 0)
+    fi
+    # 期望至少 18 个 online(镜像预装 20 个无需 key 的 server,容忍 2 个偶发失败)
+    if [ "\${HTTP_CODE}" = "200" ] && [ "\${ONLINE_COUNT}" -ge 18 ]; then
+        echo "MCP-Atlas agent-environment 服务已运行(HTTP 200, \${ONLINE_COUNT} servers online),预检通过"
         # 输出已启用的 server 列表
         echo "已启用的 MCP servers:"
         curl -s http://localhost:1984/enabled-servers | python3 -m json.tool 2>/dev/null || echo "(解析失败,但服务可用)"
     elif [ "${params.MCP_ATLAS_AUTO_DEPLOY}" = "true" ]; then
-        echo "MCP-Atlas agent-environment 服务未运行(HTTP \${HTTP_CODE}),开始自动部署..."
+        if [ "\${HTTP_CODE}" = "200" ]; then
+            echo "MCP-Atlas agent-environment 服务在运行但仅 \${ONLINE_COUNT} servers online(< 18),部分 uvx server 可能因 Python 版本问题离线,重新部署..."
+        else
+            echo "MCP-Atlas agent-environment 服务未运行(HTTP \${HTTP_CODE}),开始自动部署..."
+        fi
         echo "镜像: ${params.MCP_ATLAS_IMAGE}"
 
         # 检查 Docker
