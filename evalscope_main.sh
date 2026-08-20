@@ -334,6 +334,8 @@ run_task() {
     gen_config=$(_build_generation_config "$MAX_TOKENS_ARG" "$TEMPERATURE_ARG" "$TIMEOUT_ARG" "$TOP_P_ARG")
 
     # 组装 evalscope eval 命令的参数数组
+    # --ignore-errors: 单样本失败(如 deep_swe 容器构建/agent 异常)时跳过该样本,
+    #                   其余样本继续评估并产出报告,避免一个坏样本终结整个评估。
     local cmd_args=(
         eval
         --model "$MODEL"
@@ -344,6 +346,7 @@ run_task() {
         --generation-config "$gen_config"
         --eval-batch-size "$EVAL_BATCH_SIZE"
         --judge-strategy "$JUDGE_STRATEGY_ARG"
+        --ignore-errors
     )
 
     # ---- 断点续跑:USE_CACHE 非空时改用 --use-cache 取代 --work-dir ----

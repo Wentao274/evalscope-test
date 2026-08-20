@@ -1117,6 +1117,14 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                             connectivityFailureReason = "API 连通性或 Chat Completions 接口检查失败,具体日志未拉到,详见 Jenkins 控制台输出。"
                         }
 
+                        // 统计被 --ignore-errors 跳过的失败样本数
+                        // evalscope 在 ignore_errors=True 时,每个被跳过的样本会输出一条
+                        // WARNING: Error ignored, continuing with next sample. (evaluator.py on_error)
+                        def ignoredCount = 0
+                        if (logContent) {
+                            ignoredCount = logContent.count("Error ignored, continuing with next sample.")
+                        }
+
                         // 从 evalscope report JSON 提取每个任务的得分
                         // report 路径: <logFileBase>/<timestamp>/<evalscope-internal-timestamp>/reports/<model>/<dataset>.json
                         def taskScores = [:]
@@ -1234,6 +1242,16 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             </div>"""
                         }
 
+                        // 已忽略失败样本 HTML 块(--ignore-errors 跳过的样本,不影响其余样本出分)
+                        def ignoredSamplesHtml = ""
+                        if (ignoredCount > 0) {
+                            ignoredSamplesHtml = """
+            <div style="background-color: #fff3e0; color: #000000; border-left: 4px solid #ff9800; padding: 12px 15px; margin-top: 15px; border-radius: 3px;">
+                <h3 style="color: #ef6c00; margin-top: 0; margin-bottom: 8px;">⚠️ 已忽略 ${ignoredCount} 个失败样本</h3>
+                <p style="margin-top: 0; margin-bottom: 8px; color: #000000;">本次测试启用了 <code>--ignore-errors</code>,有 ${ignoredCount} 个样本在推理/评分阶段失败被跳过,未计入得分;其余样本继续评估并产出报告。失败详情见日志中的 <code>Error ignored, continuing with next sample.</code> 及对应 ERROR 堆栈。</p>
+            </div>"""
+                        }
+
                         def emailBody = """
 <html>
 <head>
@@ -1292,10 +1310,13 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                 <tr><th>MCP-Atlas API Keys</th><td>${params.MCP_ATLAS_API_KEYS ?: 'N/A(仅启用 20 个无 key server)'}</td></tr>
                 <tr><th>执行时间</th><td>${currentBuild.durationString}</td></tr>
                 <tr><th>测试状态</th><td>${resultStatus}</td></tr>
+                <tr><th>已忽略失败样本</th><td>${ignoredCount > 0 ? "${ignoredCount} (已跳过,未计入得分)" : '0'}</td></tr>
                 <tr><th>构建状态</th><td>${currentBuild.currentResult}</td></tr>
             </table>
 
             ${connectivityFailureHtml}
+
+            ${ignoredSamplesHtml}
 
             <h3>任务汇总得分</h3>
             <table>
