@@ -780,10 +780,10 @@ ENTRYPOINT_EOF
         fi
         echo "容器状态: \${CONT_STATUS},开始等待服务就绪..."
 
-        # 等待服务就绪(官方文档说启动需要 1+ 分钟,最长等 3 分钟)
-        echo "等待 MCP-Atlas agent-environment 启动(最长 180 秒)..."
+        # 等待服务就绪(官方文档说启动需要 1+ 分钟,最长等 5 分钟)
+        echo "等待 MCP-Atlas agent-environment 启动(最长 300 秒)..."
         READY=false
-        for i in \$(seq 1 36); do
+        for i in \$(seq 1 60); do
             sleep 5
             HTTP_CODE=\$(curl -s --noproxy localhost --connect-timeout 3 -o /dev/null -w "%{http_code}" http://localhost:1984/enabled-servers 2>/dev/null) || true
             if [ "\${HTTP_CODE}" = "200" ]; then
@@ -795,7 +795,7 @@ ENTRYPOINT_EOF
         done
 
         if [ "\${READY}" != "true" ]; then
-            echo "ERROR: MCP-Atlas agent-environment 在 180 秒内未就绪。"
+            echo "ERROR: MCP-Atlas agent-environment 在 300 秒内未就绪。"
             echo ""
             echo "=== 容器状态 ==="
             docker ps -a --filter "name=mcp-atlas-agent-env" --format "table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || true
@@ -1366,11 +1366,19 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             }
         }
 
-        stage('清理测试容器') {
-            steps {
-                sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
-                    catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
-                        sh """
+    }
+
+    post {
+        always {
+            script {
+                archiveArtifacts artifacts: "reports/${params.TESTER}/${BUILD_NUMBER}/**,builds/${BUILD_NUMBER}/**", allowEmptyArchive: true, fingerprint: true
+                echo "构建完成: ${currentBuild.currentResult}"
+            }
+            // 容器清理放在 post.always 中,无论前面任意 stage 成功或失败都会执行,
+            // 避免"环境检查"失败时已启动的 MCP-Atlas / deep_swe 容器残留。
+            sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
+                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                    sh """
 ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << 'ENDSSH'
 echo "=== 清理本次构建启动的容器(BUILD #${BUILD_NUMBER}) ==="
 
@@ -1419,17 +1427,7 @@ rm -f "\${SNAPSHOT_FILE}" /tmp/eval_containers_after_${BUILD_NUMBER} /tmp/eval_b
 echo "=== 容器清理完成 ==="
 ENDSSH
 """
-                    }
                 }
-            }
-        }
-    }
-
-    post {
-        always {
-            script {
-                archiveArtifacts artifacts: "reports/${params.TESTER}/${BUILD_NUMBER}/**,builds/${BUILD_NUMBER}/**", allowEmptyArchive: true, fingerprint: true
-                echo "构建完成: ${currentBuild.currentResult}"
             }
         }
         cleanup {
