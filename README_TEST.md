@@ -116,15 +116,22 @@ evalscope eval \
     --api-key "${API_KEY}" \
     --eval-type openai_api \
     --datasets "${dataset}" \
-    --generation-config '{"max_tokens":32768,"temperature":0.0,"top_p":0.95,"top_k":20,"MinP":0,"chat_template_kwargs":{"enable_thinking":false}}' \
+    --generation-config '{"max_tokens":32768,"temperature":1.0,"top_p":0.95,"top_k":20,"timeout":3600,"chat_template_kwargs":{"enable_thinking":true}}' \
     --eval-batch-size ${BS} \
+    --judge-strategy auto \
+    --ignore-errors \
     --work-dir "${OUTPUT_DIR}"
 ```
 
-其中 `max_tokens` / `temperature` 等通过环境变量参数化注入 `generation-config`
-JSON(需求 #1、#2)。`temperature` 不再有全局参数,改由 `TASK_TEMPERATURE_JSON`
-按任务指定(命中即用,未命中回退到 `TEMPERATURE_FALLBACK`,默认 `1.0`,适配 thinking 模式推理模型)。`run_evalscope.py` 负责把 Jenkins 参数翻译为环境变量,
-`evalscope_main.sh` 负责把环境变量组装成最终命令。
+其中 `max_tokens` / `temperature` / `top_p` / `timeout` 等通过环境变量参数化注入
+`generation-config` JSON(需求 #1、#2)。`temperature` 不再有全局参数,改由
+`TASK_TEMPERATURE_JSON` 按任务指定(命中即用,未命中回退到 `TEMPERATURE_FALLBACK`,
+默认 `1.0`,适配 thinking 模式推理模型)。`run_evalscope.py` 负责把 Jenkins 参数翻译为
+环境变量,`evalscope_main.sh` 负责把环境变量组装成最终命令。
+
+`--ignore-errors` 固定开启:单样本失败(如 deep_swe 容器构建/agent 异常)时跳过该
+样本,其余样本继续评估并产出报告,避免一个坏样本终结整个评估(被跳过的样本数会在
+邮件中以「已忽略失败样本」单独标注)。
 
 ---
 
@@ -157,23 +164,36 @@ JSON(需求 #1、#2)。`temperature` 不再有全局参数,改由 `TASK_TEMPERAT
 | Jenkins 参数 | evalscope flag | 默认 | 说明 |
 |--------------|----------------|------|------|
 | `MODEL` | `--model` | `deepseek-v4-flash` | 模型服务名 |
-| `BASE_URL` | `--api-url` | `http://10.201.149.37:8080/v1` | 端点(自动拼 /v1) |
+| `BASE_URL` | `--api-url` | `http://10.201.149.37:8080` | 端点根 URL(流水线自动拼接 `/v1`,可带可不带尾斜杠) |
 | `API_KEY` | `--api-key` | 空 → `EMPTY` | 鉴权 |
-| `TASK_MMLU_PRO` / `TASK_AIME26` / `TASK_GPQA_DIAMOND` / `TASK_CEVAL` / `TASK_CMMLU` / `TASK_MATH_500` / `TASK_HELLASWAG` / `TASK_HUMANEVAL` / `TASK_HUMANEVAL_PLUS` / `TASK_HMMT25` / `TASK_HMMT26` / `TASK_IMO_ANSWERBENCH` / `TASK_MCP_ATLAS` / `TASK_DEEP_SWE` | `--datasets` | 见 checkbox | 勾选后逗号拼接 |
+| `JUDGE_MODEL_ID` | `--judge-model-args model_id` | `deepseek-v4-flash` | 裁判模型名(mcp_atlas 等 LLM judge 任务用) |
+| `JUDGE_API_URL` | `--judge-model-args api_url` | `http://10.201.149.41:8080/v1` | 裁判模型端点(含 `/v1` 后缀) |
+| `JUDGE_API_KEY` | `--judge-model-args api_key` | `EMPTY` | 裁判模型 API Key |
+| `TASK_MMLU_PRO` / `TASK_AIME26` / `TASK_GPQA_DIAMOND` / `TASK_CEVAL` / `TASK_CMMLU` / `TASK_MATH_500` / `TASK_HELLASWAG` / `TASK_HUMANEVAL` / `TASK_HUMANEVAL_PLUS` / `TASK_HMMT25` / `TASK_HMMT26` / `TASK_IMO_ANSWERBENCH` / `TASK_MCP_ATLAS` / `TASK_DEEP_SWE` | `--datasets` | 见 checkbox | 勾选后逗号拼接(默认开启见下方) |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 重复次数(k-metrics),空 = 默认 1;按任务覆盖见 `TASK_REPEATS_JSON` |
-| `EVAL_BATCH_SIZE` | `--eval-batch-size` | `32` | 并发批大小 |
+| `EVAL_BATCH_SIZE` | `--eval-batch-size` | `1` | 并发批大小 |
 | `TEMPERATURE_FALLBACK` | (shell 内温度兜底) | `1.0` | `TASK_TEMPERATURE_JSON` 未命中任务时用此值,默认 1.0 适配 thinking 模式 |
-| `TASK_TEMPERATURE_JSON` | (shell 内 per-task 覆盖) | 见上 | 例 `{"mmlu_pro":0.0,"math_500":0.6}` |
+| `TASK_TEMPERATURE_JSON` | (shell 内 per-task 覆盖) | 全部 `1.0` | 例 `{"mmlu_pro":0.0,"math_500":0.6}`;另含 R1/instruct 预设选项 |
 | `MAX_TOKENS` | `--generation-config max_tokens` | `32768` | 注入 generation-config |
 | `TOP_P` | `--generation-config top_p` | `0.95` | 注入 generation-config |
 | `TOP_K` | `--generation-config top_k` | `20` | 注入 generation-config |
-| `ENABLE_THINKING` | `--generation-config chat_template_kwargs.enable_thinking` | `false` | 注入 generation-config |
+| `ENABLE_THINKING` | `--generation-config chat_template_kwargs.enable_thinking` | `true` | 注入 generation-config |
 | `JUDGE_STRATEGY` | `--judge-strategy` | `auto` | auto/rule/llm/llm_recall |
-| `ENABLE_SANDBOX` | `--sandbox {"enabled": true}` | `false` | 仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效;启用需 runner 上 Docker + evalscope[sandbox] |
-| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | 空 | 例 `{"mmlu_pro":32768}` |
+| `TASK_JUDGE_STRATEGY_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 judge_strategy,例 `{"imo_answerbench":"rule"}`;imo_answerbench 在有裁判模型时走 auto,无裁判模型时自动回退 rule |
+| `ENABLE_SANDBOX` | `--sandbox {"enabled": true}` | `true` | 仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效;启用前环境检查 stage 会预装 evalscope[sandbox] 并校验 Docker |
+| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime26":131072,"mcp_atlas":8192,"deep_swe":409600}` | 按任务覆盖 max_tokens,例 `{"mmlu_pro":32768}` |
+| `TASK_TIMEOUT_JSON` | (shell 内 per-task 覆盖) | `{"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800}` | 按任务覆盖模型调用超时(秒),其余任务用内置默认 3600 |
+| `TASK_TOP_P_JSON` | (shell 内 per-task 覆盖) | `{"deep_swe":1.0}` | 按任务覆盖 top_p,deep_swe 编码 agent 用 1.0 高随机性探索 |
 | `TASK_REPEATS_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 `REPEATS`,例 `{"humaneval":5}`;未命中任务用全局 `REPEATS` |
-| `DATASET_ARGS` | `--dataset-args` | 空 | 数据集参数 JSON |
+| `DATASET_ARGS` | `--dataset-args` | 空 | 数据集参数 JSON,例 `{"mmlu_pro":{"subset_list":["math","physics"]}}` |
+| `USE_CACHE` | `--use-cache` | 空 | 断点续跑:填上次输出目录则复用缓存只跑未完成题 |
+| `RERUN_REVIEW` | `--rerun-review` | `false` | 仅 USE_CACHE 启用时生效;强制重算评分,predictions 缓存仍复用 |
+
+默认开启的任务(`defaultValue: true`):`mmlu_pro`、`aime26`、`gpqa_diamond`、
+`ceval`、`math_500`、`humaneval_plus`、`hmmt26`。
+默认关闭的任务(`defaultValue: false`):`cmmlu`、`hellaswag`、`humaneval`、
+`hmmt25`、`imo_answerbench`、`mcp_atlas`、`deep_swe`。
 
 evalscope 还支持但未在 Jenkins 暴露的参数(留作扩展):
 
@@ -183,23 +203,27 @@ evalscope 还支持但未在 Jenkins 暴露的参数(留作扩展):
 | `--dataset-dir` | str | 数据集缓存目录(默认 `~/.cache/modelscope/hub/datasets`) |
 | `--dataset-hub` | str | 数据源(modelscope / huggingface / local) |
 | `--no-timestamp` | flag | 不加时间戳子目录 |
-| `--rerun-review` | flag | 配合 `--use-cache`,强制重算评分 |
 | `--min-p` | float | min-p 采样(默认 0,使用框架默认值) |
-| `--timeout` | float | 请求超时秒数(使用框架默认值) |
 | `--seed` | int | 随机种子(默认 42,使用框架默认值) |
-| `--use-cache` | str | 断点续跑路径(使用框架默认值) |
 | `--debug` | flag | 调试模式 |
-| `--ignore-errors` | flag | 出错继续 |
 | `--analysis-report` | flag | 用 judge 模型生成分析报告 |
 | `--collect-perf` / `--no-collect-perf` | flag | 收集性能指标(默认开) |
 
-> **为什么有 `TASK_MAX_TOKENS_JSON` / `TASK_TEMPERATURE_JSON` / `TASK_REPEATS_JSON`:** evalscope 的
-> `max_tokens` / `temperature` / `repeats` 都是全局的,但不同基准对生成长度需求差异大
+> 已通过 Jenkins 暴露的参数:`--use-cache`(`USE_CACHE`)、`--rerun-review`
+> (`RERUN_REVIEW`)、`--judge-model-args`(`JUDGE_MODEL_ID`/`JUDGE_API_URL`/
+> `JUDGE_API_KEY`)、`--timeout`(按任务经 `TASK_TIMEOUT_JSON` 覆盖)。
+> `--ignore-errors` 在 `evalscope_main.sh` 中固定开启(单样本失败跳过,不中断整体)。
+
+> **为什么有 `TASK_MAX_TOKENS_JSON` / `TASK_TEMPERATURE_JSON` / `TASK_REPEATS_JSON` / `TASK_TIMEOUT_JSON` / `TASK_TOP_P_JSON` / `TASK_JUDGE_STRATEGY_JSON`:** evalscope 的
+> `max_tokens` / `temperature` / `repeats` / `timeout` / `top_p` / `judge_strategy` 都是全局的,但不同基准对生成长度需求差异大
 > (mmlu_pro 推理长、gpqa 短),且不同模型族对采样温度的偏好不同(thinking 模式推理模型
 > GLM-5.2/DeepSeek-V4/Kimi-K3 官方均推荐 `1.0`;R1 系用 `0.6`;非 thinking instruct 用 `0.0`),
 > 而 `repeats` 仅对带 k-度量聚合器的基准(如 humaneval 的
-> `mean_and_pass_at_k`)有意义——其余 greedy/单次基准重复多次只是 N 倍空跑、得分不变。
+> `mean_and_pass_at_k`)有意义——其余 greedy/单次基准重复多次只是 N 倍空跑、得分不变;
+> `timeout` 对 mcp_atlas(多轮 AgentLoop)、deep_swe(仓库级编码 agent)需放宽,
+> `top_p` 对 deep_swe 编码 agent 需 1.0,`judge_strategy` 对 imo_answerbench 需在有/无裁判模型时切换 auto/rule。
 > `evalscope_main.sh:_resolve_max_tokens` / `_resolve_temperature` / `_resolve_repeats`
+> / `_resolve_timeout` / `_resolve_top_p` / `_resolve_judge_strategy`
 > 在循环每个任务时按 JSON 覆盖,比多次 Jenkins 构建省事。
 >
 > **默认推荐温度**(已预填在 `TASK_TEMPERATURE_JSON`,默认 `1.0` 适配 thinking 模式):
@@ -235,6 +259,7 @@ evalscope 还支持但未在 Jenkins 暴露的参数(留作扩展):
   - 按 metric / category / subset 展开明细
   - 性能侧指标(latency / throughput / TTFT / token 统计)
 - **连通性失败**:单独红色告警框,内嵌失败 curl 响应片段
+- **已忽略失败样本**:`--ignore-errors` 跳过的样本数以橙色告警框单独标注(未计入得分,不影响其余样本出分)
 - **附件**:`evalscope-<tasks>.log` + 连通性预检日志
 
 ---
@@ -271,6 +296,8 @@ evalscope (Python 库,下载数据集 → 推理 → 评分 → 写 report.json)
 | `no_answer` 比例高 | `max_tokens` 太小被截断,加大 `MAX_TOKENS` 或用 `TASK_MAX_TOKENS_JSON` 按任务调 |
 | reasoning 模型温度选不对 | 改 `TASK_TEMPERATURE_JSON` 按模型族调:GLM-5.2/DeepSeek-V4/Kimi-K3 thinking 用 `1.0`,R1 系用 `0.6`,通用 instruct 用 `0.0` |
 | 想要 humaneval 的 pass@5 但不想让其他基准空跑 | 设 `REPEATS` 空 + `TASK_REPEATS_JSON={"humaneval":5}`;只对 humaneval 生效 |
+| 中断后想续跑 | 填 `USE_CACHE` 为上次输出目录(相对 `WORK_DIR` 或绝对路径),已完成的题复用缓存;仅换了评分逻辑再开 `RERUN_REVIEW` |
+| mcp_atlas / deep_swe 超时 | 用 `TASK_TIMEOUT_JSON` 放宽对应任务超时(默认 mcp_atlas=7200、deep_swe=172800 秒) |
 | 远程 venv 缺包 | 删 `.venv` 重跑环境检查 stage,Jenkins 会自动 `uv pip install -e .` |
 | 数据集下载失败 | 设置 `MODELSCOPE_CACHE` 或 `HF_HOME` 换数据源;或用 `DATASET_ARGS` 指定 `local_path` |
 

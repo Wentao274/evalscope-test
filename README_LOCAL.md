@@ -110,46 +110,61 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `TESTER` | — | `liwt` | 测试人员(目录分层用) |
 | `CHIP` | — | `nvidia-h100` | 芯片平台(目录分层用) |
 | `ENGINE` / `PD` | — | `vllm` / `agg` | 仅邮件展示,不传 evalscope |
-| `MODEL` | `--model` | `glm-5.2` | 模型服务名 |
-| `BASE_URL` | `--api-url` | `http://10.201.149.34:8000/v1` | 端点(自动拼 /v1) |
+| `MODEL` | `--model` | `deepseek-v4-flash` | 模型服务名 |
+| `BASE_URL` | `--api-url` | `http://10.201.149.37:8080` | 端点根 URL(流水线自动拼接 `/v1`) |
 | `API_KEY` | `--api-key` | 空 → `EMPTY` | 鉴权 |
+| `JUDGE_MODEL_ID` | `--judge-model-args model_id` | `deepseek-v4-flash` | 裁判模型名(mcp_atlas 等 LLM judge 任务用) |
+| `JUDGE_API_URL` | `--judge-model-args api_url` | `http://10.201.149.41:8080/v1` | 裁判模型端点(含 `/v1` 后缀) |
+| `JUDGE_API_KEY` | `--judge-model-args api_key` | `EMPTY` | 裁判模型 API Key |
 | `TASK_MMLU_PRO` | `--datasets mmlu_pro` | true | 勾选后逗号拼接 |
 | `TASK_AIME26` | `--datasets aime26` | true | 勾选后逗号拼接(AIME 2026 数学竞赛,30 题) |
 | `TASK_GPQA_DIAMOND` | `--datasets gpqa_diamond` | true | 勾选后逗号拼接 |
 | `TASK_CEVAL` | `--datasets ceval` | true | 勾选后逗号拼接 |
-| `TASK_CMMLU` | `--datasets cmmlu` | true | 勾选后逗号拼接 |
+| `TASK_CMMLU` | `--datasets cmmlu` | false | 勾选后逗号拼接 |
 | `TASK_MATH_500` | `--datasets math_500` | true | 勾选后逗号拼接 |
-| `TASK_HELLASWAG` | `--datasets hellaswag` | true | 勾选后逗号拼接 |
-| `TASK_HUMANEVAL` | `--datasets humaneval` | true | 勾选后逗号拼接(Python 代码生成,需执行模型生成代码,建议 sandbox) |
-| `TASK_HUMANEVAL_PLUS` | `--datasets humaneval_plus` | true | 勾选后逗号拼接(HumanEval 增强版,需 sandbox) |
-| `TASK_HMMT25` | `--datasets hmmt25` | true | 勾选后逗号拼接(HMMT 2025 数学竞赛,30 题) |
+| `TASK_HELLASWAG` | `--datasets hellaswag` | false | 勾选后逗号拼接 |
+| `TASK_HUMANEVAL` | `--datasets humaneval` | false | 勾选后逗号拼接(Python 代码生成,需执行模型生成代码,建议 sandbox) |
+| `TASK_HUMANEVAL_PLUS` | `--datasets humaneval_plus` | true | 勾选后逗号拼接(HumanEval 增强版,需 sandbox 且用内置 numpy 的自定义 docker 镜像) |
+| `TASK_HMMT25` | `--datasets hmmt25` | false | 勾选后逗号拼接(HMMT 2025 数学竞赛,30 题) |
 | `TASK_HMMT26` | `--datasets hmmt26` | true | 勾选后逗号拼接(HMMT 2026 数学竞赛,33 题) |
-| `TASK_IMO_ANSWERBENCH` | `--datasets imo_answerbench` | true | 勾选后逗号拼接(IMO 奥数题,有裁判模型走 LLM judge,否则回退 rule) |
-| `TASK_MCP_ATLAS` | `--datasets mcp_atlas` | true | 勾选后逗号拼接(MCP 工具使用智能体,需 LLM judge + Docker) |
-| `TASK_DEEP_SWE` | `--datasets deep_swe` | true | 勾选后逗号拼接(仓库级编码 agent,需 Docker + Python>=3.12) |
+| `TASK_IMO_ANSWERBENCH` | `--datasets imo_answerbench` | false | 勾选后逗号拼接(IMO 奥数题,有裁判模型走 LLM judge,否则回退 rule) |
+| `TASK_MCP_ATLAS` | `--datasets mcp_atlas` | false | 勾选后逗号拼接(MCP 工具使用智能体,需 LLM judge + MCP-Atlas Docker 服务,支持自动部署) |
+| `TASK_DEEP_SWE` | `--datasets deep_swe` | false | 勾选后逗号拼接(仓库级编码 agent,需 Docker + Python>=3.12) |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 空 = 默认 1;全局重复次数,按任务覆盖见 `TASK_REPEATS_JSON` |
-| `EVAL_BATCH_SIZE` | `--eval-batch-size` | `32` | 并发批大小 |
+| `EVAL_BATCH_SIZE` | `--eval-batch-size` | `1` | 并发批大小 |
 | `TEMPERATURE_FALLBACK` | (shell 内温度兜底) | `1.0` | `TASK_TEMPERATURE_JSON` 未命中任务时用此值,默认 1.0 适配 thinking 模式 |
-| `TASK_TEMPERATURE_JSON` | (shell 内 per-task 覆盖) | 见默认值 | 例 `{"mmlu_pro":0.0,"math_500":0.6}` |
+| `TASK_TEMPERATURE_JSON` | (shell 内 per-task 覆盖) | 全部 `1.0` | 例 `{"mmlu_pro":0.0,"math_500":0.6}`;另含 R1/instruct 预设选项 |
 | `MAX_TOKENS` | `--generation-config max_tokens` | `32768` | 注入 generation-config |
 | `TOP_P` | `--generation-config top_p` | `0.95` | 注入 generation-config |
 | `TOP_K` | `--generation-config top_k` | `20` | 注入 generation-config |
-| `ENABLE_THINKING` | `--generation-config chat_template_kwargs.enable_thinking` | `false` | 注入 generation-config |
+| `ENABLE_THINKING` | `--generation-config chat_template_kwargs.enable_thinking` | `true` | 注入 generation-config |
 | `JUDGE_STRATEGY` | `--judge-strategy` | `auto` | auto/rule/llm/llm_recall |
-| `ENABLE_SANDBOX` | `--sandbox {"enabled": true}` | `false` | 仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效;启用需 runner 上 Docker + evalscope[sandbox] |
-| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | 空 | 例 `{"mmlu_pro":32768}` |
+| `TASK_JUDGE_STRATEGY_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 judge_strategy,例 `{"imo_answerbench":"rule"}`;imo_answerbench 在有裁判模型时走 auto,无裁判模型时自动回退 rule |
+| `ENABLE_SANDBOX` | `--sandbox {"enabled": true}` | `true` | 仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效;启用前环境检查 stage 会预装 evalscope[sandbox] 并校验 Docker |
+| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime26":131072,"mcp_atlas":8192,"deep_swe":409600}` | 例 `{"mmlu_pro":32768}` |
+| `TASK_TIMEOUT_JSON` | (shell 内 per-task 覆盖) | `{"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800}` | 按任务覆盖模型调用超时(秒),其余任务用内置默认 3600 |
+| `TASK_TOP_P_JSON` | (shell 内 per-task 覆盖) | `{"deep_swe":1.0}` | 按任务覆盖 top_p,deep_swe 编码 agent 用 1.0 |
 | `TASK_REPEATS_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 `REPEATS`,例 `{"humaneval":5}`;未命中任务用全局 `REPEATS` |
 | `DATASET_ARGS` | `--dataset-args` | 空 | 数据集参数 JSON |
+| `USE_CACHE` | `--use-cache` | 空 | 断点续跑:填上次输出目录则复用缓存只跑未完成题 |
+| `RERUN_REVIEW` | `--rerun-review` | false | 仅 USE_CACHE 启用时生效;强制重算评分,predictions 缓存仍复用 |
+| `MCP_ATLAS_IMAGE` | (Docker 镜像) | `ghcr.io/scaleapi/mcp-atlas:1.2.7` | MCP-Atlas agent-environment 镜像 |
+| `MCP_ATLAS_AUTO_DEPLOY` | (自动部署) | `true` | 服务未运行时自动 pull + docker run,监听 localhost:1984 |
+| `MCP_ATLAS_API_KEYS` | (MCP server keys) | `MONGODB_URI=...,GITHUB_TOKEN=ghp_REPLACE...` | 逗号分隔 KEY=VALUE 对;默认启用 20 个无需 key 的 server |
 | `DESCRIPTION` / `RECIPIENTS` / `WORK_DIR` | — | — | 元信息/邮件收件人/远程目录 |
 
-**为什么有 `TASK_MAX_TOKENS_JSON` / `TASK_TEMPERATURE_JSON` / `TASK_REPEATS_JSON`:** evalscope 的
-`max_tokens` / `temperature` / `repeats` 都是全局的,但不同基准对生成长度需求差异极大
+**为什么有 `TASK_MAX_TOKENS_JSON` / `TASK_TEMPERATURE_JSON` / `TASK_REPEATS_JSON` / `TASK_TIMEOUT_JSON` / `TASK_TOP_P_JSON` / `TASK_JUDGE_STRATEGY_JSON`:** evalscope 的
+`max_tokens` / `temperature` / `repeats` / `timeout` / `top_p` / `judge_strategy` 都是全局的,但不同基准对生成长度需求差异极大
 (mmlu_pro 推理长、gpqa 短),且不同模型族对采样温度偏好不同(thinking 模式推理模型
 GLM-5.2/DeepSeek-V4/Kimi-K3 官方均推荐 `1.0`;R1 系用 `0.6`;非 thinking instruct 用 `0.0`),
 而 `repeats` 仅对带 k-度量聚合器的基准(如 humaneval 的
-`mean_and_pass_at_k`)有意义——其余单次基准重复多次只是 N 倍空跑、得分不变。
+`mean_and_pass_at_k`)有意义——其余单次基准重复多次只是 N 倍空跑、得分不变;
+`timeout` 对 mcp_atlas(多轮 AgentLoop)、deep_swe(仓库级编码 agent)需放宽,
+`top_p` 对 deep_swe 编码 agent 需 1.0 高随机性探索,
+`judge_strategy` 对 imo_answerbench 需在有/无裁判模型时切换 auto/rule。
 `evalscope_main.sh:_resolve_max_tokens` / `_resolve_temperature` / `_resolve_repeats`
+/ `_resolve_timeout` / `_resolve_top_p` / `_resolve_judge_strategy`
 在循环每个任务时按 JSON 覆盖,比多次 Jenkins 构建省事。
 
 **默认推荐温度**(已预填在 `TASK_TEMPERATURE_JSON`,默认 `1.0` 适配 thinking 模式):
@@ -213,16 +228,23 @@ GLM-5.2/DeepSeek-V4/Kimi-K3 官方均推荐 `1.0`;R1 系用 `0.6`;非 thinking i
 | `--eval-backend` | str | 评估后端 | 否(默认 native) |
 | `--eval-config` | str | 后端任务配置文件 | 否 |
 | `--no-timestamp` | flag | 不加时间戳子目录 | 否(默认加) |
-| `--rerun-review` | flag | 配合 `--use-cache`,强制重算评分 | 否 |
 | `--enable-progress-tracker` | flag | 写 progress.json | 否 |
-| `--ignore-errors` | flag | 出错继续 | 否 |
 | `--debug` | flag | 调试模式 | 否 |
 | `--analysis-report` | flag | 用 judge 模型生成分析报告 | 否 |
 | `--collect-perf` / `--no-collect-perf` | flag | 收集性能指标 | 否(默认开) |
-| `--judge-model-args` | json | judge 模型参数 | 否 |
 | `--judge-worker-num` | int | judge 并发数 | 否 |
-| `--agent-config` | json | Agent 配置 | 否 |
-| `--sandbox` | json | 沙箱配置 | 否 |
+
+> 已通过 Jenkins 暴露(见上方参数表):`--use-cache`(`USE_CACHE`)、
+> `--rerun-review`(`RERUN_REVIEW`)、`--judge-model-args`(`JUDGE_MODEL_ID`/
+> `JUDGE_API_URL`/`JUDGE_API_KEY`)、`--sandbox`(`ENABLE_SANDBOX`)、
+> `--timeout`(按任务经 `TASK_TIMEOUT_JSON` 覆盖)。
+>
+> 由 `evalscope_main.sh` 固定注入(不可通过 Jenkins 参数调整):
+> - `--ignore-errors`:固定开启(单样本失败跳过,不中断整体)
+> - `--agent-config`:mcp_atlas 任务自动注入
+>   `{"mode":"native","strategy":"function_calling","max_steps":100}`
+> - `--dataset-args`:deep_swe 任务自动注入 `pier_agent_kwargs.config_yaml`
+>   (temperature/top_p/max_tokens/timeout/base_url/api_key)
 
 其余子命令(`evalscope perf` / `evalscope service` / `evalscope app`)未接入
 流水线,本地直接用即可。
@@ -257,6 +279,7 @@ evalscope 默认使用 **ModelScope** 作为数据源,缓存到:
   - 按 metric / category / subset 展开明细
   - 性能侧指标(latency / throughput / TTFT / token 统计)
 - **连通性失败**:单独红色告警框,内嵌失败 curl 响应片段
+- **已忽略失败样本**:`--ignore-errors` 跳过的样本数以橙色告警框单独标注(未计入得分,不影响其余样本出分)
 - **附件**:`evalscope-<tasks>.log` + 连通性预检日志
 
 ### report JSON 结构(邮件解析依据)
@@ -307,7 +330,10 @@ evalscope 默认使用 **ModelScope** 作为数据源,缓存到:
 | `no_answer` 比例高 | `max_tokens` 太小被截断,加大 `MAX_TOKENS` 或用 `TASK_MAX_TOKENS_JSON` 按任务调 |
 | reasoning 模型温度选不对 | 改 `TASK_TEMPERATURE_JSON` 按模型族调:GLM-5.2/DeepSeek-V4/Kimi-K3 thinking 用 `1.0`,R1 系用 `0.6`,通用 instruct 用 `0.0` |
 | 想要 humaneval 的 pass@5 但不想让其他基准空跑 | 设 `REPEATS` 空 + `TASK_REPEATS_JSON={"humaneval":5}`;只对 humaneval 生效 |
-| 远程 venv 缺包 | 删 `.venv` 重跑环境检查 stage,Jenkins 会自动 `uv pip install -e .` |
+| 中断后想续跑 | 填 `USE_CACHE` 为上次输出目录(相对 `WORK_DIR` 或绝对路径),已完成的题复用缓存;仅换了评分逻辑再开 `RERUN_REVIEW` |
+| mcp_atlas / deep_swe 超时 | 用 `TASK_TIMEOUT_JSON` 放宽对应任务超时(默认 mcp_atlas=7200、deep_swe=172800 秒) |
+| MCP-Atlas 服务未就绪 | 设 `MCP_ATLAS_AUTO_DEPLOY=true` 自动部署;或手动 `docker pull ${MCP_ATLAS_IMAGE}` 后 `docker run -d -p 1984:1984` |
+| 远程 venv 缺包 | 删 `.venv` 重跑环境检查 stage,Jenkins 会自动 `uv pip install -e .`(deep_swe 需 Python>=3.12) |
 | evalscope 命令找不到 | 确认 `source .venv/bin/activate` 后 `which evalscope` 有输出;否则重装 |
 | 连通性预检失败 | 检查 `BASE_URL` 是否可达、`MODEL` 参数是否匹配服务端模型名 |
 
