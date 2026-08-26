@@ -397,68 +397,10 @@ if [ "\${NEED_DOCKER}" = "true" ]; then
     else
         echo "Docker daemon 可用"
 
-    # 按勾选任务预拉取对应的 sandbox 镜像(去重后逐个拉取)
-    # ms_enclave 运行时首次 create_sandbox 会自动 pull,但经代理可能超时,
-    # 在环境检查阶段预拉取并缓存,避免 eval 运行时阻塞和代理超时风险。
-    if [ -n "\${SANDBOX_IMAGES}" ]; then
-        for IMAGE in \$(echo "\${SANDBOX_IMAGES}" | tr ' ' '\n' | sort -u); do
-            [ -z "\${IMAGE}" ] && continue
-            if ! docker image inspect "\${IMAGE}" >/dev/null 2>&1; then
-                echo "预拉取镜像 \${IMAGE}(经 Docker daemon 代理)..."
-                if docker pull "\${IMAGE}" 2>&1; then
-                    echo "镜像 \${IMAGE} 预拉取完成"
-                else
-                    echo "WARN: 镜像 \${IMAGE} 预拉取失败,eval 运行时会再次尝试自动 pull"
-                    echo "  若 eval 也失败,请检查 Docker daemon 代理配置(systemd drop-in)"
-                fi
-            else
-                echo "镜像 \${IMAGE} 已存在,跳过预拉取"
-            fi
-        done
-    else
-        echo "未勾选需要标准沙箱镜像的任务(humaneval/mbpp),跳过镜像预拉取"
-    fi
-    # humaneval_plus 使用自定义镜像 python3.11-numpy(FROM python:3.11 + numpy),
-    # 由 evalscope 运行时通过 prepare_docker_image 本地 build,无需在此预拉取。
-
-    # deep_swe 需要 Docker Compose v2 插件(Pier 用 "docker compose" 语法管理环境)
-    if [ "\${NEED_DEEP_SWE}" = "true" ]; then
-        if docker compose version >/dev/null 2>&1; then
-            echo "Docker Compose v2 可用: \$(docker compose version --short 2>/dev/null)"
-        else
-            echo "Docker Compose v2 插件未安装(deep_swe 需要),尝试自动安装..."
-            COMPOSE_INSTALL_OK=false
-            # 优先用 apt 安装(需要访问 Docker 官方 apt 仓库)
-            if apt-get update -qq >/dev/null 2>&1; then
-                if apt-get install -y -qq docker-compose-plugin >/dev/null 2>&1; then
-                    COMPOSE_INSTALL_OK=true
-                fi
-            fi
-            # apt 失败,尝试直接下载二进制
-            if [ "\${COMPOSE_INSTALL_OK}" != "true" ]; then
-                echo "apt 安装失败,尝试直接下载 docker-compose 二进制..."
-                export https_proxy=http://10.201.136.68:1080
-                export http_proxy=http://10.201.136.68:1080
-                COMPOSE_VERSION="v2.29.7"
-                COMPOSE_URL="https://github.com/docker/compose/releases/download/\${COMPOSE_VERSION}/docker-compose-linux-x86_64"
-                mkdir -p /usr/local/lib/docker/cli-plugins
-                if curl -fsSL "\${COMPOSE_URL}" -o /usr/local/lib/docker/cli-plugins/docker-compose && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose; then
-                    COMPOSE_INSTALL_OK=true
-                fi
-                unset https_proxy
-                unset http_proxy
-            fi
-            if [ "\${COMPOSE_INSTALL_OK}" = "true" ] && docker compose version >/dev/null 2>&1; then
-                echo "Docker Compose v2 安装成功: \$(docker compose version --short 2>/dev/null)"
-            else
-                echo "WARN: Docker Compose v2 自动安装失败,deep_swe 任务将失败"
-                echo "  非 Docker 任务(mmlu_pro 等)不受影响,继续运行"
-                echo "  手动安装: apt-get install docker-compose-plugin"
-                echo "  或: mkdir -p /usr/local/lib/docker/cli-plugins && curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose"
-            fi
-        fi
-    fi
-
+    # === 配置 Docker daemon 代理(必须在 docker pull 之前)===
+    # docker pull / docker build 拉取镜像时用的是 dockerd 自身的环境变量(来自 systemd drop-in),
+    # 而非 shell 的 http_proxy/https_proxy。若 daemon 代理未配置或已过期,docker pull 会直连
+    # Docker Hub 导致超时失败。因此先配置 daemon 代理,再拉取镜像。
     # === 检测宿主机 apt mirror(用于 egress-proxy 预构建 + noProxy 配置)===
     # 宿主机 apt 能正常工作的 mirror,Docker 容器经默认 bridge NAT 也能访问。
     # 关键:必须将 mirror hostname 加入 noProxy — Docker 的 noProxy CIDR(如 10.0.0.0/8)
@@ -548,6 +490,74 @@ PROXY_EOF
         fi
     else
         echo "Docker daemon 代理已是最新,无需更新"
+    fi
+
+    # 按勾选任务预拉取对应的 sandbox 镜像(去重后逐个拉取)
+    # ms_enclave 运行时首次 create_sandbox 会自动 pull,但经代理可能超时,
+    # 在环境检查阶段预拉取并缓存,避免 eval 运行时阻塞和代理超时风险。
+    # 注意:docker pull 使用 Docker daemon 的代理(systemd drop-in),已在上方配置完成;
+    #       同时设置 shell 级代理作为兜底,拉取完成后立即 unset,避免泄漏到后续阶段。
+    if [ -n "\${SANDBOX_IMAGES}" ]; then
+        export https_proxy=http://10.201.136.68:1080
+        export http_proxy=http://10.201.136.68:1080
+        for IMAGE in \$(echo "\${SANDBOX_IMAGES}" | tr ' ' '\n' | sort -u); do
+            [ -z "\${IMAGE}" ] && continue
+            if ! docker image inspect "\${IMAGE}" >/dev/null 2>&1; then
+                echo "预拉取镜像 \${IMAGE}(经 Docker daemon 代理)..."
+                if docker pull "\${IMAGE}" 2>&1; then
+                    echo "镜像 \${IMAGE} 预拉取完成"
+                else
+                    echo "WARN: 镜像 \${IMAGE} 预拉取失败,eval 运行时会再次尝试自动 pull"
+                    echo "  若 eval 也失败,请检查 Docker daemon 代理配置(systemd drop-in)"
+                fi
+            else
+                echo "镜像 \${IMAGE} 已存在,跳过预拉取"
+            fi
+        done
+        unset https_proxy
+        unset http_proxy
+    else
+        echo "未勾选需要标准沙箱镜像的任务(humaneval/mbpp),跳过镜像预拉取"
+    fi
+    # humaneval_plus 使用自定义镜像 python3.11-numpy(FROM python:3.11 + numpy),
+    # 由 evalscope 运行时通过 prepare_docker_image 本地 build,无需在此预拉取。
+
+    # deep_swe 需要 Docker Compose v2 插件(Pier 用 "docker compose" 语法管理环境)
+    if [ "\${NEED_DEEP_SWE}" = "true" ]; then
+        if docker compose version >/dev/null 2>&1; then
+            echo "Docker Compose v2 可用: \$(docker compose version --short 2>/dev/null)"
+        else
+            echo "Docker Compose v2 插件未安装(deep_swe 需要),尝试自动安装..."
+            COMPOSE_INSTALL_OK=false
+            # 优先用 apt 安装(需要访问 Docker 官方 apt 仓库)
+            if apt-get update -qq >/dev/null 2>&1; then
+                if apt-get install -y -qq docker-compose-plugin >/dev/null 2>&1; then
+                    COMPOSE_INSTALL_OK=true
+                fi
+            fi
+            # apt 失败,尝试直接下载二进制
+            if [ "\${COMPOSE_INSTALL_OK}" != "true" ]; then
+                echo "apt 安装失败,尝试直接下载 docker-compose 二进制..."
+                export https_proxy=http://10.201.136.68:1080
+                export http_proxy=http://10.201.136.68:1080
+                COMPOSE_VERSION="v2.29.7"
+                COMPOSE_URL="https://github.com/docker/compose/releases/download/\${COMPOSE_VERSION}/docker-compose-linux-x86_64"
+                mkdir -p /usr/local/lib/docker/cli-plugins
+                if curl -fsSL "\${COMPOSE_URL}" -o /usr/local/lib/docker/cli-plugins/docker-compose && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose; then
+                    COMPOSE_INSTALL_OK=true
+                fi
+                unset https_proxy
+                unset http_proxy
+            fi
+            if [ "\${COMPOSE_INSTALL_OK}" = "true" ] && docker compose version >/dev/null 2>&1; then
+                echo "Docker Compose v2 安装成功: \$(docker compose version --short 2>/dev/null)"
+            else
+                echo "WARN: Docker Compose v2 自动安装失败,deep_swe 任务将失败"
+                echo "  非 Docker 任务(mmlu_pro 等)不受影响,继续运行"
+                echo "  手动安装: apt-get install docker-compose-plugin"
+                echo "  或: mkdir -p /usr/local/lib/docker/cli-plugins && curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose"
+            fi
+        fi
     fi
 
     # === Pre-build ubuntu:24.04 with host apt mirror + pre-installed egress-proxy packages ===
