@@ -321,6 +321,25 @@ run_task() {
         JUDGE_STRATEGY_ARG="rule"
     fi
 
+    # frames 特殊处理(同 imo_answerbench):
+    #   llm_judge_default=True,在 auto 下会尝试调用裁判模型。
+    #   有裁判模型(JUDGE_MODEL_ID 非空)→ 保留 auto,自动启用 LLM judge(语义匹配,更准确);
+    #   无裁判模型(JUDGE_MODEL_ID 为空)→ 强制 rule,回退到 normalized exact match 规则评分。
+    #   注:裁判模型无需长上下文,judge prompt 仅含 problem + 2 个答案,输入很短。
+    if [ "$DATASET" = "frames" ] && [ -z "$JUDGE_MODEL_ID" ]; then
+        JUDGE_STRATEGY_ARG="rule"
+    fi
+
+    # mbpp / humaneval 特殊处理:需要 sandbox 才能评分
+    #   未启用 ENABLE_SANDBOX 时提前警告(否则会在评分阶段 RuntimeError,浪费已完成的推理)。
+    #   mbpp 与 humaneval 都继承 CodeExecutionSandboxMixin,沙箱执行测试用例判定 pass/fail。
+    if { [ "$DATASET" = "mbpp" ] || [ "$DATASET" = "humaneval" ] || [ "$DATASET" = "humaneval_plus" ]; } \
+       && [ "${ENABLE_SANDBOX}" != 'true' ]; then
+        echo "[WARN] $DATASET requires ENABLE_SANDBOX=true for code execution scoring. " | tee -a "$LOG_FILE"
+        echo "       Current ENABLE_SANDBOX=false, this task will fail at scoring stage." | tee -a "$LOG_FILE"
+        echo "       Set ENABLE_SANDBOX=true and ensure Docker is available on the runner." | tee -a "$LOG_FILE"
+    fi
+
     # 按任务覆盖 timeout(命中 TASK_TIMEOUT_JSON 则覆盖全局默认 3600)
     local TIMEOUT_ARG
     TIMEOUT_ARG=$(_resolve_timeout "$DATASET")

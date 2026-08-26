@@ -30,8 +30,10 @@ pipeline {
         booleanParam(name: 'TASK_HMMT26',        defaultValue: true,  description: '运行 hmmt26 (HMMT 2026年2月数学竞赛,33 题,0-shot,numeric accuracy;数学推理题,答案需 \\boxed{} 格式)')
         booleanParam(name: 'TASK_IMO_ANSWERBENCH', defaultValue: false, description: '运行 imo_answerbench (IMO 短名单奥数题,400 题,0-shot,numeric accuracy;llm_judge_default=True,有裁判模型时自动走 LLM judge,无裁判模型时回退 rule(numeric math_equal);答案含区间/集合/分数等复杂 LaTeX 形式,部分比对可能不如纯数字精确)')
         booleanParam(name: 'TASK_MCP_ATLAS',          defaultValue: false, description: '运行 mcp_atlas (Scale AI MCP 工具使用智能体,89 题,multi-turn function-calling,LLM judge coverage_score/pass_rate;MCP-Atlas agent-environment Docker 服务支持自动部署,见 MCP_ATLAS_AUTO_DEPLOY 参数;20 个无需 API key 的 MCP server 默认启用,约 40-50 个任务可评测,配置 MCP_ATLAS_API_KEYS 可启用更多 server;被测模型驱动 AgentLoop,裁判模型逐 claim 评判;依赖 JUDGE_MODEL_ID/JUDGE_API_URL/JUDGE_API_KEY 参数)')
-
         booleanParam(name: 'TASK_DEEP_SWE',           defaultValue: false, description: '运行 deep_swe (仓库级软件工程编码智能体,113 题,multi-turn agent,verifier 二值奖励 acc;通过 Pier Python API 运行,需 Docker + pip install evalscope[deep_swe] + Python>=3.12;Pier 内置 mini-swe-agent 驱动,默认 litellm model_class 兼容 OpenAI chat/completions 端点;默认 temperature=1.0 top_p=1.0 timeout=48h max_tokens=400k(官方 GLM-5.2 为 2h,低性能机器调大到 48h 兜底,可在 TASK_TIMEOUT_JSON 进一步调整);每个任务在隔离容器中运行,2 CPU/8GB RAM/无网络,串行执行耗时较长)')
+        booleanParam(name: 'TASK_MBPP',    defaultValue: false, description: '运行 mbpp (Mostly Basic Python Problems,500 题,3-shot,pass@1;代码生成后沙箱执行测试用例判定 pass/fail;需启用 ENABLE_SANDBOX=true + Docker;与 HumanEval 测试环境相同,不需要裁判模型;默认 review_timeout=20s)')
+        booleanParam(name: 'TASK_FRAMES',  defaultValue: false, description: '运行 frames (RAG 长上下文多跳推理,824 题,0-shot,accuracy;输入含维基百科上下文文档,prompt 平均 68K 字符,最大 557K 字符,被测模型需支持超长上下文(>=128K);支持精确匹配(rule)和 LLM judge 两种评分,有裁判模型时自动走 LLM judge,无裁判模型时回退 rule(exact match);裁判模型无需长上下文)')
+        booleanParam(name: 'TASK_MM_BENCH', defaultValue: false, description: '运行 mm_bench (MMBench 视觉多选问答,8658 题(中英各 4329),0-shot,CoT,accuracy;被测模型必须支持多模态输入(图像+文本),如 qwen-vl-plus/gpt-4o 等;纯文本模型不可用;多选题规则评分,不需要裁判模型)')
 
         string(name: 'EXAMPLES',        defaultValue: '',      description: '样本数限制(空 = 不限制;传给 evalscope --limit。int=数量,float=比例)')
         string(name: 'REPEATS',         defaultValue: '',      description: '重复次数(k-metrics,传给 evalscope --repeats。空 = 默认 1)')
@@ -47,7 +49,7 @@ pipeline {
         text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '{"gpqa_diamond":131072,"aime26":131072,"mcp_atlas":8192,"deep_swe":409600}', description: '按任务覆盖 max_tokens 的 JSON,默认 gpqa_diamond=131072,aime26=131072(数学推理需大输出窗口),mcp_atlas=8192(多轮 AgentLoop,单步工具调用 args/短回复够用,过大会触发长思考导致超时),deep_swe=409600(400k,编码 agent 需大输出窗口),其余任务用 MAX_TOKENS 默认值;可按需追加,例: {"mmlu_pro":4096,"gpqa_diamond":131072}')
         text(name: 'TASK_TIMEOUT_JSON', defaultValue: '{"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800}', description: '按任务覆盖模型调用超时(秒)的 JSON,默认 mcp_atlas=7200(2 小时,多轮 AgentLoop 配合 max_tokens=4096 + thinking 仍可能耗时长),deep_swe=172800(48 小时,仓库级编码 agent 串行构建+验证,低性能机器或大仓库需更长 agent_timeout),其余任务用内置默认 3600;可按需追加,例: {"mcp_atlas":7200,"humaneval":1800}')
         text(name: 'TASK_TOP_P_JSON', defaultValue: '{"deep_swe":1.0}', description: '按任务覆盖 top_p 的 JSON,默认 deep_swe=1.0(编码 agent 高随机性探索,全局默认 0.95);可按需追加,例: {"deep_swe":1.0,"humaneval":0.95}')
-        choice(name: 'TASK_TEMPERATURE_JSON', choices: ['{"mmlu_pro":1.0,"aime26":1.0,"gpqa_diamond":1.0,"ceval":1.0,"cmmlu":1.0,"math_500":1.0,"hellaswag":1.0,"humaneval":1.0,"humaneval_plus":1.0,"hmmt25":1.0,"hmmt26":1.0,"imo_answerbench":1.0,"mcp_atlas":1.0,"deep_swe":1.0}', '{"mmlu_pro":0.0,"aime26":0.6,"gpqa_diamond":0.0,"ceval":0.0,"cmmlu":0.0,"math_500":0.6,"hellaswag":0.0,"humaneval":0.2,"humaneval_plus":0.2,"hmmt25":0.6,"hmmt26":0.6,"imo_answerbench":0.6,"mcp_atlas":0.0,"deep_swe":1.0}'], description: '按任务指定采样温度的 JSON。选项1(thinking 模式,默认):全部任务 1.0,适配 GLM-5.2/DeepSeek-V4/Kimi-K3 推理模型(官方均推荐 1.0;Kimi-K3 强制 1.0)。选项2(R1/instruct 模式):多选题 0.0,数学推理 0.6,代码 0.2,工具调用 0.0,编码 agent 1.0;适配 DeepSeek-R1 系(推荐 0.5-0.7)或非 thinking instruct 模型(greedy)。如需更细粒度控制可手动输入 JSON')
+        choice(name: 'TASK_TEMPERATURE_JSON', choices: ['{"mmlu_pro":1.0,"aime26":1.0,"gpqa_diamond":1.0,"ceval":1.0,"cmmlu":1.0,"math_500":1.0,"hellaswag":1.0,"humaneval":1.0,"humaneval_plus":1.0,"hmmt25":1.0,"hmmt26":1.0,"imo_answerbench":1.0,"mcp_atlas":1.0,"deep_swe":1.0,"mbpp":1.0,"frames":1.0,"mm_bench":1.0}', '{"mmlu_pro":0.0,"aime26":0.6,"gpqa_diamond":0.0,"ceval":0.0,"cmmlu":0.0,"math_500":0.6,"hellaswag":0.0,"humaneval":0.2,"humaneval_plus":0.2,"hmmt25":0.6,"hmmt26":0.6,"imo_answerbench":0.6,"mcp_atlas":0.0,"deep_swe":1.0,"mbpp":0.2,"frames":0.0,"mm_bench":0.0}'], description: '按任务指定采样温度的 JSON。选项1(thinking 模式,默认):全部任务 1.0,适配 GLM-5.2/DeepSeek-V4/Kimi-K3 推理模型(官方均推荐 1.0;Kimi-K3 强制 1.0)。选项2(R1/instruct 模式):多选题 0.0,数学推理 0.6,代码 0.2,工具调用 0.0,编码 agent 1.0;适配 DeepSeek-R1 系(推荐 0.5-0.7)或非 thinking instruct 模型(greedy)。如需更细粒度控制可手动输入 JSON')
         text(name: 'TASK_REPEATS_JSON', defaultValue: '', description: '按任务覆盖 repeats 的 JSON,例: {"humaneval":5,"humaneval_plus":5}。命中任务使用对应值,未命中任务用全局 REPEATS;为空则全部用全局 REPEATS。推荐:humaneval/humaneval_plus 设 5 算 pass@1..pass@5,其余 greedy 基准(mmlu_pro/aime26/gpqa_diamond/ceval/cmmlu/hellaswag/math_500/hmmt25/hmmt26/imo_answerbench)保持 1 避免 N 倍空跑')
         text(name: 'DATASET_ARGS',      defaultValue: '',      description: '数据集参数 JSON,例: {"mmlu_pro":{"subset_list":["math","physics"]}}')
 
@@ -100,6 +102,9 @@ pipeline {
                     println("任务 IMO_ANSWERBENCH: ${params.TASK_IMO_ANSWERBENCH}")
                     println("任务 MCP_ATLAS:      ${params.TASK_MCP_ATLAS}")
                     println("任务 DEEP_SWE:       ${params.TASK_DEEP_SWE}")
+                    println("任务 MBPP:         ${params.TASK_MBPP}")
+                    println("任务 FRAMES:       ${params.TASK_FRAMES}")
+                    println("任务 MM_BENCH:     ${params.TASK_MM_BENCH}")
                     println("样本限制:        ${params.EXAMPLES ?: '无限制'}")
                     println("repeats:         ${params.REPEATS ?: 'default 1'}")
                     println("eval-batch-size: ${params.EVAL_BATCH_SIZE}")
@@ -230,6 +235,9 @@ REQUIRED_PY="3.12"
 # 判断需要哪些 extras
 NEED_DEEP_SWE="${params.TASK_DEEP_SWE}"
 NEED_SANDBOX="${params.ENABLE_SANDBOX}"
+NEED_HUMANEVAL="${params.TASK_HUMANEVAL}"
+NEED_HUMANEVAL_PLUS="${params.TASK_HUMANEVAL_PLUS}"
+NEED_MBPP="${params.TASK_MBPP}"
 
 # 检查现有 venv 的 Python 版本,不满足则重建
 if [ -d "${params.WORK_DIR}/.venv" ]; then
@@ -355,20 +363,63 @@ cd ${params.WORK_DIR}
 echo "=== 虚拟环境准备完成 ==="
 
 echo "=== 校验 Docker(sandbox / deep_swe 共用)==="
+# 判断是否需要 Docker:仅当勾选了实际需要 Docker 的任务时才校验
+#   - sandbox 任务(humaneval/humaneval_plus/mbpp 等 CodeExecutionSandboxMixin)+ ENABLE_SANDBOX=true
+#   - deep_swe(通过 Pier 运行,独立 Docker 环境)
+# 按勾选任务构建需要预拉取的镜像列表(每个任务只添加自身需要的镜像,最后去重拉取):
+#   humaneval      → python:3.11-slim(标准沙箱镜像)
+#   mbpp           → python:3.11-slim(标准沙箱镜像)
+#   humaneval_plus → 自定义镜像 python3.11-numpy(evalscope 运行时 docker build 本地构建,无需预拉取)
 NEED_DOCKER=false
+SANDBOX_IMAGES=""
 if [ "\${NEED_SANDBOX}" = "true" ]; then
-    NEED_DOCKER=true
+    if [ "\${NEED_HUMANEVAL}" = "true" ]; then
+        NEED_DOCKER=true
+        SANDBOX_IMAGES="\${SANDBOX_IMAGES} python:3.11-slim"
+    fi
+    if [ "\${NEED_HUMANEVAL_PLUS}" = "true" ]; then
+        NEED_DOCKER=true
+    fi
+    if [ "\${NEED_MBPP}" = "true" ]; then
+        NEED_DOCKER=true
+        SANDBOX_IMAGES="\${SANDBOX_IMAGES} python:3.11-slim"
+    fi
 fi
 if [ "\${NEED_DEEP_SWE}" = "true" ]; then
     NEED_DOCKER=true
 fi
 if [ "\${NEED_DOCKER}" = "true" ]; then
     if ! docker info >/dev/null 2>&1; then
-        echo "ERROR: Docker daemon 不可用(ENABLE_SANDBOX 或 TASK_DEEP_SWE 需要 Docker)。"
+        echo "WARN: Docker daemon 不可用(ENABLE_SANDBOX 或 TASK_DEEP_SWE 需要 Docker)。"
+        echo "勾选的 Docker 任务(humaneval/mbpp/deep_swe 等)将在 eval 时失败,"
+        echo "但非 Docker 任务(mmlu_pro/aime26 等)不受影响,继续运行。"
         echo "请确认 runner 上 Docker 已安装且 daemon 运行。"
-        exit 1
+    else
+        echo "Docker daemon 可用"
+
+    # 按勾选任务预拉取对应的 sandbox 镜像(去重后逐个拉取)
+    # ms_enclave 运行时首次 create_sandbox 会自动 pull,但经代理可能超时,
+    # 在环境检查阶段预拉取并缓存,避免 eval 运行时阻塞和代理超时风险。
+    if [ -n "\${SANDBOX_IMAGES}" ]; then
+        for IMAGE in \$(echo "\${SANDBOX_IMAGES}" | tr ' ' '\n' | sort -u); do
+            [ -z "\${IMAGE}" ] && continue
+            if ! docker image inspect "\${IMAGE}" >/dev/null 2>&1; then
+                echo "预拉取镜像 \${IMAGE}(经 Docker daemon 代理)..."
+                if docker pull "\${IMAGE}" 2>&1; then
+                    echo "镜像 \${IMAGE} 预拉取完成"
+                else
+                    echo "WARN: 镜像 \${IMAGE} 预拉取失败,eval 运行时会再次尝试自动 pull"
+                    echo "  若 eval 也失败,请检查 Docker daemon 代理配置(systemd drop-in)"
+                fi
+            else
+                echo "镜像 \${IMAGE} 已存在,跳过预拉取"
+            fi
+        done
+    else
+        echo "未勾选需要标准沙箱镜像的任务(humaneval/mbpp),跳过镜像预拉取"
     fi
-    echo "Docker daemon 可用"
+    # humaneval_plus 使用自定义镜像 python3.11-numpy(FROM python:3.11 + numpy),
+    # 由 evalscope 运行时通过 prepare_docker_image 本地 build,无需在此预拉取。
 
     # deep_swe 需要 Docker Compose v2 插件(Pier 用 "docker compose" 语法管理环境)
     if [ "\${NEED_DEEP_SWE}" = "true" ]; then
@@ -400,10 +451,10 @@ if [ "\${NEED_DOCKER}" = "true" ]; then
             if [ "\${COMPOSE_INSTALL_OK}" = "true" ] && docker compose version >/dev/null 2>&1; then
                 echo "Docker Compose v2 安装成功: \$(docker compose version --short 2>/dev/null)"
             else
-                echo "ERROR: Docker Compose v2 自动安装失败。"
-                echo "请手动安装: apt-get install docker-compose-plugin"
+                echo "WARN: Docker Compose v2 自动安装失败,deep_swe 任务将失败"
+                echo "  非 Docker 任务(mmlu_pro 等)不受影响,继续运行"
+                echo "  手动安装: apt-get install docker-compose-plugin"
                 echo "  或: mkdir -p /usr/local/lib/docker/cli-plugins && curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose"
-                exit 1
             fi
         fi
     fi
@@ -490,10 +541,11 @@ PROXY_EOF
             sleep 1
         done
         if ! docker info >/dev/null 2>&1; then
-            echo "ERROR: Docker daemon 在重启后 12 秒内未恢复"
-            exit 1
+            echo "WARN: Docker daemon 在重启后 12 秒内未恢复,deep_swe/sandbox 任务可能失败"
+            echo "  非 Docker 任务(mmlu_pro 等)不受影响,继续运行"
+        else
+            echo "Docker daemon 代理已更新为 http://10.201.136.68:1080"
         fi
-        echo "Docker daemon 代理已更新为 http://10.201.136.68:1080"
     else
         echo "Docker daemon 代理已是最新,无需更新"
     fi
@@ -559,11 +611,11 @@ DOCKERFILE
             if docker run --rm ubuntu:24.04 dpkg -s squid apache2-utils ca-certificates >/dev/null 2>&1; then
                 echo "Verification passed: squid, apache2-utils, ca-certificates all installed"
             else
-                echo "ERROR: Pre-installed packages verification failed."
-                echo "The host apt mirror may not support Ubuntu 24.04 (noble) packages."
-                echo "Host mirror: \${HOST_MIRROR:-<none>}"
-                echo "Manual fix: build a custom ubuntu:24.04 image with squid pre-installed."
-                exit 1
+                echo "WARN: Pre-installed packages verification failed,deep_swe 任务可能失败"
+                echo "  The host apt mirror may not support Ubuntu 24.04 (noble) packages."
+                echo "  Host mirror: \${HOST_MIRROR:-<none>}"
+                echo "  非 Docker 任务(mmlu_pro 等)不受影响,继续运行"
+                echo "  Manual fix: build a custom ubuntu:24.04 image with squid pre-installed."
             fi
         else
             echo "ubuntu:24.04 already pre-built with egress-proxy packages, skipping"
@@ -589,6 +641,7 @@ DOCKERFILE
         if [ "\${PATCH_EXIT}" -ne 0 ]; then
             echo "WARN: Pier patch failed (exit \${PATCH_EXIT}), deep_swe may fail"
         fi
+    fi
     fi
 else
     echo "无需 Docker,跳过"
@@ -864,6 +917,9 @@ ENDSSH
                     if (params.TASK_IMO_ANSWERBENCH) taskList.add('imo_answerbench')
                     if (params.TASK_MCP_ATLAS)        taskList.add('mcp_atlas')
                     if (params.TASK_DEEP_SWE)         taskList.add('deep_swe')
+                    if (params.TASK_MBPP)            taskList.add('mbpp')
+                    if (params.TASK_FRAMES)          taskList.add('frames')
+                    if (params.TASK_MM_BENCH)        taskList.add('mm_bench')
                     if (taskList.isEmpty()) {
                         error '至少需要选择一个测试任务'
                     }

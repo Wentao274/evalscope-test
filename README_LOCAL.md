@@ -130,6 +130,9 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `TASK_IMO_ANSWERBENCH` | `--datasets imo_answerbench` | false | 勾选后逗号拼接(IMO 奥数题,有裁判模型走 LLM judge,否则回退 rule) |
 | `TASK_MCP_ATLAS` | `--datasets mcp_atlas` | false | 勾选后逗号拼接(MCP 工具使用智能体,需 LLM judge + MCP-Atlas Docker 服务,支持自动部署) |
 | `TASK_DEEP_SWE` | `--datasets deep_swe` | false | 勾选后逗号拼接(仓库级编码 agent,需 Docker + Python>=3.12) |
+| `TASK_MBPP` | `--datasets mbpp` | false | 勾选后逗号拼接(Mostly Basic Python Problems,500 题,pass@1,需 ENABLE_SANDBOX=true,不需要裁判模型) |
+| `TASK_FRAMES` | `--datasets frames` | false | 勾选后逗号拼接(RAG 长上下文多跳推理,824 题,被测模型需支持超长上下文;有裁判模型走 LLM judge,无裁判模型回退 rule) |
+| `TASK_MM_BENCH` | `--datasets mm_bench` | false | 勾选后逗号拼接(MMBench 视觉多选问答,8658 题,**被测模型必须支持多模态**,不需要裁判模型) |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 空 = 默认 1;全局重复次数,按任务覆盖见 `TASK_REPEATS_JSON` |
 | `EVAL_BATCH_SIZE` | `--eval-batch-size` | `1` | 并发批大小 |
@@ -206,6 +209,9 @@ GLM-5.2/DeepSeek-V4/Kimi-K3 官方均推荐 `1.0`;R1 系用 `0.6`;非 thinking i
 | `imo_answerbench` | `modelscope/IMO'25-AnswerBench` | 0-shot | `acc` | IMO 短名单奥数题,400 题,有裁判模型走 LLM judge,否则回退 rule(numeric math_equal) |
 | `mcp_atlas` | `scaleapi/mcp-atlas` | 0-shot | `coverage_score`/`pass_rate` | MCP 工具使用智能体,89 题,multi-turn function-calling,需 LLM judge + MCP-Atlas Docker 服务 |
 | `deep_swe` | `evalscope/deep-swe` | 0-shot | `acc` | 仓库级软件工程编码智能体,113 题,通过 Pier 运行,需 Docker + Python>=3.12 |
+| `mbpp` | `google-research-datasets/mbpp` | 3-shot | `acc` / pass@k | Mostly Basic Python Problems,500 题,代码生成后沙箱执行测试用例判 pass;需 `ENABLE_SANDBOX=true`(与 humaneval 相同环境),不需要裁判模型 |
+| `frames` | `iic/frames` | 0-shot | `acc` | RAG 长上下文多跳推理,824 题,prompt 平均 68K 字符(最大 557K),被测模型需支持超长上下文(>=128K);有裁判模型走 LLM judge(裁判模型无需长上下文),无裁判模型回退 rule(exact match) |
+| `mm_bench` | `lmms-lab/MMBench` | 0-shot | `acc` | MMBench 视觉多选问答,8658 题(中 cn/英 en 各 4329),**被测模型必须支持多模态**(图像+文本),如 qwen-vl-plus/gpt-4o 等;规则评分,不需要裁判模型 |
 
 这些默认值不传任何 flag 时生效;Jenkins 任一对应参数填了非空值就覆盖默认。
 

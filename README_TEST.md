@@ -98,6 +98,9 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `imo_answerbench` | `modelscope/IMO'25-AnswerBench` | 0-shot | 1 | IMO 短名单奥数题,400 题,有裁判模型时走 LLM judge,否则回退 rule |
 | `mcp_atlas` | `scaleapi/mcp-atlas` | 0-shot | 1 | MCP 工具使用智能体,89 题,multi-turn function-calling,需 LLM judge + MCP-Atlas Docker 服务 |
 | `deep_swe` | `evalscope/deep-swe` | 0-shot | 1 | 仓库级软件工程编码智能体,113 题,通过 Pier 运行,需 Docker + Python>=3.12 |
+| `mbpp` | `google-research-datasets/mbpp` | 3-shot | 1 | Mostly Basic Python Problems,500 题,pass@1,需 sandbox(与 humaneval 相同环境),不需要裁判模型 |
+| `frames` | `iic/frames` | 0-shot | 1 | RAG 长上下文多跳推理,824 题,prompt 平均 68K 字符(最大 557K),被测模型需支持超长上下文;有裁判模型走 LLM judge,无裁判模型回退 rule(exact match) |
+| `mm_bench` | `lmms-lab/MMBench` | 0-shot | 2 | MMBench 视觉多选问答,8658 题(中 cn/英 en 各 4329),被测模型必须支持多模态(图像+文本);规则评分,不需要裁判模型 |
 
 > EvalScope 本身支持更多基准(如 gsm8k、aime24、aime25、arc 等),可按需在
 > `Jenkinsfile` 的 `parameters` 块添加 `booleanParam` 并在 `运行evalscope测试`
@@ -193,7 +196,7 @@ evalscope eval \
 默认开启的任务(`defaultValue: true`):`mmlu_pro`、`aime26`、`gpqa_diamond`、
 `ceval`、`math_500`、`humaneval_plus`、`hmmt26`。
 默认关闭的任务(`defaultValue: false`):`cmmlu`、`hellaswag`、`humaneval`、
-`hmmt25`、`imo_answerbench`、`mcp_atlas`、`deep_swe`。
+`hmmt25`、`imo_answerbench`、`mcp_atlas`、`deep_swe`、`mbpp`、`frames`、`mm_bench`。
 
 evalscope 还支持但未在 Jenkins 暴露的参数(留作扩展):
 
@@ -244,8 +247,8 @@ evalscope 还支持但未在 Jenkins 暴露的参数(留作扩展):
 >
 > | 任务 | 推荐 repeats | 理由 |
 > |------|-------------|------|
-> | `mmlu_pro` / `aime26` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` / `math_500` / `hmmt25` / `hmmt26` / `imo_answerbench` / `mcp_atlas` / `deep_swe` | `1` | 单次评测,重复多次得分不变,纯 N 倍空跑 |
-> | `humaneval` / `humaneval_plus` | `1`(pass@1)或 `5`(pass@k) | 带 `mean_and_pass_at_k` 聚合器;`repeats=k` 才能算 `pass@1..pass@k` |
+> | `mmlu_pro` / `aime26` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` / `math_500` / `hmmt25` / `hmmt26` / `imo_answerbench` / `mcp_atlas` / `deep_swe` / `frames` / `mm_bench` | `1` | 单次评测,重复多次得分不变,纯 N 倍空跑 |
+> | `humaneval` / `humaneval_plus` / `mbpp` | `1`(pass@1)或 `5`(pass@k) | 带 `mean_and_pass_at_k` 聚合器;`repeats=k` 才能算 `pass@1..pass@k` |
 
 ---
 
