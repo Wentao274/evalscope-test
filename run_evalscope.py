@@ -51,7 +51,7 @@ def parse_args():
     parser.add_argument(
         "--tasks",
         default="mmlu_pro",
-        help="任务列表,逗号分隔(默认 mmlu_pro)。可选: mmlu_pro, aime26, gpqa_diamond, ceval, cmmlu, math_500, hellaswag, humaneval, humaneval_plus, hmmt25, hmmt26, imo_answerbench, mcp_atlas, deep_swe, mbpp, frames, mm_bench",
+        help="任务列表,逗号分隔(默认 mmlu_pro)。可选: mmlu_pro, aime25, aime26, gpqa_diamond, ceval, cmmlu, math_500, hellaswag, humaneval, humaneval_plus, hmmt25, hmmt26, imo_answerbench, mcp_atlas, deep_swe, mbpp, frames, mm_bench",
     )
     parser.add_argument("--examples", default="", help="样本数限制(空 = 不限制)")
     parser.add_argument(

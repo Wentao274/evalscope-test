@@ -117,6 +117,7 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `JUDGE_API_URL` | `--judge-model-args api_url` | `http://10.201.149.41:8080/v1` | 裁判模型端点(含 `/v1` 后缀) |
 | `JUDGE_API_KEY` | `--judge-model-args api_key` | `EMPTY` | 裁判模型 API Key |
 | `TASK_MMLU_PRO` | `--datasets mmlu_pro` | true | 勾选后逗号拼接 |
+| `TASK_AIME25` | `--datasets aime25` | true | 勾选后逗号拼接(AIME 2025 数学竞赛,30 题) |
 | `TASK_AIME26` | `--datasets aime26` | true | 勾选后逗号拼接(AIME 2026 数学竞赛,30 题) |
 | `TASK_GPQA_DIAMOND` | `--datasets gpqa_diamond` | true | 勾选后逗号拼接 |
 | `TASK_CEVAL` | `--datasets ceval` | true | 勾选后逗号拼接 |
@@ -145,8 +146,8 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `JUDGE_STRATEGY` | `--judge-strategy` | `auto` | auto/rule/llm/llm_recall |
 | `TASK_JUDGE_STRATEGY_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 judge_strategy,例 `{"imo_answerbench":"rule"}`;imo_answerbench 在有裁判模型时走 auto,无裁判模型时自动回退 rule |
 | `ENABLE_SANDBOX` | `--sandbox {"enabled": true}` | `true` | 仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效;启用前环境检查 stage 会预装 evalscope[sandbox] 并校验 Docker |
-| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime26":131072,"mcp_atlas":8192,"deep_swe":409600}` | 例 `{"mmlu_pro":32768}` |
-| `TASK_TIMEOUT_JSON` | (shell 内 per-task 覆盖) | `{"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800}` | 按任务覆盖模型调用超时(秒),其余任务用内置默认 3600 |
+| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime25":131072,"aime26":131072,"imo_answerbench":131072,"hmmt25":65536,"hmmt26":65536,"mcp_atlas":8192,"deep_swe":409600,"ceval":16384,"hellaswag":8192,"humaneval":16384,"humaneval_plus":16384,"mbpp":16384,"frames":16384}` | 例 `{"mmlu_pro":32768}` |
+| `TASK_TIMEOUT_JSON` | (shell 内 per-task 覆盖) | `{"aime25":7200,"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800}` | 按任务覆盖模型调用超时(秒),其余任务用内置默认 3600 |
 | `TASK_TOP_P_JSON` | (shell 内 per-task 覆盖) | `{"deep_swe":1.0}` | 按任务覆盖 top_p,deep_swe 编码 agent 用 1.0 |
 | `TASK_REPEATS_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 `REPEATS`,例 `{"humaneval":5}`;未命中任务用全局 `REPEATS` |
 | `DATASET_ARGS` | `--dataset-args` | 空 | 数据集参数 JSON |
@@ -188,7 +189,7 @@ GLM-5.2/DeepSeek-V4/Kimi-K3 官方均推荐 `1.0`;R1 系用 `0.6`;非 thinking i
 
 | 任务 | 推荐 repeats | 理由 |
 |------|-------------|------|
-| `mmlu_pro` / `aime26` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` / `math_500` / `hmmt25` / `hmmt26` / `imo_answerbench` / `mcp_atlas` / `deep_swe` | `1` | 单次评测,重复多次得分不变,纯 N 倍空跑 |
+| `mmlu_pro` / `aime25` / `aime26` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` / `math_500` / `hmmt25` / `hmmt26` / `imo_answerbench` / `mcp_atlas` / `deep_swe` | `1` | 单次评测,重复多次得分不变,纯 N 倍空跑 |
 | `humaneval` / `humaneval_plus` | `1`(pass@1)或 `5`(pass@k) | 带 `mean_and_pass_at_k` 聚合器;`repeats=k` 才能算 `pass@1..pass@k` |
 
 ### 4.1 各基准的默认配置(来自 adapter)
@@ -196,6 +197,7 @@ GLM-5.2/DeepSeek-V4/Kimi-K3 官方均推荐 `1.0`;R1 系用 `0.6`;非 thinking i
 | 基准 | dataset_id | 默认 few-shot | metric | 说明 |
 |------|------------|----------------|--------|------|
 | `mmlu_pro` | `TIGER-Lab/MMLU-Pro` | 5-shot | `acc` | 10 选项多学科多选,要求 step-by-step 推理 |
+| `aime25` | `evalscope/aime25` | 0-shot | `acc` | AIME 2025 美国数学邀请赛,30 题,numeric accuracy |
 | `aime26` | `evalscope/aime26` | 0-shot | `acc` | AIME 2026 美国数学邀请赛,30 题,numeric accuracy |
 | `gpqa_diamond` | `AI-ModelScope/gpqa_diamond` | 0-shot | `acc` | 博士级 4 选择,198 题,答案随机打乱 |
 | `ceval` | `evalscope/ceval` | 5-shot | `acc` | 中文多学科多选,52 学科 |

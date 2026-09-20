@@ -85,6 +85,7 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | 数据集 | dataset_id | 默认 few-shot | 子集数 | 说明 |
 |--------|------------|----------------|--------|------|
 | `mmlu_pro` | `TIGER-Lab/MMLU-Pro` | 5-shot | 14 | 10 选项多学科多选,要求 step-by-step 推理,答案格式 `ANSWER: [LETTER]` |
+| `aime25` | `evalscope/aime25` | 0-shot | 1 | AIME 2025 美国数学邀请赛,30 题,答案格式 `\boxed{}`,numeric accuracy |
 | `aime26` | `evalscope/aime26` | 0-shot | 1 | AIME 2026 美国数学邀请赛,30 题,答案格式 `\boxed{}`,numeric accuracy |
 | `gpqa_diamond` | `AI-ModelScope/gpqa_diamond` | 0-shot | 1 | 博士级 4 选择(biology/physics/chemistry),198 题,答案随机打乱 |
 | `ceval` | `evalscope/ceval` | 5-shot | 52 | 中文多学科多选,4 选项,答案格式 `答案：[LETTER]` |
@@ -193,7 +194,7 @@ evalscope eval \
 | `USE_CACHE` | `--use-cache` | 空 | 断点续跑:填上次输出目录则复用缓存只跑未完成题 |
 | `RERUN_REVIEW` | `--rerun-review` | `false` | 仅 USE_CACHE 启用时生效;强制重算评分,predictions 缓存仍复用 |
 
-默认开启的任务(`defaultValue: true`):`mmlu_pro`、`aime26`、`gpqa_diamond`、
+默认开启的任务(`defaultValue: true`):`mmlu_pro`、`aime25`、`aime26`、`gpqa_diamond`、
 `ceval`、`math_500`、`humaneval_plus`、`hmmt26`。
 默认关闭的任务(`defaultValue: false`):`cmmlu`、`hellaswag`、`humaneval`、
 `hmmt25`、`imo_answerbench`、`mcp_atlas`、`deep_swe`、`mbpp`、`frames`、`mm_bench`。
