@@ -146,7 +146,7 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `JUDGE_STRATEGY` | `--judge-strategy` | `auto` | auto/rule/llm/llm_recall |
 | `TASK_JUDGE_STRATEGY_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 judge_strategy,例 `{"imo_answerbench":"rule"}`;imo_answerbench 在有裁判模型时走 auto,无裁判模型时自动回退 rule |
 | `ENABLE_SANDBOX` | `--sandbox {"enabled": true}` | `true` | 仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效;启用前环境检查 stage 会预装 evalscope[sandbox] 并校验 Docker |
-| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime25":131072,"aime26":131072,"imo_answerbench":131072,"hmmt25":65536,"hmmt26":65536,"mcp_atlas":8192,"deep_swe":409600,"ceval":16384,"hellaswag":8192,"humaneval":16384,"humaneval_plus":16384,"mbpp":16384,"frames":16384}` | 例 `{"mmlu_pro":32768}` |
+| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime25":131072,"aime26":131072,"imo_answerbench":131072,"hmmt25":65536,"hmmt26":65536,"mcp_atlas":8192,"deep_swe":409600,"hellaswag":8192,"humaneval":16384,"humaneval_plus":16384,"mbpp":16384,"frames":16384}` | 例 `{"mmlu_pro":32768}`;ceval 未列出,用全局默认 32768 |
 | `TASK_TIMEOUT_JSON` | (shell 内 per-task 覆盖) | `{"aime25":7200,"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800}` | 按任务覆盖模型调用超时(秒),其余任务用内置默认 3600 |
 | `TASK_TOP_P_JSON` | (shell 内 per-task 覆盖) | `{"deep_swe":1.0}` | 按任务覆盖 top_p,deep_swe 编码 agent 用 1.0 |
 | `TASK_REPEATS_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 `REPEATS`,例 `{"humaneval":5}`;未命中任务用全局 `REPEATS` |
