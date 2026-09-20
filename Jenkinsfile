@@ -223,10 +223,6 @@ else
     echo "未发现残留进程"
 fi
 
-echo "=== 设置权限 ==="
-chmod +x evalscope_main.sh
-chmod +x run_evalscope.py
-
 echo "=== 检查并创建虚拟环境 ==="
 # 统一使用 Python 3.12 创建虚拟环境:
 # - deep_swe 需要 Python >= 3.12(datacurve-pier 的硬约束)
