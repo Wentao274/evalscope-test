@@ -93,6 +93,9 @@ TEMPERATURE_FALLBACK=${TEMPERATURE_FALLBACK:-1.0}
 JUDGE_MODEL_ID=${JUDGE_MODEL_ID:-}
 JUDGE_API_URL=${JUDGE_API_URL:-}
 JUDGE_API_KEY=${JUDGE_API_KEY:-EMPTY}
+USER_MODEL_ID=${USER_MODEL_ID:-}
+USER_MODEL_API_URL=${USER_MODEL_API_URL:-}
+USER_MODEL_API_KEY=${USER_MODEL_API_KEY:-EMPTY}
 TASK_TIMEOUT_JSON=${TASK_TIMEOUT_JSON:-}
 TASK_TOP_P_JSON=${TASK_TOP_P_JSON:-}
 TASK_STOP_SEQS_JSON=${TASK_STOP_SEQS_JSON:-}
@@ -366,6 +369,15 @@ run_task() {
         JUDGE_STRATEGY_ARG="rule"
     fi
 
+    # hle 特殊处理(同 imo_answerbench/frames):
+    #   llm_judge_default=True,在 auto 下会尝试调用裁判模型。
+    #   有裁判模型(JUDGE_MODEL_ID 非空)→ 保留 auto,自动启用 LLM judge(GRADE C/I 语义匹配,更准确);
+    #   无裁判模型(JUDGE_MODEL_ID 为空)→ 强制 rule,回退到 exact match 规则评分。
+    #   注:HLE 76% 为简答题,rule 对格式(\boxed{} / 单位 / 区间)敏感,准确率偏低,仅作冒烟用。
+    if [ "$DATASET" = "hle" ] && [ -z "$JUDGE_MODEL_ID" ]; then
+        JUDGE_STRATEGY_ARG="rule"
+    fi
+
     # mbpp / humaneval 特殊处理:需要 sandbox 才能评分
     #   未启用 ENABLE_SANDBOX 时提前警告(否则会在评分阶段 RuntimeError,浪费已完成的推理)。
     #   mbpp 与 humaneval 都继承 CodeExecutionSandboxMixin,沙箱执行测试用例判定 pass/fail。
@@ -434,8 +446,72 @@ run_task() {
         cmd_args+=(--repeats "$REPEATS_ARG")
     fi
 
-    if [ -n "$DATASET_ARGS" ]; then
-        cmd_args+=(--dataset-args "$DATASET_ARGS")
+    # ---- hle 专属:默认只跑文本子集(include_multi_modal=false) ----
+    # HLE 14% 题含图像,纯文本模型无法处理。本流水线默认只跑文本子集:
+    # 当 DATASET 为 hle 时自动注入 include_multi_modal=false(只跑约 86% 文本题),
+    # 用户在 DATASET_ARGS 里给 hle 显式配置了 include_multi_modal 时以用户为准。
+    local DATASET_ARGS_EFFECTIVE="$DATASET_ARGS"
+    if [ "$DATASET" = "hle" ]; then
+        DATASET_ARGS_EFFECTIVE=$(DATASET_ARGS="$DATASET_ARGS" python3 -c "
+import json, os
+raw = (os.environ.get('DATASET_ARGS') or '').strip()
+try:
+    args = json.loads(raw) if raw else {}
+except Exception:
+    args = {}
+hle = args.get('hle') if isinstance(args.get('hle'), dict) else {}
+ep = hle.get('extra_params') if isinstance(hle.get('extra_params'), dict) else {}
+if 'include_multi_modal' not in ep:
+    ep['include_multi_modal'] = False
+    hle['extra_params'] = ep
+    args['hle'] = hle
+print(json.dumps(args, ensure_ascii=False))
+")
+    fi
+
+    # ---- tau_bench / tau2_bench 专属:自动注入用户模拟模型参数 ----
+    # tau_bench/tau2_bench 用 LLM 模拟用户与被测模型多轮对话,需配置 user_model/api_key/api_base。
+    # USER_MODEL_ID 留空时回退到被测模型(MODEL_NAME / LLM_ADDR / API_KEY)。
+    # 用户在 DATASET_ARGS 里显式配置了对应字段时以用户为准。
+    if [ "$DATASET" = "tau_bench" ] || [ "$DATASET" = "tau2_bench" ]; then
+        DATASET_ARGS_EFFECTIVE=$(DATASET_ARGS="$DATASET_ARGS_EFFECTIVE" \
+                                 USER_MODEL_ID="$USER_MODEL_ID" \
+                                 USER_MODEL_API_URL="$USER_MODEL_API_URL" \
+                                 USER_MODEL_API_KEY="$USER_MODEL_API_KEY" \
+                                 MODEL_NAME="$MODEL_NAME" \
+                                 LLM_ADDR="$LLM_ADDR" \
+                                 API_KEY="$API_KEY" \
+                                 DATASET="$DATASET" \
+                                 python3 -c "
+import json, os
+raw = (os.environ.get('DATASET_ARGS') or '').strip()
+try:
+    args = json.loads(raw) if raw else {}
+except Exception:
+    args = {}
+ds = os.environ.get('DATASET', '')
+ds_args = args.get(ds) if isinstance(args.get(ds), dict) else {}
+ep = ds_args.get('extra_params') if isinstance(ds_args.get('extra_params'), dict) else {}
+# user_model: 留空回退到被测模型名
+if 'user_model' not in ep:
+    ep['user_model'] = os.environ.get('USER_MODEL_ID', '') or os.environ.get('MODEL_NAME', '')
+# api_base: 留空回退到被测模型端点
+if 'api_base' not in ep:
+    ep['api_base'] = os.environ.get('USER_MODEL_API_URL', '') or os.environ.get('LLM_ADDR', '')
+# api_key: 空串回退到被测模型 key;'EMPTY' 表示用户模拟模型无需认证
+if 'api_key' not in ep:
+    uk = os.environ.get('USER_MODEL_API_KEY', '')
+    ep['api_key'] = uk if uk else os.environ.get('API_KEY', 'EMPTY')
+# generation_config: 默认 temperature=0.0(greedy 用户模拟)
+if 'generation_config' not in ep:
+    ep['generation_config'] = {'temperature': 0.0}
+ds_args['extra_params'] = ep
+args[ds] = ds_args
+print(json.dumps(args, ensure_ascii=False))
+")
+    fi
+    if [ -n "$DATASET_ARGS_EFFECTIVE" ]; then
+        cmd_args+=(--dataset-args "$DATASET_ARGS_EFFECTIVE")
     fi
 
     # ---- deep_swe 专属:注入 pier_agent_kwargs + 环境变量(若用户未通过 DATASET_ARGS 指定)----
@@ -527,10 +603,12 @@ print(json.dumps(args, ensure_ascii=False))
     echo "  REPEATS          : ${REPEATS_ARG:-<default 1>}"  | tee -a "$LOG_FILE"
     echo "  JUDGE_STRATEGY   : $JUDGE_STRATEGY_ARG"      | tee -a "$LOG_FILE"
     echo "  ENABLE_SANDBOX   : $ENABLE_SANDBOX"      | tee -a "$LOG_FILE"
-    echo "  DATASET_ARGS     : ${DATASET_ARGS:-<none>}"  | tee -a "$LOG_FILE"
+    echo "  DATASET_ARGS     : ${DATASET_ARGS_EFFECTIVE:-<none>}"  | tee -a "$LOG_FILE"
     echo "  JUDGE_MODEL_ID   : ${JUDGE_MODEL_ID:-<none>}" | tee -a "$LOG_FILE"
     echo "  JUDGE_API_URL    : ${JUDGE_API_URL:-<none>}"  | tee -a "$LOG_FILE"
     echo "  judge-model-args : ${judge_args_json:-<none>}" | tee -a "$LOG_FILE"
+    echo "  USER_MODEL_ID    : ${USER_MODEL_ID:-<reuse MODEL>}" | tee -a "$LOG_FILE"
+    echo "  USER_MODEL_API_URL: ${USER_MODEL_API_URL:-<reuse LLM_ADDR>}" | tee -a "$LOG_FILE"
     if [ "$DATASET" = "deep_swe" ] && [ -z "$DATASET_ARGS" ]; then
         echo "  deep_swe_args    : ${deep_swe_args}"          | tee -a "$LOG_FILE"
     fi
@@ -579,6 +657,9 @@ print(json.dumps(args, ensure_ascii=False))
     echo "  JUDGE_MODEL_ID    : ${JUDGE_MODEL_ID:-<none>}"
     echo "  JUDGE_API_URL     : ${JUDGE_API_URL:-<none>}"
     echo "  JUDGE_API_KEY     : ${JUDGE_API_KEY:-<none>}"
+    echo "  USER_MODEL_ID     : ${USER_MODEL_ID:-<reuse MODEL_NAME>}"
+    echo "  USER_MODEL_API_URL : ${USER_MODEL_API_URL:-<reuse LLM_ADDR>}"
+    echo "  USER_MODEL_API_KEY : ${USER_MODEL_API_KEY:-<reuse API_KEY>}"
     echo "  OUTPUT_BASE       : $OUTPUT_BASE"
     echo "  USE_CACHE         : ${USE_CACHE:-<none>}"
     echo "  RERUN_REVIEW      : ${RERUN_REVIEW}"

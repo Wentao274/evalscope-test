@@ -51,7 +51,7 @@ def parse_args():
     parser.add_argument(
         "--tasks",
         default="mmlu_pro",
-        help="任务列表,逗号分隔(默认 mmlu_pro)。可选: mmlu_pro, aime25, aime26, gpqa_diamond, ceval, cmmlu, math_500, hellaswag, humaneval, humaneval_plus, hmmt25, hmmt26, imo_answerbench, mcp_atlas, deep_swe, mbpp, frames, mm_bench",
+        help="任务列表,逗号分隔(默认 mmlu_pro)。可选: mmlu_pro, aime25, aime26, gpqa_diamond, ceval, cmmlu, math_500, hellaswag, humaneval, humaneval_plus, hmmt25, hmmt26, imo_answerbench, mcp_atlas, deep_swe, mbpp, frames, mm_bench, hle, tau_bench, tau2_bench",
     )
     parser.add_argument("--examples", default="", help="样本数限制(空 = 不限制)")
     parser.add_argument(
@@ -131,6 +131,22 @@ def parse_args():
         "--judge-api-key",
         default="EMPTY",
         help="裁判模型 API Key(无需认证时填 EMPTY)",
+    )
+    parser.add_argument(
+        "--user-model-id",
+        default="",
+        help="用户模拟模型名称(tau_bench/tau2_bench 必填,对应 extra_params.user_model;"
+        "留空则复用被测模型 --model)",
+    )
+    parser.add_argument(
+        "--user-model-api-url",
+        default="",
+        help="用户模拟模型 OpenAI 兼容端点 URL(含 /v1 后缀;留空则复用 --base-url)",
+    )
+    parser.add_argument(
+        "--user-model-api-key",
+        default="EMPTY",
+        help="用户模拟模型 API Key(留空则复用 --api-key;无需认证时填 EMPTY)",
     )
     parser.add_argument(
         "--task-max-tokens-json",
@@ -241,6 +257,15 @@ def main():
         env["JUDGE_API_URL"] = args.judge_api_url
     env["JUDGE_API_KEY"] = args.judge_api_key or "EMPTY"
 
+    # ---- 用户模拟模型(tau_bench/tau2_bench)----
+    # 留空时由 evalscope_main.sh 回退到被测模型配置
+    if args.user_model_id:
+        env["USER_MODEL_ID"] = args.user_model_id
+    if args.user_model_api_url:
+        env["USER_MODEL_API_URL"] = args.user_model_api_url
+    # 保留原始值:空串=回退到被测模型 key,'EMPTY'=无需认证
+    env["USER_MODEL_API_KEY"] = args.user_model_api_key or ""
+
     # ---- 断点续跑:USE_CACHE 非空时转绝对路径,避免 evalscope 因 cwd 不一致而找不到目录 ----
     if args.use_cache:
         env["USE_CACHE"] = os.path.abspath(args.use_cache)
@@ -279,6 +304,9 @@ def main():
         "JUDGE_MODEL_ID",
         "JUDGE_API_URL",
         "JUDGE_API_KEY",
+        "USER_MODEL_ID",
+        "USER_MODEL_API_URL",
+        "USER_MODEL_API_KEY",
         "USE_CACHE",
         "RERUN_REVIEW",
     ]:

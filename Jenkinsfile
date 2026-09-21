@@ -16,6 +16,11 @@ pipeline {
         string(name: 'JUDGE_API_URL', defaultValue: 'http://10.201.149.41:8080/v1', description: '裁判模型 OpenAI 兼容端点 URL(mcp_atlas 等 LLM judge 任务必填,含 /v1 后缀)')
         password(name: 'JUDGE_API_KEY', defaultValue: 'EMPTY', description: '裁判模型 API Key(无需认证时填 EMPTY)')
 
+        // 用户模拟模型(tau_bench / tau2_bench 必填;这两个任务用 LLM 模拟客户与被测模型多轮对话,评分靠 task reward 规则判定,不需要裁判模型)
+        string(name: 'USER_MODEL_ID', defaultValue: '', description: '用户模拟模型名称(tau_bench/tau2_bench 必填,对应 extra_params.user_model;留空则复用被测模型 MODEL,推荐用 qwen-plus 等能力较强的模型以获得真实用户模拟)')
+        string(name: 'USER_MODEL_API_URL', defaultValue: '', description: '用户模拟模型 OpenAI 兼容端点 URL(含 /v1 后缀;留空则复用 BASE_URL_V1)')
+        password(name: 'USER_MODEL_API_KEY', defaultValue: '', description: '用户模拟模型 API Key(留空则复用 API_KEY;无需认证时填 EMPTY)')
+
         // 各基准一个 boolean(按需勾选;默认全开)
         booleanParam(name: 'TASK_MMLU_PRO',     defaultValue: true,  description: '运行 mmlu_pro (10 选项多学科多选,5-shot,accuracy)')
         booleanParam(name: 'TASK_AIME25',      defaultValue: true,  description: '运行 aime25 (AIME 2025 美国数学邀请赛,30 题,0-shot,numeric accuracy;数学推理题,答案需 \\boxed{} 格式)')
@@ -35,6 +40,9 @@ pipeline {
         booleanParam(name: 'TASK_MBPP',    defaultValue: false, description: '运行 mbpp (Mostly Basic Python Problems,500 题,3-shot,pass@1;代码生成后沙箱执行测试用例判定 pass/fail;需启用 ENABLE_SANDBOX=true + Docker;与 HumanEval 测试环境相同,不需要裁判模型;默认 review_timeout=20s)')
         booleanParam(name: 'TASK_FRAMES',  defaultValue: false, description: '运行 frames (RAG 长上下文多跳推理,824 题,0-shot,accuracy;输入含维基百科上下文文档,prompt 平均 68K 字符,最大 557K 字符,被测模型需支持超长上下文(>=128K);支持精确匹配(rule)和 LLM judge 两种评分,有裁判模型时自动走 LLM judge,无裁判模型时回退 rule(exact match);裁判模型无需长上下文)')
         booleanParam(name: 'TASK_MM_BENCH', defaultValue: false, description: '运行 mm_bench (MMBench 视觉多选问答,8658 题(中英各 4329),0-shot,CoT,accuracy;被测模型必须支持多模态输入(图像+文本),如 qwen-vl-plus/gpt-4o 等;纯文本模型不可用;多选题规则评分,不需要裁判模型)')
+        booleanParam(name: 'TASK_HLE', defaultValue: false, description: "运行 hle (Humanity's Last Exam,2500 专家级跨学科题,14% 含图像;本流水线默认只跑文本子集 include_multi_modal=false,约 2150 题;llm_judge_default=True,有裁判模型走 LLM judge(GRADE C/I),无裁判模型回退 rule 精确匹配;76% 简答题对格式 \\boxed{}/单位/区间 敏感,rule 准确率偏低,建议配裁判模型)")
+        booleanParam(name: 'TASK_TAU_BENCH',  defaultValue: false, description: '运行 tau_bench (τ-bench 多轮对话 agent,航空/零售客服场景,被测模型通过 API 工具调用完成任务;LLM 模拟用户对话,需配 USER_MODEL_ID 等用户模拟模型参数;规则评分 task reward,不需要裁判模型;pass^k 聚合,设 REPEATS=k 启用;git-only 依赖,环境检查阶段自动从 github 安装)')
+        booleanParam(name: 'TASK_TAU2_BENCH', defaultValue: false, description: '运行 tau2_bench (τ²-bench,τ-bench 增强版,新增 telecom 域;被测模型通过 API 工具调用完成任务;LLM 模拟用户对话,需配 USER_MODEL_ID 等用户模拟模型参数;规则评分 task reward,不需要裁判模型;pass^k 聚合,设 REPEATS=k 启用;git-only 依赖,环境检查阶段自动从 github 安装;注意:与 tau3_bench 共用 tau2 包名不可共存,本流水线不含 tau3_bench)')
 
         string(name: 'EXAMPLES',        defaultValue: '',      description: '样本数限制(空 = 不限制;传给 evalscope --limit。int=数量,float=比例)')
         string(name: 'REPEATS',         defaultValue: '',      description: '重复次数(k-metrics,传给 evalscope --repeats。空 = 默认 1)')
@@ -47,11 +55,11 @@ pipeline {
         choice(name: 'JUDGE_STRATEGY',  choices: ['auto', 'rule', 'llm', 'llm_recall'], description: '评分策略(默认 auto;多选题用 rule,主观题用 llm)')
         text(name: 'TASK_JUDGE_STRATEGY_JSON', defaultValue: '', description: '按任务覆盖 judge_strategy 的 JSON。默认为空:imo_answerbench 在有裁判模型(JUDGE_MODEL_ID 非空)时走 auto 自动启用 LLM judge,无裁判模型时自动回退 rule(numeric math_equal);如需手动指定可追加,例: {"imo_answerbench":"rule","simple_qa":"llm"}(需配套 judge_model_args)')
         choice(name: 'ENABLE_SANDBOX', choices: ['true', 'false'], description: '启用 sandbox 执行(默认 true)。true 时给所有任务拼 --sandbox {"enabled": true},仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效。启用前环境检查 stage 会预装 evalscope[sandbox] 并校验 Docker 可用')
-        text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '{"gpqa_diamond":131072,"aime25":131072,"aime26":131072,"imo_answerbench":131072,"hmmt25":65536,"hmmt26":65536,"mcp_atlas":8192,"deep_swe":409600,"hellaswag":8192,"humaneval":16384,"humaneval_plus":16384,"mbpp":16384,"frames":16384}', description: '按任务覆盖 max_tokens 的 JSON。未列出的任务用 MAX_TOKENS 默认值(32768)。各项依据: gpqa_diamond=131072(PhD级科学MCQ+CoT,thinking推理极长),aime25=131072(AIME数学竞赛,thinking推理链最长),aime26=131072(同aime25),imo_answerbench=131072(IMO奥数最高难度,400题,解答篇幅≥AIME,32768会截断\\boxed{}前推导导致答案提取失败),hmmt25=65536(HMMT数学竞赛,难度接近AIME),hmmt26=65536(同hmmt25),mcp_atlas=8192(多轮AgentLoop,单步工具调用args/短回复够用,过大会触发长思考导致超时),deep_swe=409600(400k,编码agent需大输出窗口),hellaswag=8192(常识单选,输出仅1字母),humaneval=16384(Python代码生成),humaneval_plus=16384(同humaneval,更多测试用例),mbpp=16384(基础Python代码生成,3-shot),frames=16384(RAG短答案,target_mean=31字符)。ceval 未列出,使用全局默认 32768(中文通识多选,5-shot,thinking模式下部分题目推理链较长,16384易截断导致答案丢失)。可按需追加,例: {"mmlu_pro":4096}')
-        text(name: 'TASK_TIMEOUT_JSON', defaultValue: '{"aime25":7200,"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800}', description: '按任务覆盖模型调用超时(秒)的 JSON,默认 aime25/aime26=7200(2 小时,AIME数学竞赛 thinking 推理链长),mcp_atlas=7200(2 小时,多轮 AgentLoop 配合 max_tokens=4096 + thinking 仍可能耗时长),deep_swe=172800(48 小时,仓库级编码 agent 串行构建+验证,低性能机器或大仓库需更长 agent_timeout),其余任务用内置默认 3600;可按需追加,例: {"mcp_atlas":7200,"humaneval":1800}')
+        text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '{"gpqa_diamond":131072,"aime25":131072,"aime26":131072,"imo_answerbench":131072,"hmmt25":65536,"hmmt26":65536,"mcp_atlas":8192,"deep_swe":409600,"hellaswag":8192,"humaneval":16384,"humaneval_plus":16384,"mbpp":16384,"frames":16384,"hle":131072}', description: '按任务覆盖 max_tokens 的 JSON。未列出的任务用 MAX_TOKENS 默认值(32768)。各项依据: gpqa_diamond=131072(PhD级科学MCQ+CoT,thinking推理极长),aime25=131072(AIME数学竞赛,thinking推理链最长),aime26=131072(同aime25),imo_answerbench=131072(IMO奥数最高难度,400题,解答篇幅≥AIME,32768会截断\\boxed{}前推导导致答案提取失败),hmmt25=65536(HMMT数学竞赛,难度接近AIME),hmmt26=65536(同hmmt25),mcp_atlas=8192(多轮AgentLoop,单步工具调用args/短回复够用,过大会触发长思考导致超时),deep_swe=409600(400k,编码agent需大输出窗口),hellaswag=8192(常识单选,输出仅1字母),humaneval=16384(Python代码生成),humaneval_plus=16384(同humaneval,更多测试用例),mbpp=16384(基础Python代码生成,3-shot),frames=16384(RAG短答案,target_mean=31字符)。ceval 未列出,使用全局默认 32768(中文通识多选,5-shot,thinking模式下部分题目推理链较长,16384易截断导致答案丢失)。可按需追加,例: {"mmlu_pro":4096}')
+        text(name: 'TASK_TIMEOUT_JSON', defaultValue: '{"aime25":7200,"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800,"hle":7200}', description: '按任务覆盖模型调用超时(秒)的 JSON,默认 aime25/aime26=7200(2 小时,AIME数学竞赛 thinking 推理链长),mcp_atlas=7200(2 小时,多轮 AgentLoop 配合 max_tokens=4096 + thinking 仍可能耗时长),deep_swe=172800(48 小时,仓库级编码 agent 串行构建+验证,低性能机器或大仓库需更长 agent_timeout),其余任务用内置默认 3600;可按需追加,例: {"mcp_atlas":7200,"humaneval":1800}')
         text(name: 'TASK_TOP_P_JSON', defaultValue: '{"deep_swe":1.0}', description: '按任务覆盖 top_p 的 JSON,默认 deep_swe=1.0(编码 agent 高随机性探索,全局默认 0.95);可按需追加,例: {"deep_swe":1.0,"humaneval":0.95}')
         text(name: 'TASK_STOP_SEQS_JSON', defaultValue: '{"mmlu_pro":["Question:"]}', description: '按任务指定 stop_seqs(停止序列)的 JSON。命中的任务会将对应字符串列表注入 generation_config 的 stop_seqs 字段,服务端生成时遇到任一序列立即截断,避免模型在 few-shot 模式下答完题后继续生成多余内容。默认 mmlu_pro=["Question:"] 与 lm-evaluation-harness 的 until=["Question:"] 对齐;其他任务不在此 JSON 中则不加 stop_seqs。可按需追加,例: {"mmlu_pro":["Question:"],"ceval":["Question:"]}')
-        choice(name: 'TASK_TEMPERATURE_JSON', choices: ['{"mmlu_pro":1.0,"aime25":1.0,"aime26":1.0,"gpqa_diamond":1.0,"ceval":1.0,"cmmlu":1.0,"math_500":1.0,"hellaswag":1.0,"humaneval":1.0,"humaneval_plus":1.0,"hmmt25":1.0,"hmmt26":1.0,"imo_answerbench":1.0,"mcp_atlas":1.0,"deep_swe":1.0,"mbpp":1.0,"frames":1.0,"mm_bench":1.0}', '{"mmlu_pro":0.0,"aime25":0.6,"aime26":0.6,"gpqa_diamond":0.0,"ceval":0.0,"cmmlu":0.0,"math_500":0.6,"hellaswag":0.0,"humaneval":0.2,"humaneval_plus":0.2,"hmmt25":0.6,"hmmt26":0.6,"imo_answerbench":0.6,"mcp_atlas":0.0,"deep_swe":1.0,"mbpp":0.2,"frames":0.0,"mm_bench":0.0}'], description: '按任务指定采样温度的 JSON。选项1(thinking 模式,默认):全部任务 1.0,适配 GLM-5.2/DeepSeek-V4/Kimi-K3 推理模型(官方均推荐 1.0;Kimi-K3 强制 1.0)。选项2(R1/instruct 模式):多选题 0.0,数学推理 0.6,代码 0.2,工具调用 0.0,编码 agent 1.0;适配 DeepSeek-R1 系(推荐 0.5-0.7)或非 thinking instruct 模型(greedy)。如需更细粒度控制可手动输入 JSON')
+        choice(name: 'TASK_TEMPERATURE_JSON', choices: ['{"mmlu_pro":1.0,"aime25":1.0,"aime26":1.0,"gpqa_diamond":1.0,"ceval":1.0,"cmmlu":1.0,"math_500":1.0,"hellaswag":1.0,"humaneval":1.0,"humaneval_plus":1.0,"hmmt25":1.0,"hmmt26":1.0,"imo_answerbench":1.0,"mcp_atlas":1.0,"deep_swe":1.0,"mbpp":1.0,"frames":1.0,"mm_bench":1.0,"hle":1.0,"tau_bench":1.0,"tau2_bench":1.0}', '{"mmlu_pro":0.0,"aime25":0.6,"aime26":0.6,"gpqa_diamond":0.0,"ceval":0.0,"cmmlu":0.0,"math_500":0.6,"hellaswag":0.0,"humaneval":0.2,"humaneval_plus":0.2,"hmmt25":0.6,"hmmt26":0.6,"imo_answerbench":0.6,"mcp_atlas":0.0,"deep_swe":1.0,"mbpp":0.2,"frames":0.0,"mm_bench":0.0,"hle":0.6,"tau_bench":0.0,"tau2_bench":0.0}'], description: '按任务指定采样温度的 JSON。选项1(thinking 模式,默认):全部任务 1.0,适配 GLM-5.2/DeepSeek-V4/Kimi-K3 推理模型(官方均推荐 1.0;Kimi-K3 强制 1.0)。选项2(R1/instruct 模式):多选题 0.0,数学推理 0.6,代码 0.2,工具调用 0.0,编码 agent 1.0;适配 DeepSeek-R1 系(推荐 0.5-0.7)或非 thinking instruct 模型(greedy)。如需更细粒度控制可手动输入 JSON')
         text(name: 'TASK_REPEATS_JSON', defaultValue: '', description: '按任务覆盖 repeats 的 JSON,例: {"humaneval":5,"humaneval_plus":5}。命中任务使用对应值,未命中任务用全局 REPEATS;为空则全部用全局 REPEATS。推荐:humaneval/humaneval_plus 设 5 算 pass@1..pass@5,其余 greedy 基准(mmlu_pro/aime25/aime26/gpqa_diamond/ceval/cmmlu/hellaswag/math_500/hmmt25/hmmt26/imo_answerbench)保持 1 避免 N 倍空跑')
         text(name: 'DATASET_ARGS',      defaultValue: '',      description: '数据集参数 JSON,例: {"mmlu_pro":{"subset_list":["math","physics"]}}')
 
@@ -108,6 +116,9 @@ pipeline {
                     println("任务 MBPP:         ${params.TASK_MBPP}")
                     println("任务 FRAMES:       ${params.TASK_FRAMES}")
                     println("任务 MM_BENCH:     ${params.TASK_MM_BENCH}")
+                    println("任务 HLE:         ${params.TASK_HLE}")
+                    println("任务 TAU_BENCH:   ${params.TASK_TAU_BENCH}")
+                    println("任务 TAU2_BENCH:  ${params.TASK_TAU2_BENCH}")
                     println("样本限制:        ${params.EXAMPLES ?: '无限制'}")
                     println("repeats:         ${params.REPEATS ?: 'default 1'}")
                     println("eval-batch-size: ${params.EVAL_BATCH_SIZE}")
@@ -119,6 +130,8 @@ pipeline {
                     println("per-task judge_strategy JSON: ${params.TASK_JUDGE_STRATEGY_JSON ?: 'N/A'}")
                     println("裁判模型:        ${params.JUDGE_MODEL_ID}")
                     println("裁判模型API:     ${params.JUDGE_API_URL}")
+                    println("用户模拟模型:    ${params.USER_MODEL_ID ?: '<复用被测模型 ' + params.MODEL + '>'}")
+                    println("用户模拟模型API: ${params.USER_MODEL_API_URL ?: '<复用 ' + env.BASE_URL_V1 + '>'}")
                     println("enable_sandbox:  ${params.ENABLE_SANDBOX}")
                     println("per-task max_tokens JSON: ${params.TASK_MAX_TOKENS_JSON ?: 'N/A'}")
                     println("per-task timeout JSON: ${params.TASK_TIMEOUT_JSON ?: 'N/A'}")
@@ -238,6 +251,8 @@ NEED_SANDBOX="${params.ENABLE_SANDBOX}"
 NEED_HUMANEVAL="${params.TASK_HUMANEVAL}"
 NEED_HUMANEVAL_PLUS="${params.TASK_HUMANEVAL_PLUS}"
 NEED_MBPP="${params.TASK_MBPP}"
+NEED_TAU_BENCH="${params.TASK_TAU_BENCH}"
+NEED_TAU2_BENCH="${params.TASK_TAU2_BENCH}"
 
 # 检查现有 venv 的 Python 版本,不满足则重建
 if [ -d "${params.WORK_DIR}/.venv" ]; then
@@ -288,6 +303,15 @@ if [ ! -d "${params.WORK_DIR}/.venv" ]; then
         if UV_INDEX_URL="https://pypi.org/simple/" uv pip install -e . 2>&1; then
             EXTRAS_OK=true
         fi
+    fi
+    # tau_bench / tau2_bench: git-only 依赖,需在 evalscope 安装后单独安装(代理仍在生效)
+    if [ "\${NEED_TAU_BENCH}" = "true" ]; then
+        echo "安装 tau_bench 依赖(git+https://github.com/sierra-research/tau-bench)..."
+        uv pip install "git+https://github.com/sierra-research/tau-bench" 2>&1 || echo "WARN: tau_bench git 依赖安装失败,稍后在补装阶段会重试"
+    fi
+    if [ "\${NEED_TAU2_BENCH}" = "true" ]; then
+        echo "安装 tau2_bench 依赖(git+https://github.com/sierra-research/tau2-bench@v0.2.0)..."
+        uv pip install "git+https://github.com/sierra-research/tau2-bench@v0.2.0" 2>&1 || echo "WARN: tau2_bench git 依赖安装失败,稍后在补装阶段会重试"
     fi
     unset https_proxy
     unset http_proxy
@@ -353,6 +377,53 @@ else
             echo "deep_swe 依赖补装完成"
         else
             echo "deep_swe 依赖(pier)已安装"
+        fi
+    fi
+
+    # tau_bench:检查 tau_bench 包是否已安装(git-only 依赖,无法通过 pip extras 安装)
+    if [ "\${NEED_TAU_BENCH}" = "true" ]; then
+        if ! python3 -c "import tau_bench" 2>/dev/null; then
+            echo "补装 tau_bench 依赖(git+https://github.com/sierra-research/tau-bench)..."
+            export https_proxy=http://10.201.136.68:1080
+            export http_proxy=http://10.201.136.68:1080
+            TAU_BENCH_OK=false
+            if uv pip install "git+https://github.com/sierra-research/tau-bench" 2>&1; then
+                TAU_BENCH_OK=true
+            fi
+            unset https_proxy
+            unset http_proxy
+            if [ "\${TAU_BENCH_OK}" != "true" ]; then
+                echo "ERROR: tau_bench 依赖补装失败(github 不可达或代理超时)。"
+                echo "请手动安装: pip install git+https://github.com/sierra-research/tau-bench"
+                exit 1
+            fi
+            echo "tau_bench 依赖补装完成"
+        else
+            echo "tau_bench 依赖已安装"
+        fi
+    fi
+
+    # tau2_bench:检查 tau2 包是否已安装(git-only 依赖,无法通过 pip extras 安装)
+    # 注意:tau2_bench 与 tau3_bench 共用 tau2 包名(不同版本),不可共存;本流水线不含 tau3_bench
+    if [ "\${NEED_TAU2_BENCH}" = "true" ]; then
+        if ! python3 -c "import tau2" 2>/dev/null; then
+            echo "补装 tau2_bench 依赖(git+https://github.com/sierra-research/tau2-bench@v0.2.0)..."
+            export https_proxy=http://10.201.136.68:1080
+            export http_proxy=http://10.201.136.68:1080
+            TAU2_BENCH_OK=false
+            if uv pip install "git+https://github.com/sierra-research/tau2-bench@v0.2.0" 2>&1; then
+                TAU2_BENCH_OK=true
+            fi
+            unset https_proxy
+            unset http_proxy
+            if [ "\${TAU2_BENCH_OK}" != "true" ]; then
+                echo "ERROR: tau2_bench 依赖补装失败(github 不可达或代理超时)。"
+                echo "请手动安装: pip install git+https://github.com/sierra-research/tau2-bench@v0.2.0"
+                exit 1
+            fi
+            echo "tau2_bench 依赖补装完成"
+        else
+            echo "tau2_bench 依赖(tau2)已安装"
         fi
     fi
 
@@ -931,6 +1002,9 @@ ENDSSH
                     if (params.TASK_MBPP)            taskList.add('mbpp')
                     if (params.TASK_FRAMES)          taskList.add('frames')
                     if (params.TASK_MM_BENCH)        taskList.add('mm_bench')
+                    if (params.TASK_HLE)             taskList.add('hle')
+                    if (params.TASK_TAU_BENCH)       taskList.add('tau_bench')
+                    if (params.TASK_TAU2_BENCH)      taskList.add('tau2_bench')
                     if (taskList.isEmpty()) {
                         error '至少需要选择一个测试任务'
                     }
@@ -941,6 +1015,7 @@ ENDSSH
 
                     env.API_KEY_STR = params.API_KEY?.toString() ?: ''
                     env.JUDGE_API_KEY_STR = params.JUDGE_API_KEY?.toString() ?: ''
+                    env.USER_MODEL_API_KEY_STR = params.USER_MODEL_API_KEY?.toString() ?: ''
 
                     sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
                         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
@@ -981,6 +1056,9 @@ python3 run_evalscope.py \\
     --judge-model-id "${params.JUDGE_MODEL_ID}" \\
     --judge-api-url "${params.JUDGE_API_URL}" \\
     --judge-api-key "${env.JUDGE_API_KEY_STR ?: 'EMPTY'}" \\
+    --user-model-id "${params.USER_MODEL_ID}" \\
+    --user-model-api-url "${params.USER_MODEL_API_URL}" \\
+    --user-model-api-key "${env.USER_MODEL_API_KEY_STR}" \\
     --use-cache "${params.USE_CACHE}" \\
     ${params.RERUN_REVIEW ? '--rerun-review' : ''} \\
     --description "${params.DESCRIPTION}"
@@ -1367,6 +1445,8 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                 <tr><th>per-task judge_strategy JSON</th><td>${params.TASK_JUDGE_STRATEGY_JSON ?: 'N/A'}</td></tr>
                 <tr><th>裁判模型</th><td>${params.JUDGE_MODEL_ID}</td></tr>
                 <tr><th>裁判模型API</th><td>${params.JUDGE_API_URL}</td></tr>
+                <tr><th>用户模拟模型</th><td>${params.USER_MODEL_ID ?: '<复用被测模型>'}</td></tr>
+                <tr><th>用户模拟模型API</th><td>${params.USER_MODEL_API_URL ?: '<复用被测模型API>'}</td></tr>
                 <tr><th>per-task max_tokens JSON</th><td>${params.TASK_MAX_TOKENS_JSON ?: 'N/A'}</td></tr>
                 <tr><th>per-task timeout JSON</th><td>${params.TASK_TIMEOUT_JSON ?: 'N/A'}</td></tr>
                 <tr><th>per-task top_p JSON</th><td>${params.TASK_TOP_P_JSON ?: 'N/A'}</td></tr>
