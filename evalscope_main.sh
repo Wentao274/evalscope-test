@@ -95,6 +95,7 @@ JUDGE_API_URL=${JUDGE_API_URL:-}
 JUDGE_API_KEY=${JUDGE_API_KEY:-EMPTY}
 TASK_TIMEOUT_JSON=${TASK_TIMEOUT_JSON:-}
 TASK_TOP_P_JSON=${TASK_TOP_P_JSON:-}
+TASK_STOP_SEQS_JSON=${TASK_STOP_SEQS_JSON:-}
 
 # [断点续跑] USE_CACHE 非空时启用续跑;RERUN_REVIEW 控制是否重新打分
 USE_CACHE=${USE_CACHE:-}
@@ -260,12 +261,41 @@ print(v if v is not None else '')
     echo "$fallback"
 }
 
+# ---------- 按任务指定 stop_seqs ----------
+# 命中 TASK_STOP_SEQS_JSON 即返回对应 JSON 数组字符串(如 ["Question:"]),
+# 否则返回空字符串(表示不加 stop_seqs)。
+# 用途:mmlu_pro 等 few-shot 任务在模型答完后,模型可能继续生成新的
+# "Question:" 开头的假题目,设置 stop_seqs=["Question:"] 让服务端提前截断,
+# 与 lm-evaluation-harness 的 until=["Question:"] 对齐,大幅减少多余生成。
+_resolve_stop_seqs() {
+    local dataset="$1"
+    if [ -n "$TASK_STOP_SEQS_JSON" ]; then
+        local per_task
+        per_task=$(python3 -c "
+import json, sys
+try:
+    m = json.loads('''${TASK_STOP_SEQS_JSON}''')
+except Exception:
+    m = {}
+v = m.get('${dataset}')
+if v is not None:
+    print(json.dumps(v))
+" 2>/dev/null || echo "")
+        if [ -n "$per_task" ]; then
+            echo "$per_task"
+            return
+        fi
+    fi
+    echo ""
+}
+
 # ---------- 组装 generation-config JSON ----------
 _build_generation_config() {
     local max_tokens="$1"
     local temperature="$2"
     local timeout="${3:-3600}"
     local top_p="${4:-${TOP_P}}"
+    local stop_seqs="${5:-}"
 
     # shell 使用小写 true/false,Python 需要 True/False,在此转换避免 NameError。
     local enable_thinking_py
@@ -275,8 +305,8 @@ _build_generation_config() {
         enable_thinking_py=False
     fi
 
-    python3 -c "
-import json
+    STOP_SEQS="$stop_seqs" python3 -c "
+import json, os
 cfg = {
     'max_tokens': ${max_tokens:-32768},
     'temperature': ${temperature:-0.0},
@@ -285,6 +315,12 @@ cfg = {
     'timeout': ${timeout},
     'chat_template_kwargs': {'enable_thinking': ${enable_thinking_py}}
 }
+stop_seqs_str = os.environ.get('STOP_SEQS', '').strip()
+if stop_seqs_str:
+    try:
+        cfg['stop_seqs'] = json.loads(stop_seqs_str)
+    except Exception:
+        pass
 print(json.dumps(cfg, ensure_ascii=False))
 "
 }
@@ -348,9 +384,13 @@ run_task() {
     local TOP_P_ARG
     TOP_P_ARG=$(_resolve_top_p "$DATASET")
 
+    # 按任务指定 stop_seqs(命中 TASK_STOP_SEQS_JSON 则注入到 generation_config)
+    local STOP_SEQS_ARG
+    STOP_SEQS_ARG=$(_resolve_stop_seqs "$DATASET")
+
     # 组装 generation-config JSON
     local gen_config
-    gen_config=$(_build_generation_config "$MAX_TOKENS_ARG" "$TEMPERATURE_ARG" "$TIMEOUT_ARG" "$TOP_P_ARG")
+    gen_config=$(_build_generation_config "$MAX_TOKENS_ARG" "$TEMPERATURE_ARG" "$TIMEOUT_ARG" "$TOP_P_ARG" "$STOP_SEQS_ARG")
 
     # 组装 evalscope eval 命令的参数数组
     # --ignore-errors: 单样本失败(如 deep_swe 容器构建/agent 异常)时跳过该样本,
@@ -482,6 +522,7 @@ print(json.dumps(args, ensure_ascii=False))
     echo "  TIMEOUT          : ${TIMEOUT_ARG}s"             | tee -a "$LOG_FILE"
     echo "  TOP_P            : $TOP_P_ARG"               | tee -a "$LOG_FILE"
     echo "  TOP_K            : $TOP_K"               | tee -a "$LOG_FILE"
+    echo "  STOP_SEQS        : ${STOP_SEQS_ARG:-<none>}"  | tee -a "$LOG_FILE"
     echo "  ENABLE_THINKING  : $ENABLE_THINKING"     | tee -a "$LOG_FILE"
     echo "  REPEATS          : ${REPEATS_ARG:-<default 1>}"  | tee -a "$LOG_FILE"
     echo "  JUDGE_STRATEGY   : $JUDGE_STRATEGY_ARG"      | tee -a "$LOG_FILE"
@@ -526,6 +567,7 @@ print(json.dumps(args, ensure_ascii=False))
     echo "  TASK_TIMEOUT_JSON : ${TASK_TIMEOUT_JSON:-<none>}"
     echo "  TOP_P             : $TOP_P"
     echo "  TASK_TOP_P_JSON   : ${TASK_TOP_P_JSON:-<none>}"
+    echo "  TASK_STOP_SEQS_JSON: ${TASK_STOP_SEQS_JSON:-<none>}"
     echo "  TOP_K             : $TOP_K"
     echo "  ENABLE_THINKING   : $ENABLE_THINKING"
     echo "  REPEATS           : ${REPEATS:-<default 1>}"

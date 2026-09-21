@@ -148,6 +148,15 @@ def parse_args():
         help='按任务覆盖 top_p 的 JSON,例: {"deep_swe":1.0}。命中任务使用对应值,未命中任务用全局 TOP_P',
     )
     parser.add_argument(
+        "--task-stop-seqs-json",
+        default="",
+        help=(
+            '按任务指定 stop_seqs(停止序列)的 JSON,例: {"mmlu_pro":["Question:"]}'
+            "。命中的任务将对应字符串列表注入 generation_config 的 stop_seqs 字段,"
+            "服务端生成时遇到任一序列立即截断。未命中任务不加 stop_seqs"
+        ),
+    )
+    parser.add_argument(
         "--description",
         default="",
         help="模型服务描述信息(仅用于邮件展示,不影响执行)",
@@ -224,6 +233,8 @@ def main():
         env["TASK_TIMEOUT_JSON"] = args.task_timeout_json
     if args.task_top_p_json:
         env["TASK_TOP_P_JSON"] = args.task_top_p_json
+    if args.task_stop_seqs_json:
+        env["TASK_STOP_SEQS_JSON"] = args.task_stop_seqs_json
     if args.judge_model_id:
         env["JUDGE_MODEL_ID"] = args.judge_model_id
     if args.judge_api_url:
@@ -264,6 +275,7 @@ def main():
         "TASK_MAX_TOKENS_JSON",
         "TASK_TIMEOUT_JSON",
         "TASK_TOP_P_JSON",
+        "TASK_STOP_SEQS_JSON",
         "JUDGE_MODEL_ID",
         "JUDGE_API_URL",
         "JUDGE_API_KEY",
