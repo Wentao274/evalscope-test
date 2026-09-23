@@ -162,6 +162,8 @@ pipeline {
                             sh """
 ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << 'ENDSSH'
 set -o pipefail
+# 连通性检查目标是内网IP,不走代理(宿主机系统环境可能设置了 HTTP_PROXY)
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 {
     echo "=== 检查 API 连通性 (/v1/models) ==="
     HTTP_CODE=\$(curl -s --connect-timeout 10 -m 30 -o /dev/null -w "%{http_code}" ${env.BASE_URL_V1}/models)
@@ -966,6 +968,134 @@ else
     echo "TASK_MCP_ATLAS=false,跳过 mcp_atlas 服务检查"
 fi
 
+# === 预下载数据集(经代理)===
+# 评测阶段会 unset 代理直连内网,若数据集未缓存会导致下载失败。
+# 在此阶段(有代理)预下载所有勾选的、需要从远端拉取的数据集任务,
+# 评测时 load_dataset() 命中缓存,无需网络,直连内网推理。
+#
+# 数据加载方式分类:
+#   - 标准任务(mmlu_pro/hle/ceval 等):RemoteDataLoader → ModelScope/HF → datasets.save_to_disk()
+#     缓存于 ~/.cache/evalscope/datasets/<safe_name>-<hash>/,完整性标志:dataset_info.json
+#   - tau2_bench:resolve_snapshot_or_local_path() → modelscope.dataset_snapshot_download()
+#     缓存于 ~/.cache/modelscope/hub/datasets/evalscope/tau2-bench-data/,完整性标志:目录非空
+#   - tau_bench:数据随 pip 包捆绑(tau_bench/envs/*/data/*.json),无需下载,排除
+#   - mcp_atlas/deep_swe:使用自有基础设施(Docker/Pier),不走标准数据集下载,排除
+echo "=== 预下载数据集 ==="
+PRELOAD_TASKS=""
+[ "${params.TASK_MMLU_PRO}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS mmlu_pro"
+[ "${params.TASK_AIME25}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS aime25"
+[ "${params.TASK_AIME26}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS aime26"
+[ "${params.TASK_GPQA_DIAMOND}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS gpqa_diamond"
+[ "${params.TASK_CEVAL}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS ceval"
+[ "${params.TASK_CMMLU}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS cmmlu"
+[ "${params.TASK_MATH_500}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS math_500"
+[ "${params.TASK_HELLASWAG}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS hellaswag"
+[ "${params.TASK_HUMANEVAL}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS humaneval"
+[ "${params.TASK_HUMANEVAL_PLUS}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS humaneval_plus"
+[ "${params.TASK_HMMT25}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS hmmt25"
+[ "${params.TASK_HMMT26}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS hmmt26"
+[ "${params.TASK_IMO_ANSWERBENCH}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS imo_answerbench"
+[ "${params.TASK_MBPP}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS mbpp"
+[ "${params.TASK_FRAMES}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS frames"
+[ "${params.TASK_MM_BENCH}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS mm_bench"
+[ "${params.TASK_HLE}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS hle"
+# tau2_bench:从 ModelScope 下载 evalscope/tau2-bench-data 快照,需要代理
+[ "${params.TASK_TAU2_BENCH}" = "true" ] && PRELOAD_TASKS="\$PRELOAD_TASKS tau2_bench"
+# tau_bench:数据随 pip 包捆绑,无需下载,不加入预下载列表
+
+if [ -n "\$PRELOAD_TASKS" ]; then
+    source ${params.WORK_DIR}/.venv/bin/activate
+    # 先检查缓存(无代理,纯文件系统检查),再按需下载(有代理)
+    PRELOAD_TASKS="\$PRELOAD_TASKS" PROXY_URL="http://10.201.136.68:1080" python3 -c "
+import os
+import glob
+import shutil
+
+from evalscope.api.registry import get_benchmark
+from evalscope.config import TaskConfig
+from evalscope.constants import DEFAULT_EVALSCOPE_CACHE_DIR
+from evalscope.utils.io_utils import safe_filename
+
+
+def check_cache(adapter):
+    '''Check if the dataset is fully cached.
+
+    Handles two cache mechanisms:
+    1. RemoteDataLoader: datasets.save_to_disk() -> dataset_info.json in evalscope cache
+    2. ModelScope snapshot: modelscope.dataset_snapshot_download() -> files in MS cache
+
+    Returns (is_cached: bool, valid_count: int, expected_count: int, stale_dirs: list)
+    '''
+    stale_dirs = []
+    n_subsets = len(adapter.subset_list) if not adapter.reformat_subset else 1
+
+    # --- Mechanism 1: evalscope datasets cache (RemoteDataLoader) ---
+    safe_name = safe_filename(adapter.dataset_id)
+    cache_bases = [
+        os.path.join(adapter.dataset_dir, 'datasets'),
+        os.path.join(DEFAULT_EVALSCOPE_CACHE_DIR, 'datasets'),
+    ]
+    valid = 0
+    for base in cache_bases:
+        if os.path.isdir(base):
+            for d in glob.glob(os.path.join(base, f'{safe_name}-*')):
+                if os.path.isdir(d):
+                    if os.path.isfile(os.path.join(d, 'dataset_info.json')):
+                        valid += 1
+                    else:
+                        stale_dirs.append(d)
+    if valid >= n_subsets:
+        return True, valid, n_subsets, stale_dirs
+
+    # --- Mechanism 2: ModelScope snapshot cache (tau2_bench etc.) ---
+    # modelscope.dataset_snapshot_download caches at cache_dir/dataset_id/
+    ms_snapshot = os.path.join(adapter.dataset_dir, adapter.dataset_id)
+    if os.path.isdir(ms_snapshot) and os.listdir(ms_snapshot):
+        return True, 1, 1, stale_dirs
+
+    return False, valid, n_subsets, stale_dirs
+
+
+tasks = [t.strip() for t in os.environ.get('PRELOAD_TASKS', '').split() if t.strip()]
+proxy_url = os.environ.get('PROXY_URL', '')
+
+for name in tasks:
+    try:
+        config = TaskConfig()
+        adapter = get_benchmark(name, config=config)
+
+        # Phase 1: check cache via filesystem (no network, no proxy)
+        is_cached, valid_count, expected_count, stale_dirs = check_cache(adapter)
+
+        if is_cached:
+            print(f'[CACHED] {name}: {valid_count}/{expected_count} subset(s) cached, skipping')
+            continue
+
+        # Clean up incomplete/stale cache directories
+        for d in stale_dirs:
+            print(f'[STALE] {name}: removing incomplete cache: {d}')
+            shutil.rmtree(d, ignore_errors=True)
+
+        # Phase 2: download with proxy (set env for requests/httpx used by SDK)
+        print(f'[MISS] {name}: cache incomplete ({valid_count}/{expected_count}), downloading...')
+        os.environ['http_proxy'] = proxy_url
+        os.environ['https_proxy'] = proxy_url
+        adapter = get_benchmark(name, config=config)
+        adapter.load_dataset()
+        del os.environ['http_proxy']
+        del os.environ['https_proxy']
+        print(f'[OK] {name}: dataset downloaded and cached')
+    except Exception as e:
+        os.environ.pop('http_proxy', None)
+        os.environ.pop('https_proxy', None)
+        print(f'[WARN] {name}: {e}')
+" 2>&1
+    deactivate
+    echo "数据集预下载阶段完成"
+else
+    echo "无标准数据集任务,跳过预下载"
+fi
+
 # === 记录当前容器快照(用于构建后精准清理) ===
 # 在 eval 开始前,记录所有已存在的容器 ID。
 # 构建结束后,对比快照找出本次新增的容器(deep_swe Pier 等),只清理这些,不影响其他构建。
@@ -1024,6 +1154,14 @@ ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << ENDSSH
 set -e
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
+
+# === 取消代理 ===
+# runner 宿主机系统环境中有 HTTP_PROXY/HTTPS_PROXY(见环境检查阶段注释),
+# 评测时模型推理请求(10.11.x.x 内网IP)若走代理会间歇性 Connection error。
+# 数据集已在环境检查阶段经代理预下载并缓存,评测阶段无需网络,直连内网推理。
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+echo "=== Proxy unset for eval ==="
+
 cd ${params.WORK_DIR}
 source .venv/bin/activate
 echo "=== 执行Python测试脚本 ==="
