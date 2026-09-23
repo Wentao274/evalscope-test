@@ -555,287 +555,48 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                     script {
                         def logFileBase = "reports/${params.TESTER}/${BUILD_NUMBER}/${params.CHIP}/${env.MODEL_DIR}"
 
-                        // 找到 evalscope-<tasks>.log
-                        def logFiles = findFiles(glob: "${logFileBase}/**/evalscope-*.log")
-                        def logFile = ""
-                        def logContent = ""
-                        if (logFiles.length > 0) {
-                            logFile = logFiles[0].path
-                            logContent = readFile(logFile)
-                        }
+                        // Export all params as env vars for the Python report generator
+                        env.BUILD_URL = env.BUILD_URL ?: ''
+                        env.BUILD_RESULT = currentBuild.currentResult
+                        env.DURATION_STRING = currentBuild.durationString
+                        env.TESTER = params.TESTER
+                        env.CHIP = params.CHIP
+                        env.ENGINE = params.ENGINE
+                        env.PD = params.PD
+                        env.MODEL = params.MODEL
+                        env.BASE_URL = params.BASE_URL
+                        env.DESCRIPTION = params.DESCRIPTION
+                        env.TASKS = env.TASKS ?: ''
+                        env.EXAMPLES = params.EXAMPLES
+                        env.REPEATS = params.REPEATS
+                        env.EVAL_BATCH_SIZE = params.EVAL_BATCH_SIZE
+                        env.TEMPERATURE_FALLBACK = params.TEMPERATURE_FALLBACK
+                        env.TASK_TEMPERATURE_JSON = params.TASK_TEMPERATURE_JSON
+                        env.TASK_REPEATS_JSON = params.TASK_REPEATS_JSON
+                        env.MAX_TOKENS = params.MAX_TOKENS
+                        env.TOP_P = params.TOP_P
+                        env.TOP_K = params.TOP_K
+                        env.ENABLE_THINKING = params.ENABLE_THINKING
+                        env.JUDGE_STRATEGY = params.JUDGE_STRATEGY
+                        env.TASK_JUDGE_STRATEGY_JSON = params.TASK_JUDGE_STRATEGY_JSON
+                        env.JUDGE_MODEL_ID = params.JUDGE_MODEL_ID
+                        env.JUDGE_API_URL = params.JUDGE_API_URL
+                        env.USER_MODEL_ID = params.USER_MODEL_ID
+                        env.USER_MODEL_API_URL = params.USER_MODEL_API_URL
+                        env.TASK_MAX_TOKENS_JSON = params.TASK_MAX_TOKENS_JSON
+                        env.TASK_TIMEOUT_JSON = params.TASK_TIMEOUT_JSON
+                        env.TASK_TOP_P_JSON = params.TASK_TOP_P_JSON
+                        env.DATASET_ARGS = params.DATASET_ARGS
+                        env.USE_CACHE = params.USE_CACHE
+                        env.RERUN_REVIEW = params.RERUN_REVIEW
+                        env.MCP_ATLAS_IMAGE = params.MCP_ATLAS_IMAGE
+                        env.MCP_ATLAS_AUTO_DEPLOY = params.MCP_ATLAS_AUTO_DEPLOY
+                        env.MCP_ATLAS_API_KEYS = params.MCP_ATLAS_API_KEYS
 
-                        // 连通性预检失败检测
-                        def connectivityLogPath = "builds/${BUILD_NUMBER}/evalscope_connectivity_${BUILD_NUMBER}.log"
-                        def connectivityLogContent = ""
-                        def failureReason = ""
-                        def connectivityFailureReason = ""
-                        if (fileExists(connectivityLogPath)) {
-                            connectivityLogContent = readFile(connectivityLogPath)
-                            if (connectivityLogContent.contains("API 连通性检查失败") ||
-                                connectivityLogContent.contains("Chat Completions 接口检查失败")) {
-                                failureReason = "连通性检查未通过"
-                                def logLines = connectivityLogContent.split('\n')
-                                def collected = []
-                                def inFailureSection = false
-                                for (def ll : logLines) {
-                                    if (ll.contains("检查 API 连通性") || ll.contains("Chat Completions 接口检查")) {
-                                        inFailureSection = true
-                                    }
-                                    if (inFailureSection) {
-                                        if (!collected.isEmpty() && ll.trim().startsWith("===") &&
-                                            !ll.contains("检查 API 连通性") && !ll.contains("Chat Completions 接口检查")) {
-                                            break
-                                        }
-                                        collected.add(ll)
-                                    }
-                                }
-                                connectivityFailureReason = collected.join('\n').trim()
-                            }
-                        }
-                        if (!failureReason && env.CONNECTIVITY_FAILED == 'true') {
-                            failureReason = "连通性检查未通过"
-                            connectivityFailureReason = "API 连通性或 Chat Completions 接口检查失败,具体日志未拉到,详见 Jenkins 控制台输出。"
-                        }
+                        sh "python3 scripts/generate_report.py --report-base '${logFileBase}' --output email_body.html"
 
-                        // 统计被 --ignore-errors 跳过的失败样本数
-                        // evalscope 在 ignore_errors=True 时,每个被跳过的样本会输出一条
-                        // WARNING: Error ignored, continuing with next sample. (evaluator.py on_error)
-                        def ignoredCount = 0
-                        if (logContent) {
-                            ignoredCount = logContent.count("Error ignored, continuing with next sample.")
-                        }
-
-                        // 从 evalscope report JSON 提取每个任务的得分
-                        // report 路径: <logFileBase>/<timestamp>/<evalscope-internal-timestamp>/reports/<model>/<dataset>.json
-                        def taskScores = [:]
-                        def taskMetricsHtml = ""
-                        def taskSummaryRows = ""
-                        if (!failureReason) {
-                            // evalscope 的 report 文件名为 <dataset_name>.json,位于 reports/<model_name>/ 下
-                            // glob 递归匹配 reports/**/<dataset>.json
-                            def reportFiles = findFiles(glob: "${logFileBase}/**/reports/**/*.json")
-                            // readJSON returns net.sf.json.JSONNull for JSON null values, which is truthy
-                            // in Groovy and throws MissingPropertyException when accessing fields on it.
-                            def norm = { v -> v == null || v instanceof net.sf.json.JSONNull ? null : v }
-                            for (def rf : reportFiles) {
-                                def json = readJSON(file: rf.path)
-                                def taskName = norm(json.dataset_name) ?: norm(json.name) ?: "unknown"
-                                def score = norm(json.score)
-                                def scoreStr = "N/A"
-                                if (score != null) {
-                                    scoreStr = String.format("%.2f%%", (score as Double) * 100)
-                                }
-                                taskScores[taskName] = scoreStr
-                                taskSummaryRows += "<tr><td>${taskName}</td><td>${scoreStr}</td></tr>"
-
-                                // 单任务详情行(包含 metric / category / subset 明细)
-                                def detailRows = ""
-                                def metrics = norm(json.metrics) ?: []
-                                for (def m : metrics) {
-                                    def metricName = norm(m.name) ?: "score"
-                                    def metricScore = norm(m.score)
-                                    def metricScoreStr = metricScore != null ? String.format("%.2f%%", (metricScore as Double) * 100) : "N/A"
-                                    detailRows += "<tr class=\"score-highlight\"><td>${taskName}</td><td>${metricName} (overall)</td><td>${metricScoreStr}</td></tr>"
-                                    def categories = norm(m.categories) ?: []
-                                    for (def c : categories) {
-                                        def catName = norm(c.name)
-                                        if (catName instanceof List) {
-                                            catName = catName.collect { it.toString() }.join(' / ')
-                                        }
-                                        def catScore = norm(c.score)
-                                        def catScoreStr = catScore != null ? String.format("%.2f%%", (catScore as Double) * 100) : "N/A"
-                                        def catNum = norm(c.num) ?: 0
-                                        detailRows += "<tr><td>${taskName}</td><td>${catName} (n=${catNum})</td><td>${catScoreStr}</td></tr>"
-                                        def subsets = norm(c.subsets) ?: []
-                                        for (def s : subsets) {
-                                            def subName = norm(s.name)
-                                            def subScore = norm(s.score)
-                                            def subScoreStr = subScore != null ? String.format("%.4f", (subScore as Double) * 100) + "%" : "N/A"
-                                            def subNum = norm(s.num) ?: 0
-                                            if (subName != null) {
-                                                detailRows += "<tr><td>${taskName}</td><td>&nbsp;&nbsp;&nbsp;${subName} (n=${subNum})</td><td>${subScoreStr}</td></tr>"
-                                            }
-                                        }
-                                    }
-                                }
-
-                                taskMetricsHtml += """
-            <div class="section-title">${taskName} 任务测试结果</div>
-            <table>
-                <tr style="background-color: #e3f2fd;"><th>任务</th><th>指标 / 子集</th><th>值</th></tr>
-                ${detailRows}
-            </table>
-            <p style="font-size: 12px; color: #666;">report: ${rf.path}</p>
-"""
-                                // 性能指标
-                                def perf = norm(json.perf_metrics)
-                                if (perf != null && norm(perf.summary) != null) {
-                                    def sum = perf.summary
-                                    def latency = norm(sum.latency)
-                                    def throughput = norm(sum.throughput)
-                                    def usage = norm(sum.usage)
-                                    def ttft = norm(sum.ttft)
-                                    def nSamples = norm(sum.n_samples) ?: 'N/A'
-                                    def perfLines = "samples: ${nSamples}"
-                                    if (latency != null && norm(latency.avg) != null) {
-                                        perfLines += " | latency avg: ${latency.avg}s"
-                                    }
-                                    if (throughput != null && norm(throughput.avg_output_tps) != null) {
-                                        perfLines += " | output tps: ${throughput.avg_output_tps}"
-                                    }
-                                    if (ttft != null && norm(ttft.avg) != null) {
-                                        perfLines += " | TTFT avg: ${ttft.avg}s"
-                                    }
-                                    if (usage != null && norm(usage.total_tokens_count) != null) {
-                                        perfLines += " | total tokens: ${usage.total_tokens_count}"
-                                    }
-                                    taskMetricsHtml += """
-            <p style="font-size: 12px; color: #666;">${perfLines}</p>
-"""
-                                }
-                            }
-                        }
-                        if (failureReason) {
-                            taskSummaryRows = "<tr><td colspan='2'>连通性检查未通过,任务未执行</td></tr>"
-                        } else if (taskSummaryRows.isEmpty()) {
-                            taskSummaryRows = "<tr><td colspan='2'>无任务执行或未找到 report JSON</td></tr>"
-                        }
-
-                        def hasResult = !taskScores.isEmpty()
-                        def resultStatus = hasResult ? "完成" : "失败/无结果"
-                        if (failureReason) {
-                            resultStatus = "失败/${failureReason}"
-                        }
-
-                        // 连通性失败 HTML 块
-                        def connectivityFailureHtml = ""
-                        if (failureReason) {
-                            def escapedReason = (connectivityFailureReason ?: '')
-                                .replace('&', '&amp;')
-                                .replace('<', '&lt;')
-                                .replace('>', '&gt;')
-                            connectivityFailureHtml = """
-            <div style="background-color: #ffebee; color: #000000; border-left: 4px solid #d32f2f; padding: 12px 15px; margin-top: 15px; border-radius: 3px;">
-                <h3 style="color: #d32f2f; margin-top: 0; margin-bottom: 8px;">⚠️ 连通性检查未通过</h3>
-                <p style="margin-top: 0; margin-bottom: 8px; color: #000000;">本次测试未能正常执行用例,原因是 API 连通性检查失败:</p>
-                <pre style="background-color: #ffffff; color: #000000; padding: 10px; border-radius: 3px; overflow-x: auto; white-space: pre-wrap; margin: 0; font-family: Menlo, Consolas, monospace; font-size: 12px;">${escapedReason}</pre>
-            </div>"""
-                        }
-
-                        // 已忽略失败样本 HTML 块(--ignore-errors 跳过的样本,不影响其余样本出分)
-                        def ignoredSamplesHtml = ""
-                        if (ignoredCount > 0) {
-                            ignoredSamplesHtml = """
-            <div style="background-color: #fff3e0; color: #000000; border-left: 4px solid #ff9800; padding: 12px 15px; margin-top: 15px; border-radius: 3px;">
-                <h3 style="color: #ef6c00; margin-top: 0; margin-bottom: 8px;">⚠️ 已忽略 ${ignoredCount} 个失败样本</h3>
-                <p style="margin-top: 0; margin-bottom: 8px; color: #000000;">本次测试启用了 <code>--ignore-errors</code>,有 ${ignoredCount} 个样本在推理/评分阶段失败被跳过,未计入得分;其余样本继续评估并产出报告。失败详情见日志中的 <code>Error ignored, continuing with next sample.</code> 及对应 ERROR 堆栈。</p>
-            </div>"""
-                        }
-
-                        def emailBody = """
-<html>
-<head>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
-        .container { max-width: 1200px; margin: 0 auto; background-color: #fff; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        .header { background-color: ${hasResult ? '#4CAF50' : '#f44336'}; color: white; padding: 20px; border-radius: 5px 5px 0 0; }
-        .content { padding: 20px; }
-        table { border-collapse: collapse; width: 100%; margin-top: 15px; font-size: 13px; }
-        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background-color: #f2f2f2; }
-        .footer { margin-top: 20px; padding: 15px; background-color: #f9f9f9; border-radius: 0 0 5px 5px; color: #666; font-size: 12px; }
-        .section-title { background-color: #e3f2fd; padding: 10px; margin-top: 20px; border-radius: 3px; font-weight: bold; }
-        .score-highlight { background-color: #c8e6c9; font-weight: bold; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h2 style="margin: 0;">evalscope 精度测试报告 - 构建 #${BUILD_NUMBER}</h2>
-        </div>
-        <div class="content">
-            <h3>测试概要</h3>
-            <table>
-                <tr><th>项目</th><td>值</td></tr>
-                <tr><th>构建编号</th><td>#${BUILD_NUMBER}</td></tr>
-                <tr><th>模型服务描述</th><td>${params.DESCRIPTION}</td></tr>
-                <tr><th>测试人员</th><td>${params.TESTER}</td></tr>
-                <tr><th>芯片平台</th><td>${params.CHIP}</td></tr>
-                <tr><th>推理框架</th><td>${params.ENGINE}</td></tr>
-                <tr><th>PD分离模式</th><td>${params.PD}</td></tr>
-                <tr><th>模型名称</th><td>${params.MODEL}</td></tr>
-                <tr><th>API地址</th><td>${params.BASE_URL}</td></tr>
-                <tr><th>测试任务</th><td>${env.TASKS ?: (failureReason ? '未执行(连通性检查未通过)' : 'N/A')}</td></tr>
-                <tr><th>样本限制</th><td>${params.EXAMPLES ?: '无限制'}</td></tr>
-                <tr><th>repeats</th><td>${params.REPEATS ?: 'default 1'}</td></tr>
-                <tr><th>eval-batch-size</th><td>${params.EVAL_BATCH_SIZE}</td></tr>
-                <tr><th>温度(兜底)</th><td>${params.TEMPERATURE_FALLBACK}</td></tr>
-                <tr><th>per-task temperature JSON</th><td>${params.TASK_TEMPERATURE_JSON ?: 'N/A'}</td></tr>
-                <tr><th>per-task repeats JSON</th><td>${params.TASK_REPEATS_JSON ?: 'N/A'}</td></tr>
-                <tr><th>max_tokens</th><td>${params.MAX_TOKENS ?: 'unlimited'}</td></tr>
-                <tr><th>top_p / top_k</th><td>${params.TOP_P} / ${params.TOP_K}</td></tr>
-                <tr><th>enable_thinking</th><td>${params.ENABLE_THINKING}</td></tr>
-                <tr><th>judge_strategy</th><td>${params.JUDGE_STRATEGY}</td></tr>
-                <tr><th>per-task judge_strategy JSON</th><td>${params.TASK_JUDGE_STRATEGY_JSON ?: 'N/A'}</td></tr>
-                <tr><th>裁判模型</th><td>${params.JUDGE_MODEL_ID}</td></tr>
-                <tr><th>裁判模型API</th><td>${params.JUDGE_API_URL}</td></tr>
-                <tr><th>用户模拟模型</th><td>${params.USER_MODEL_ID ?: '<复用被测模型>'}</td></tr>
-                <tr><th>用户模拟模型API</th><td>${params.USER_MODEL_API_URL ?: '<复用被测模型API>'}</td></tr>
-                <tr><th>per-task max_tokens JSON</th><td>${params.TASK_MAX_TOKENS_JSON ?: 'N/A'}</td></tr>
-                <tr><th>per-task timeout JSON</th><td>${params.TASK_TIMEOUT_JSON ?: 'N/A'}</td></tr>
-                <tr><th>per-task top_p JSON</th><td>${params.TASK_TOP_P_JSON ?: 'N/A'}</td></tr>
-                <tr><th>dataset_args</th><td>${params.DATASET_ARGS ?: 'N/A'}</td></tr>
-                <tr><th>use_cache</th><td>${params.USE_CACHE ?: 'N/A (全新跑)'}</td></tr>
-                <tr><th>rerun_review</th><td>${params.RERUN_REVIEW}</td></tr>
-                <tr><th>MCP-Atlas 镜像</th><td>${params.MCP_ATLAS_IMAGE}</td></tr>
-                <tr><th>MCP-Atlas 自动部署</th><td>${params.MCP_ATLAS_AUTO_DEPLOY}</td></tr>
-                <tr><th>MCP-Atlas API Keys</th><td>${params.MCP_ATLAS_API_KEYS ?: 'N/A(仅启用 20 个无 key server)'}</td></tr>
-                <tr><th>执行时间</th><td>${currentBuild.durationString}</td></tr>
-                <tr><th>测试状态</th><td>${resultStatus}</td></tr>
-                <tr><th>已忽略失败样本</th><td>${ignoredCount > 0 ? "${ignoredCount} (已跳过,未计入得分)" : '0'}</td></tr>
-                <tr><th>构建状态</th><td>${currentBuild.currentResult}</td></tr>
-            </table>
-
-            ${connectivityFailureHtml}
-
-            ${ignoredSamplesHtml}
-
-            <h3>任务汇总得分</h3>
-            <table>
-                <tr style="background-color: #e3f2fd;"><th>任务名称</th><th>得分</th></tr>
-                ${taskSummaryRows}
-            </table>
-
-            ${taskMetricsHtml}
-
-            <h3>输出目录</h3>
-            <p>${failureReason ? 'N/A (连通性检查未通过)' : (env.RESULT_DIR ?: 'N/A')}</p>
-
-            <p style="margin-top: 20px;">详细日志请查看附件。</p>
-            <p>Jenkins 构建地址: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
-        </div>
-        <div class="footer">
-            此邮件由 Jenkins 自动发送，请勿回复。
-        </div>
-    </div>
-</body>
-</html>"""
-
-                        echo "=== evalscope 测试结果 ==="
-                        echo "Build Number: ${BUILD_NUMBER}"
-                        echo "结果目录: ${env.RESULT_DIR ?: 'N/A'}"
-                        echo "测试状态: ${resultStatus}"
-                        taskScores.each { k, v -> println("  ${k} 得分: ${v}") }
-
-                        def attachPattern = ""
-                        def attachPatterns = []
-                        if (logFile) {
-                            attachPatterns.add(logFile)
-                        }
-                        if (fileExists("builds/${BUILD_NUMBER}/evalscope_connectivity_${BUILD_NUMBER}.log")) {
-                            attachPatterns.add("builds/${BUILD_NUMBER}/evalscope_connectivity_${BUILD_NUMBER}.log")
-                        }
-                        attachPattern = attachPatterns.join(',')
+                        def emailBody = readFile('email_body.html')
+                        def attachPattern = readFile('email_body.html.attach')
                         emailext(
                             subject: "[模型推理 - evalscope精度测试报告] #${BUILD_NUMBER} ${params.CHIP} - ${params.MODEL}",
                             body: emailBody,
