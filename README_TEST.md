@@ -194,10 +194,9 @@ evalscope eval \
 | `USE_CACHE` | `--use-cache` | 空 | 断点续跑:填上次输出目录则复用缓存只跑未完成题 |
 | `RERUN_REVIEW` | `--rerun-review` | `false` | 仅 USE_CACHE 启用时生效;强制重算评分,predictions 缓存仍复用 |
 
-默认开启的任务(`defaultValue: true`):`mmlu_pro`、`aime25`、`aime26`、`gpqa_diamond`、
-`ceval`、`math_500`、`humaneval_plus`、`hmmt26`。
-默认关闭的任务(`defaultValue: false`):`cmmlu`、`hellaswag`、`humaneval`、
-`hmmt25`、`imo_answerbench`、`mcp_atlas`、`deep_swe`、`mbpp`、`frames`、`mm_bench`。
+默认开启的任务(`defaultValue: true`):`mmlu_pro`、`aime25`、`aime26`、`gpqa_diamond`。
+默认关闭的任务(`defaultValue: false`):`ceval`、`cmmlu`、`math_500`、`hellaswag`、`humaneval`、
+`humaneval_plus`、`hmmt25`、`hmmt26`、`imo_answerbench`、`mcp_atlas`、`deep_swe`、`mbpp`、`frames`、`mm_bench`。
 
 evalscope 还支持但未在 Jenkins 暴露的参数(留作扩展):
 

@@ -120,14 +120,14 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `TASK_AIME25` | `--datasets aime25` | true | 勾选后逗号拼接(AIME 2025 数学竞赛,30 题) |
 | `TASK_AIME26` | `--datasets aime26` | true | 勾选后逗号拼接(AIME 2026 数学竞赛,30 题) |
 | `TASK_GPQA_DIAMOND` | `--datasets gpqa_diamond` | true | 勾选后逗号拼接 |
-| `TASK_CEVAL` | `--datasets ceval` | true | 勾选后逗号拼接 |
+| `TASK_CEVAL` | `--datasets ceval` | false | 勾选后逗号拼接 |
 | `TASK_CMMLU` | `--datasets cmmlu` | false | 勾选后逗号拼接 |
-| `TASK_MATH_500` | `--datasets math_500` | true | 勾选后逗号拼接 |
+| `TASK_MATH_500` | `--datasets math_500` | false | 勾选后逗号拼接 |
 | `TASK_HELLASWAG` | `--datasets hellaswag` | false | 勾选后逗号拼接 |
 | `TASK_HUMANEVAL` | `--datasets humaneval` | false | 勾选后逗号拼接(Python 代码生成,需执行模型生成代码,建议 sandbox) |
-| `TASK_HUMANEVAL_PLUS` | `--datasets humaneval_plus` | true | 勾选后逗号拼接(HumanEval 增强版,需 sandbox 且用内置 numpy 的自定义 docker 镜像) |
+| `TASK_HUMANEVAL_PLUS` | `--datasets humaneval_plus` | false | 勾选后逗号拼接(HumanEval 增强版,需 sandbox 且用内置 numpy 的自定义 docker 镜像) |
 | `TASK_HMMT25` | `--datasets hmmt25` | false | 勾选后逗号拼接(HMMT 2025 数学竞赛,30 题) |
-| `TASK_HMMT26` | `--datasets hmmt26` | true | 勾选后逗号拼接(HMMT 2026 数学竞赛,33 题) |
+| `TASK_HMMT26` | `--datasets hmmt26` | false | 勾选后逗号拼接(HMMT 2026 数学竞赛,33 题) |
 | `TASK_IMO_ANSWERBENCH` | `--datasets imo_answerbench` | false | 勾选后逗号拼接(IMO 奥数题,有裁判模型走 LLM judge,否则回退 rule) |
 | `TASK_MCP_ATLAS` | `--datasets mcp_atlas` | false | 勾选后逗号拼接(MCP 工具使用智能体,需 LLM judge + MCP-Atlas Docker 服务,支持自动部署) |
 | `TASK_DEEP_SWE` | `--datasets deep_swe` | false | 勾选后逗号拼接(仓库级编码 agent,需 Docker + Python>=3.12) |
