@@ -431,8 +431,20 @@ else
 
     deactivate
 fi
-
+ENDSSH
+"""
+                    sh """
+ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << 'ENDSSH'
+set -e
 cd ${params.WORK_DIR}
+
+# Docker section needs these variables (set in venv block, but separate SSH session)
+NEED_DEEP_SWE="${params.TASK_DEEP_SWE}"
+NEED_SANDBOX="${params.ENABLE_SANDBOX}"
+NEED_HUMANEVAL="${params.TASK_HUMANEVAL}"
+NEED_HUMANEVAL_PLUS="${params.TASK_HUMANEVAL_PLUS}"
+NEED_MBPP="${params.TASK_MBPP}"
+
 echo "=== 虚拟环境准备完成 ==="
 
 echo "=== 校验 Docker(sandbox / deep_swe 共用)==="
@@ -729,6 +741,12 @@ DOCKERFILE
 else
     echo "无需 Docker,跳过"
 fi
+ENDSSH
+"""
+                    sh """
+ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << 'ENDSSH'
+set -e
+cd ${params.WORK_DIR}
 
 echo "=== 检查 MCP-Atlas agent-environment 服务 ==="
 if [ "${params.TASK_MCP_ATLAS}" = "true" ]; then
@@ -967,6 +985,12 @@ ENTRYPOINT_EOF
 else
     echo "TASK_MCP_ATLAS=false,跳过 mcp_atlas 服务检查"
 fi
+ENDSSH
+"""
+                    sh """
+ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << 'ENDSSH'
+set -e
+cd ${params.WORK_DIR}
 
 # === 预下载数据集(经代理)===
 # 评测阶段会 unset 代理直连内网,若数据集未缓存会导致下载失败。
@@ -1006,90 +1030,8 @@ PRELOAD_TASKS=""
 if [ -n "\$PRELOAD_TASKS" ]; then
     source ${params.WORK_DIR}/.venv/bin/activate
     # 先检查缓存(无代理,纯文件系统检查),再按需下载(有代理)
-    PRELOAD_TASKS="\$PRELOAD_TASKS" PROXY_URL="http://10.201.136.68:1080" python3 -c "
-import os
-import glob
-import shutil
-
-from evalscope.api.registry import get_benchmark
-from evalscope.config import TaskConfig
-from evalscope.constants import DEFAULT_EVALSCOPE_CACHE_DIR
-from evalscope.utils.io_utils import safe_filename
-
-
-def check_cache(adapter):
-    '''Check if the dataset is fully cached.
-
-    Handles two cache mechanisms:
-    1. RemoteDataLoader: datasets.save_to_disk() -> dataset_info.json in evalscope cache
-    2. ModelScope snapshot: modelscope.dataset_snapshot_download() -> files in MS cache
-
-    Returns (is_cached: bool, valid_count: int, expected_count: int, stale_dirs: list)
-    '''
-    stale_dirs = []
-    n_subsets = len(adapter.subset_list) if not adapter.reformat_subset else 1
-
-    # --- Mechanism 1: evalscope datasets cache (RemoteDataLoader) ---
-    safe_name = safe_filename(adapter.dataset_id)
-    cache_bases = [
-        os.path.join(adapter.dataset_dir, 'datasets'),
-        os.path.join(DEFAULT_EVALSCOPE_CACHE_DIR, 'datasets'),
-    ]
-    valid = 0
-    for base in cache_bases:
-        if os.path.isdir(base):
-            for d in glob.glob(os.path.join(base, f'{safe_name}-*')):
-                if os.path.isdir(d):
-                    if os.path.isfile(os.path.join(d, 'dataset_info.json')):
-                        valid += 1
-                    else:
-                        stale_dirs.append(d)
-    if valid >= n_subsets:
-        return True, valid, n_subsets, stale_dirs
-
-    # --- Mechanism 2: ModelScope snapshot cache (tau2_bench etc.) ---
-    # modelscope.dataset_snapshot_download caches at cache_dir/dataset_id/
-    ms_snapshot = os.path.join(adapter.dataset_dir, adapter.dataset_id)
-    if os.path.isdir(ms_snapshot) and os.listdir(ms_snapshot):
-        return True, 1, 1, stale_dirs
-
-    return False, valid, n_subsets, stale_dirs
-
-
-tasks = [t.strip() for t in os.environ.get('PRELOAD_TASKS', '').split() if t.strip()]
-proxy_url = os.environ.get('PROXY_URL', '')
-
-for name in tasks:
-    try:
-        config = TaskConfig()
-        adapter = get_benchmark(name, config=config)
-
-        # Phase 1: check cache via filesystem (no network, no proxy)
-        is_cached, valid_count, expected_count, stale_dirs = check_cache(adapter)
-
-        if is_cached:
-            print(f'[CACHED] {name}: {valid_count}/{expected_count} subset(s) cached, skipping')
-            continue
-
-        # Clean up incomplete/stale cache directories
-        for d in stale_dirs:
-            print(f'[STALE] {name}: removing incomplete cache: {d}')
-            shutil.rmtree(d, ignore_errors=True)
-
-        # Phase 2: download with proxy (set env for requests/httpx used by SDK)
-        print(f'[MISS] {name}: cache incomplete ({valid_count}/{expected_count}), downloading...')
-        os.environ['http_proxy'] = proxy_url
-        os.environ['https_proxy'] = proxy_url
-        adapter = get_benchmark(name, config=config)
-        adapter.load_dataset()
-        del os.environ['http_proxy']
-        del os.environ['https_proxy']
-        print(f'[OK] {name}: dataset downloaded and cached')
-    except Exception as e:
-        os.environ.pop('http_proxy', None)
-        os.environ.pop('https_proxy', None)
-        print(f'[WARN] {name}: {e}')
-" 2>&1
+    # 脚本独立为 scripts/predownload_datasets.py 避免 Jenkinsfile CPS 方法过大
+    PRELOAD_TASKS="\$PRELOAD_TASKS" PROXY_URL="http://10.201.136.68:1080" python3 ${params.WORK_DIR}/scripts/predownload_datasets.py 2>&1
     deactivate
     echo "数据集预下载阶段完成"
 else
