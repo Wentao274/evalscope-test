@@ -97,6 +97,17 @@ class TauBenchAdapter(AgentAdapter):
         self.api_base = self.extra_params.get('api_base', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
         self.generation_config = self.extra_params.get('generation_config', {'temperature': 0.0, 'max_tokens': 4096})
 
+        logger.info(
+            f'TauBench user model config: user_model={self.user_model}, '
+            f'api_base={self.api_base}, api_key={"***" if self.api_key and self.api_key != "EMPTY" else self.api_key}'
+        )
+        if 'dashscope' in self.api_base:
+            raise ValueError(
+                f'TauBench api_base is pointing to Dashscope ({self.api_base}), '
+                'which requires internet access. Set extra_params.api_base to the '
+                'internal model endpoint via USER_MODEL_API_URL or DATASET_ARGS.'
+            )
+
     @run_once
     def _patch_env_completion(self) -> str:
         from tau_bench.envs.user import LLMUserSimulationEnv

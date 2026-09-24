@@ -163,7 +163,9 @@ pipeline {
 ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << 'ENDSSH'
 set -o pipefail
 # 连通性检查目标是内网IP,不走代理(宿主机系统环境可能设置了 HTTP_PROXY)
-unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
+export no_proxy='*'
+export NO_PROXY='*'
 {
     echo "=== 检查 API 连通性 (/v1/models) ==="
     HTTP_CODE=\$(curl -s --connect-timeout 10 -m 30 -o /dev/null -w "%{http_code}" ${env.BASE_URL_V1}/models)
@@ -355,8 +357,14 @@ export LC_ALL=en_US.UTF-8
 # runner 宿主机系统环境中有 HTTP_PROXY/HTTPS_PROXY(见环境检查阶段注释),
 # 评测时模型推理请求(10.11.x.x 内网IP)若走代理会间歇性 Connection error。
 # 数据集已在环境检查阶段经代理预下载并缓存,评测阶段无需网络,直连内网推理。
-unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+# httpx (OpenAI SDK) reads ALL_PROXY/all_proxy too; no_proxy='*' is a safety net
+# that tells httpx to bypass any proxy for all hosts even if a proxy var survives.
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
+export no_proxy='*'
+export NO_PROXY='*'
 echo "=== Proxy unset for eval ==="
+echo "Proxy-related env vars after unset:"
+env | grep -i proxy || echo "(none)"
 
 cd ${params.WORK_DIR}
 source .venv/bin/activate

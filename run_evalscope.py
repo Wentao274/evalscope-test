@@ -314,6 +314,12 @@ def main():
             print(f"  {k}={env[k]}")
     print("=" * 60)
 
+    proxy_vars = {k: v for k, v in env.items() if 'proxy' in k.lower()}
+    if proxy_vars:
+        print(f"WARNING: Proxy env vars still set in Python process: {proxy_vars}")
+    else:
+        print("No proxy env vars detected in Python process (good)")
+
     result = subprocess.run(cmd, env=env)
 
     print(f"Test completed. Output directory: {output_dir}")

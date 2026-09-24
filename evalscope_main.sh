@@ -469,11 +469,11 @@ print(json.dumps(args, ensure_ascii=False))
 ")
     fi
 
-    # ---- tau_bench / tau2_bench 专属:自动注入用户模拟模型参数 ----
-    # tau_bench/tau2_bench 用 LLM 模拟用户与被测模型多轮对话,需配置 user_model/api_key/api_base。
+    # ---- tau_bench / tau2_bench / tau3_bench 专属:自动注入用户模拟模型参数 ----
+    # tau_bench/tau2_bench/tau3_bench 用 LLM 模拟用户与被测模型多轮对话,需配置 user_model/api_key/api_base。
     # USER_MODEL_ID 留空时回退到被测模型(MODEL_NAME / LLM_ADDR / API_KEY)。
     # 用户在 DATASET_ARGS 里显式配置了对应字段时以用户为准。
-    if [ "$DATASET" = "tau_bench" ] || [ "$DATASET" = "tau2_bench" ]; then
+    if [ "$DATASET" = "tau_bench" ] || [ "$DATASET" = "tau2_bench" ] || [ "$DATASET" = "tau3_bench" ]; then
         DATASET_ARGS_EFFECTIVE=$(DATASET_ARGS="$DATASET_ARGS_EFFECTIVE" \
                                  USER_MODEL_ID="$USER_MODEL_ID" \
                                  USER_MODEL_API_URL="$USER_MODEL_API_URL" \
@@ -483,7 +483,7 @@ print(json.dumps(args, ensure_ascii=False))
                                  API_KEY="$API_KEY" \
                                  DATASET="$DATASET" \
                                  python3 -c "
-import json, os
+import json, os, sys
 raw = (os.environ.get('DATASET_ARGS') or '').strip()
 try:
     args = json.loads(raw) if raw else {}
@@ -507,8 +507,22 @@ if 'generation_config' not in ep:
     ep['generation_config'] = {'temperature': 0.0}
 ds_args['extra_params'] = ep
 args[ds] = ds_args
+# Validate: api_base must not be Dashscope (external internet)
+resolved_api_base = ep.get('api_base', '')
+if 'dashscope' in resolved_api_base:
+    print(f'ERROR: tau_bench api_base resolved to Dashscope ({resolved_api_base}), '
+          f'which requires internet. USER_MODEL_API_URL={os.environ.get(\"USER_MODEL_API_URL\", \"\")}, '
+          f'LLM_ADDR={os.environ.get(\"LLM_ADDR\", \"\")}', file=sys.stderr)
+    sys.exit(1)
+if not resolved_api_base:
+    print('ERROR: tau_bench api_base is empty. Set USER_MODEL_API_URL or BASE_URL.', file=sys.stderr)
+    sys.exit(1)
 print(json.dumps(args, ensure_ascii=False))
 ")
+        if [ $? -ne 0 ]; then
+            echo "ERROR: tau_bench/tau2_bench user model config injection failed, aborting this dataset"
+            continue
+        fi
     fi
     if [ -n "$DATASET_ARGS_EFFECTIVE" ]; then
         cmd_args+=(--dataset-args "$DATASET_ARGS_EFFECTIVE")
