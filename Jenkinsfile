@@ -79,10 +79,10 @@ pipeline {
         SSH_CREDENTIALS = 'HOST_SSH_KEY'
         REMOTE_HOST = '10.201.132.50'
         REMOTE_USER = 'root'
-        // 用户在 BASE_URL 填根地址(可不带或带 /v1,可带或不带尾斜杠)。
+        // 用户在 BASE_URL 填根地址(可不带或带 /v1,可带或不带尾斜杠,多余斜杠会被规范化)。
         // 这里 idempotent 拼接出唯一的 OpenAI 兼容端点:
-        //   先剥尾斜杠 → 再剥结尾 /v1(若有)→ 统一补 /v1
-        BASE_URL_V1 = "${params.BASE_URL.replaceAll('/+\$', '').replaceAll('/?v1\$', '')}/v1"
+        //   先规范化 scheme 后的多个斜杠(http://// → http://)→ 剥尾斜杠 → 剥结尾 /v1(若有)→ 统一补 /v1
+        BASE_URL_V1 = "${params.BASE_URL.replaceAll('://+', '://').replaceAll('/+\$', '').replaceAll('/?v1\$', '')}/v1"
     }
 
     stages {
@@ -588,9 +588,9 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                         env.JUDGE_STRATEGY = params.JUDGE_STRATEGY
                         env.TASK_JUDGE_STRATEGY_JSON = params.TASK_JUDGE_STRATEGY_JSON
                         env.JUDGE_MODEL_ID = params.JUDGE_MODEL_ID
-                        env.JUDGE_API_URL = params.JUDGE_API_URL
+                        env.JUDGE_API_URL = params.JUDGE_API_URL?.replaceAll('://+', '://')
                         env.USER_MODEL_ID = params.USER_MODEL_ID
-                        env.USER_MODEL_API_URL = params.USER_MODEL_API_URL
+                        env.USER_MODEL_API_URL = params.USER_MODEL_API_URL?.replaceAll('://+', '://')
                         env.TASK_MAX_TOKENS_JSON = params.TASK_MAX_TOKENS_JSON
                         env.TASK_TIMEOUT_JSON = params.TASK_TIMEOUT_JSON
                         env.TASK_TOP_P_JSON = params.TASK_TOP_P_JSON
