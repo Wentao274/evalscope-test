@@ -5,10 +5,15 @@ load_dotenv('.env')
 
 env = dotenv_values('.env')
 
-import pytest
+import json
+import os
 import unittest
+from unittest.mock import patch
+
+import pytest
 
 from evalscope.constants import EvalType, JudgeStrategy, OutputType
+from evalscope.models.mockllm import MockLLM
 from evalscope.utils.logger import get_logger
 from tests.common import TestBenchmark
 
@@ -21,7 +26,7 @@ class TestNativeBenchmark(TestBenchmark):
     def setUp(self):
         """Setup common test configuration."""
         self.base_config = {
-            'model': 'qwen3-max',
+            'model': 'qwen3.8-flash',
             'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
             'api_key': env.get('DASHSCOPE_API_KEY'),
             'eval_type': EvalType.OPENAI_API,
@@ -35,9 +40,10 @@ class TestNativeBenchmark(TestBenchmark):
                 'extra_body': {'enable_thinking': True},
                 'stream': True
             },
-            'judge_strategy': JudgeStrategy.AUTO,
-            'judge_model_args': {
-                'model_id': 'qwen3-max',
+            'judge': {
+                'strategy': JudgeStrategy.AUTO,
+                'models': {
+                'model_id': 'qwen3.8-flash',
                 'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
                 'api_key': env.get('DASHSCOPE_API_KEY'),
                 'generation_config': {
@@ -45,6 +51,7 @@ class TestNativeBenchmark(TestBenchmark):
                     # 'max_tokens': 4096,
                     'extra_body': {'enable_thinking': False}
                 }
+                },
             },
             'debug': True,
         }
@@ -264,22 +271,6 @@ class TestNativeBenchmark(TestBenchmark):
         }
         self._run_dataset_test('chinese_simpleqa', dataset_args)
 
-    # Code datasets
-    def test_live_code_bench(self):
-        """Test LiveCodeBench dataset."""
-        dataset_args = {
-            'extra_params': {
-                'start_date': '2024-08-01',
-                'end_date': '2025-02-28'
-            },
-            'local_path': '/root/.cache/modelscope/hub/datasets/evalscope/livecodebench_code_generation_lite_parquet'
-        }
-        self._run_dataset_test('live_code_bench', dataset_args)
-
-    def test_humaneval(self):
-        """Test HumanEval dataset."""
-        self._run_dataset_test('humaneval')
-
     # Custom & specialized datasets
     def test_general_qa(self):
         """Test custom general QA dataset."""
@@ -351,10 +342,6 @@ class TestNativeBenchmark(TestBenchmark):
         }
         self._run_dataset_test('needle_haystack', dataset_args)
 
-    def test_ifeval(self):
-        """Test IFEval dataset."""
-        self._run_dataset_test('ifeval')
-
     def test_ifeval_load(self):
         """Test IFEval dataset loading."""
         self._run_dataset_load_test('ifeval')
@@ -378,10 +365,7 @@ class TestNativeBenchmark(TestBenchmark):
 
     def test_humaneval(self):
         """Test HumanEval dataset."""
-        dataset_args = {
-            # 'metric_list': ['Pass@1']
-        }
-        self._run_dataset_test('humaneval', dataset_args, limit=10, repeats=3)
+        self._run_dataset_test('humaneval', {}, limit=10, repeats=3)
 
     def test_live_code_bench(self):
         """Test LiveCodeBench dataset."""
@@ -795,6 +779,20 @@ class TestNativeBenchmark(TestBenchmark):
         }
         self._run_dataset_test('hmmt26', dataset_args, limit=5)
 
+    def test_hmmt_nov25_mock(self):
+        """Test HMMT November 2025 dataset with the mock model."""
+        dataset_args = {
+            'few_shot_num': 0,
+        }
+        self._run_dataset_test('hmmt_nov25', dataset_args, limit=5, use_mock=True)
+
+    def test_hmmt_nov25(self):
+        """Test HMMT November 2025 dataset with a real API."""
+        dataset_args = {
+            'few_shot_num': 0,
+        }
+        self._run_dataset_test('hmmt_nov25', dataset_args, limit=5, eval_batch_size=5)
+
     def test_imo_answerbench(self):
         """Test IMO-AnswerBench dataset."""
         dataset_args = {
@@ -855,7 +853,7 @@ class TestNativeBenchmark(TestBenchmark):
             use_mock=True,
             limit=1,
             eval_batch_size=1,
-            judge_strategy=JudgeStrategy.RULE,
+            judge={'strategy': JudgeStrategy.RULE},
             generation_config={
                 'max_tokens': 128,
                 'temperature': 0.0,
@@ -873,7 +871,7 @@ class TestNativeBenchmark(TestBenchmark):
             use_mock=True,
             limit=1,
             eval_batch_size=1,
-            judge_strategy=JudgeStrategy.RULE,
+            judge={'strategy': JudgeStrategy.RULE},
             generation_config={
                 'max_tokens': 128,
                 'temperature': 0.0,
@@ -901,6 +899,15 @@ class TestNativeBenchmark(TestBenchmark):
     def test_arc_agi_2_mock(self):
         """Test ARC-AGI-2 benchmark with mock."""
         self._run_dataset_test('arc_agi_2', limit=3, use_mock=True)
+
+    # SPaRC
+    def test_sparc(self):
+        """Test SPaRC spatial pathfinding benchmark (limit is per difficulty level)."""
+        self._run_dataset_test('sparc', limit=1)
+
+    def test_sparc_mock(self):
+        """Test SPaRC spatial pathfinding benchmark with mock."""
+        self._run_dataset_test('sparc', limit=2, use_mock=True)
 
     # AGIEval
     _AGIEVAL_ARGS = {'subset_list': ['aqua-rat', 'logiqa-zh', 'math'], 'few_shot_num': 0}
@@ -938,22 +945,25 @@ class TestNativeBenchmark(TestBenchmark):
             'perspective_gap_prompt_writing', limit=5, model='qwen-plus', generation_config=generation_config
         )
 
+    def test_prbench(self):
+        """Test PRBench with real inference and judge APIs."""
+        if not env.get('DASHSCOPE_API_KEY'):
+            self.skipTest('DASHSCOPE_API_KEY is required for the PRBench real-API smoke test.')
+        self._run_dataset_test('prbench', dataset_args={'subset_list': ['finance_hard']}, limit=2)
+
     def test_plawbench_mock(self):
         """Test PLawBench with a mock model and a mock judge."""
         self._run_dataset_test(
             'plawbench',
             limit=2,
             use_mock=True,
-            judge_model_args={
-                'model_id': 'mock-judge',
-                'eval_type': EvalType.MOCK_LLM
-            },
+            judge={'models': {'model_id': 'mock-judge', 'eval_type': EvalType.MOCK_LLM}},
         )
 
     def test_plawbench(self):
         """Test PLawBench rubric-based legal practice benchmark with real API."""
-        judge_model_args = {
-            'model_id': 'qwen3-max',
+        judge = {'models': {
+            'model_id': 'qwen3.8-flash',
             'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
             'api_key': env.get('DASHSCOPE_API_KEY'),
             'generation_config': {
@@ -963,8 +973,177 @@ class TestNativeBenchmark(TestBenchmark):
                     'enable_thinking': False
                 }
             }
-        }
-        self._run_dataset_test('plawbench', limit=2, judge_model_args=judge_model_args)
+        }}
+        self._run_dataset_test('plawbench', limit=2, judge=judge)
+
+    def test_one_million_bench_mock(self):
+        """Test $OneMillion-Bench with a mock model and judge."""
+        judge_response = json.dumps(
+            {
+                'results': [
+                    {'rubric_id': rubric_id, 'status': '否', 'justification': 'Mock verdict.'}
+                    for rubric_id in range(1, 12)
+                ]
+            },
+            ensure_ascii=False,
+        )
+        with patch.object(MockLLM, 'default_output', judge_response):
+            self._run_dataset_test(
+                'one_million_bench',
+                dataset_args={'subset_list': ['global_law']},
+                limit=1,
+                use_mock=True,
+                judge={'models': {'model_id': 'mock-judge', 'eval_type': EvalType.MOCK_LLM}},
+            )
+
+    def test_one_million_bench(self):
+        """Test $OneMillion-Bench with a real model and judge API."""
+        judge = {'models': {
+            'model_id': 'qwen3.8-flash',
+            'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            'api_key': env.get('DASHSCOPE_API_KEY'),
+            'generation_config': {
+                'temperature': 0.0,
+                'max_tokens': 8192,
+                'extra_body': {
+                    'enable_thinking': False
+                }
+            }
+        }}
+        self._run_dataset_test(
+            'one_million_bench',
+            dataset_args={'subset_list': ['global_law']},
+            limit=1,
+            eval_batch_size=5,
+            generation_config={'temperature': 0.0, 'max_tokens': 8192},
+            judge=judge,
+        )
+
+    # Indic-language benchmarks
+    def test_milu_mock(self):
+        """Test MILU Indic multi-task MCQ benchmark with mock."""
+        self._run_dataset_test('milu', dataset_args={'subset_list': ['Hindi']}, limit=2, use_mock=True)
+
+    def test_milu_fewshot_mock(self):
+        """Test MILU few-shot prompting (examples drawn from the validation split)."""
+        self._run_dataset_test(
+            'milu', dataset_args={
+                'subset_list': ['Hindi'],
+                'few_shot_num': 2
+            }, limit=2, use_mock=True
+        )
+
+    def test_arc_indic_mock(self):
+        """Test ARC-Challenge-Indic benchmark with mock."""
+        self._run_dataset_test('arc_indic', dataset_args={'subset_list': ['hi']}, limit=2, use_mock=True)
+
+    def test_triviaqa_indic_mock(self):
+        """Test TriviaQA-Indic-MCQ benchmark with mock."""
+        self._run_dataset_test('triviaqa_indic', dataset_args={'subset_list': ['hi']}, limit=2, use_mock=True)
+
+    def test_indic_boolq_mock(self):
+        """Test BoolQ-Indic benchmark with mock."""
+        self._run_dataset_test('indic_boolq', dataset_args={'subset_list': ['hi']}, limit=2, use_mock=True)
+
+    def test_indic_boolq_fewshot_mock(self):
+        """Test BoolQ-Indic few-shot prompting (examples drawn from the train split)."""
+        self._run_dataset_test(
+            'indic_boolq', dataset_args={
+                'subset_list': ['hi'],
+                'few_shot_num': 2
+            }, limit=2, use_mock=True
+        )
+
+    def test_gsm8k_indic_mock(self):
+        """Test GSM8K-Indic benchmark with mock."""
+        self._run_dataset_test('gsm8k_indic', dataset_args={'subset_list': ['hi']}, limit=2, use_mock=True)
+
+    # Indic-language benchmarks (phase 2)
+    def test_sanskriti_mock(self):
+        """Test Sanskriti Indian-culture trivia benchmark with mock."""
+        self._run_dataset_test(
+            'sanskriti', dataset_args={'subset_list': ['gk']}, limit=2, use_mock=True
+        )
+
+    def test_hellaswag_hi_mock(self):
+        """Test HellaSwag-Hindi commonsense benchmark with mock."""
+        self._run_dataset_test(
+            'hellaswag_hi', dataset_args={'subset_list': ['hi']}, limit=2, use_mock=True
+        )
+
+    def test_indic_param_mock(self):
+        """Test IndicParam low-resource-language UGC-NET benchmark with mock."""
+        self._run_dataset_test('indic_param', dataset_args={'subset_list': ['Sanskrit']}, limit=2, use_mock=True)
+
+    def test_bhasha_bench_multi_ayur_mock(self):
+        """Test BhashaBench-Multi (Ayurveda) benchmark with mock."""
+        self._run_dataset_test(
+            'bhasha_bench_multi_ayur', dataset_args={'subset_list': ['Hindi']}, limit=2, use_mock=True
+        )
+
+    def test_bhasha_bench_multi_finance_mock(self):
+        """Test BhashaBench-Multi (Finance) benchmark with mock."""
+        self._run_dataset_test(
+            'bhasha_bench_multi_finance', dataset_args={'subset_list': ['Hindi']}, limit=2, use_mock=True
+        )
+
+    def test_bhasha_bench_multi_krishi_mock(self):
+        """Test BhashaBench-Multi (Krishi) benchmark with mock."""
+        self._run_dataset_test(
+            'bhasha_bench_multi_krishi', dataset_args={'subset_list': ['Hindi']}, limit=2, use_mock=True
+        )
+
+    def test_bhasha_bench_multi_legal_mock(self):
+        """Test BhashaBench-Multi (Legal) benchmark with mock."""
+        self._run_dataset_test(
+            'bhasha_bench_multi_legal', dataset_args={'subset_list': ['Hindi']}, limit=2, use_mock=True
+        )
+
+    # bhashabenchv1: gated on HuggingFace (dataset_hub='auto' approval, but still requires an
+    # HF_TOKEN whose account has accepted the terms), so these only run where that's configured.
+    @unittest.skipUnless(os.environ.get('HF_TOKEN'), 'Requires HF_TOKEN with accepted BhashaBench-V1 gated-dataset terms')
+    def test_bhashabenchv1_ayur_mock(self):
+        """Test BhashaBench-V1 (Ayurveda) benchmark with mock."""
+        self._run_dataset_test(
+            'bhashabenchv1_ayur',
+            dataset_args={'subset_list': ['Hindi']},
+            limit=2,
+            use_mock=True,
+            dataset_hub='huggingface'
+        )
+
+    @unittest.skipUnless(os.environ.get('HF_TOKEN'), 'Requires HF_TOKEN with accepted BhashaBench-V1 gated-dataset terms')
+    def test_bhashabenchv1_finance_mock(self):
+        """Test BhashaBench-V1 (Finance) benchmark with mock."""
+        self._run_dataset_test(
+            'bhashabenchv1_finance',
+            dataset_args={'subset_list': ['Hindi']},
+            limit=2,
+            use_mock=True,
+            dataset_hub='huggingface'
+        )
+
+    @unittest.skipUnless(os.environ.get('HF_TOKEN'), 'Requires HF_TOKEN with accepted BhashaBench-V1 gated-dataset terms')
+    def test_bhashabenchv1_krishi_mock(self):
+        """Test BhashaBench-V1 (Krishi) benchmark with mock."""
+        self._run_dataset_test(
+            'bhashabenchv1_krishi',
+            dataset_args={'subset_list': ['Hindi']},
+            limit=2,
+            use_mock=True,
+            dataset_hub='huggingface'
+        )
+
+    @unittest.skipUnless(os.environ.get('HF_TOKEN'), 'Requires HF_TOKEN with accepted BhashaBench-V1 gated-dataset terms')
+    def test_bhashabenchv1_legal_mock(self):
+        """Test BhashaBench-V1 (Legal) benchmark with mock."""
+        self._run_dataset_test(
+            'bhashabenchv1_legal',
+            dataset_args={'subset_list': ['Hindi']},
+            limit=2,
+            use_mock=True,
+            dataset_hub='huggingface'
+        )
 
 
 if __name__ == '__main__':

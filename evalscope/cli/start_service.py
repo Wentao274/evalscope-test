@@ -1,13 +1,23 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 """CLI command for starting the EvalScope Flask service."""
-from argparse import ArgumentParser
 
-from evalscope.cli.base import CLICommand
+import os
+from argparse import ArgumentTypeError
+
+from evalscope.cli.base import ArgumentParserWithSubParsers, CLICommand
 
 
 def subparser_func(args):
     """Function which will be called for a specific sub parser."""
     return ServiceCMD(args)
+
+
+def existing_directory(value: str) -> str:
+    """Return an existing directory path or produce an argparse error."""
+    path = os.path.abspath(value)
+    if not os.path.isdir(path):
+        raise ArgumentTypeError(f'output directory does not exist: {path}')
+    return path
 
 
 class ServiceCMD(CLICommand):
@@ -17,7 +27,7 @@ class ServiceCMD(CLICommand):
         self.args = args
 
     @staticmethod
-    def define_args(parsers: ArgumentParser):
+    def define_args(parsers: ArgumentParserWithSubParsers) -> None:
         """Define args for service command."""
         parser = parsers.add_parser(
             ServiceCMD.name, help='Start the EvalScope Flask service for eval and perf endpoints'
@@ -26,10 +36,10 @@ class ServiceCMD(CLICommand):
         parser.add_argument('--port', type=int, default=9000, help='Port to listen on (default: 9000)')
         parser.add_argument(
             '--outputs',
-            type=str,
+            type=existing_directory,
             default=None,
             help='Root directory for evaluation outputs (default: ./outputs). '
-            'The web dashboard will use this as the default scan path.'
+            'The web dashboard will use this as the default scan path.',
         )
         parser.add_argument('--debug', action='store_true', default=False, help='Enable Flask debug mode')
         parser.set_defaults(func=subparser_func)

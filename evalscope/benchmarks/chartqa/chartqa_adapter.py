@@ -24,6 +24,7 @@ The last line of your response should be of the form "ANSWER: [ANSWER]" (without
 
 @register_benchmark(
     BenchmarkMeta(
+        evaluation_version='v1.1',
         name='chartqa',
         pretty_name='ChartQA',
         tags=[Tags.MULTI_MODAL, Tags.KNOWLEDGE, Tags.QA],
@@ -57,6 +58,7 @@ ChartQA is a benchmark designed to evaluate question-answering capabilities over
 - Numerical answers may have tolerance for rounding differences
 """,  # noqa: E501
         dataset_id='lmms-lab/ChartQA',
+        hf_dataset_id='lmms-lab/ChartQA',
         subset_list=['human_test', 'augmented_test'],
         metric_list=['relaxed_acc'],
         eval_split='test',
@@ -64,11 +66,9 @@ ChartQA is a benchmark designed to evaluate question-answering capabilities over
     )
 )
 class ChartQAAdapter(VisionLanguageAdapter):
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.add_aggregation_name = False
         self.reformat_subset = True
 
     def record_to_sample(self, record: Dict[str, Any]) -> Sample:
@@ -78,7 +78,7 @@ class ChartQAAdapter(VisionLanguageAdapter):
 
         content_list: List[Content] = [
             ContentText(text=OPEN_PROMPT.format(question=question)),
-            ContentImage(image=image_base64)
+            ContentImage(image=image_base64),
         ]
 
         return Sample(

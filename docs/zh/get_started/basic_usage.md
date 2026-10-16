@@ -93,15 +93,15 @@ run_task(task_cfg="config.json")
 评测完成后，终端会打印出如下格式的得分报告：
 
 ```text
-+-----------------------+----------------+-----------------+-----------------+---------------+-------+---------+
-| Model Name            | Dataset Name   | Metric Name     | Category Name   | Subset Name   |   Num |   Score |
-+=======================+================+=================+=================+===============+=======+=========+
-| Qwen2.5-0.5B-Instruct | gsm8k          | AverageAccuracy | default         | main          |     5 |     0.4 |
-+-----------------------+----------------+-----------------+-----------------+---------------+-------+---------+
-| Qwen2.5-0.5B-Instruct | ai2_arc        | AverageAccuracy | default         | ARC-Easy      |     5 |     0.8 |
-+-----------------------+----------------+-----------------+-----------------+---------------+-------+---------+
-| Qwen2.5-0.5B-Instruct | ai2_arc        | AverageAccuracy | default         | ARC-Challenge |     5 |     0.4 |
-+-----------------------+----------------+-----------------+-----------------+---------------+-------+---------+
+┌───────────────────────┬───────────┬────────────┬───────────────┬───────┬─────────┐
+│ Model                 │ Dataset   │ Metric     │ Subset        │   Num │ Score   │
+├───────────────────────┼───────────┼────────────┼───────────────┼───────┼─────────┤
+│ Qwen2.5-0.5B-Instruct │ gsm8k     │ Accuracy ↑ │ main          │     5 │ 40%     │
+├───────────────────────┼───────────┼────────────┼───────────────┼───────┼─────────┤
+│ Qwen2.5-0.5B-Instruct │ arc       │ Accuracy ↑ │ ARC-Easy      │     5 │ 80%     │
+├───────────────────────┼───────────┼────────────┼───────────────┼───────┼─────────┤
+│ Qwen2.5-0.5B-Instruct │ arc       │ Accuracy ↑ │ ARC-Challenge │     5 │ 40%     │
+└───────────────────────┴───────────┴────────────┴───────────────┴───────┴─────────┘
 ```
 
 ````{tip}
@@ -120,6 +120,8 @@ evalscope service
 ### 评测在线模型 API
 
 EvalScope 支持评测兼容 OpenAI API 格式的模型服务。只需指定服务地址、API Key，并将 `eval-type` 设置为 `openai_api`。
+
+System One 决策模型服务使用 `--eval-type systemone_api`，详见 [System One 评测](../user_guides/systemone.md)。
 
 **示例1：直接评测 OpenAI API 兼容的云端服务（推荐入门方式，无需 GPU）**
 
@@ -216,7 +218,6 @@ evalscope eval \
 ```python
 import os
 from evalscope import TaskConfig, run_task
-from evalscope.constants import JudgeStrategy
 
 task_cfg = TaskConfig(
     model='qwen2.5-7b-instruct',
@@ -225,11 +226,13 @@ task_cfg = TaskConfig(
     eval_type='openai_api',
     datasets=['chinese_simpleqa'],
     limit=5,
-    judge_strategy=JudgeStrategy.AUTO,
-    judge_model_args={
-        'model_id': 'qwen2.5-72b-instruct',
-        'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        'api_key': os.getenv('DASHSCOPE_API_KEY'),
+    judge={
+        'strategy': 'auto',
+        'models': {
+            'model_id': 'qwen2.5-72b-instruct',
+            'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            'api_key': os.getenv('DASHSCOPE_API_KEY'),
+        },
     }
 )
 
@@ -322,16 +325,36 @@ evalscope eval \
 
 ### 从已有/中断的评测结果继续评测
 
-如果之前的评测任务中断，或者您想基于已有的评测结果继续进行评测，可以使用 `--use-cache` 参数指定之前的输出目录。这将跳过已完成的样本，只评测剩余样本。此外，还可以通过 `--rerun-review` 参数强制对所有样本重新执行评分步骤。
+对于 Native 后端，评测中断后，重新执行原命令，并通过 `--use-cache` 指定该次运行的输出目录即可继续评测。请使用包含 `predictions/`、`reviews/`、`reports/` 和 `configs/` 的目录，例如 `outputs/20261009_120000`，而非其中的某个子目录。具体路径可在原运行日志中查看。
+
+例如，以下评测任务中断了：
+
+```shell
+evalscope eval \
+ --model Qwen/Qwen2.5-0.5B-Instruct \
+ --datasets gsm8k \
+ --limit 10
+```
+
+使用该次运行的实际输出目录继续评测：
 
 ```shell
 evalscope eval \
  --model Qwen/Qwen2.5-0.5B-Instruct \
  --datasets gsm8k \
  --limit 10 \
- --use-cache outputs/20230101_123456 \
- --rerun-review
+ --use-cache outputs/20261009_120000
 ```
+
+EvalScope 按样本 ID 匹配缓存结果：
+
+- 已缓存 prediction 和 review 的样本，直接复用评分。
+- 已缓存 prediction、尚无 review 的样本，只执行评分步骤。
+- 没有有效 prediction 缓存的样本，执行推理和评分。
+
+续跑会在同一输出目录中写入剩余结果，并重新生成报告。继续同一次评测时，请保持原模型、数据集选择、提示词、生成参数和评分配置一致。Native 后端在复用结果前会校验缓存的评测身份；不兼容的配置会被拒绝。
+
+如果需要主动对已有预测重新评分，在续跑命令中添加 `--rerun-review`。此时会重新计算 review，而非复用已有评分，并在成功后原子替换 review 缓存。没有 prediction 缓存的样本仍需执行推理。`--rerun-review` 也会显式允许评测身份不匹配，因此仅在已有预测适用于新的评分配置时使用。
 
 ### 跳过评测出错的样本
 

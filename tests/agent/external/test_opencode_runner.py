@@ -21,8 +21,9 @@ complete cross-protocol chain:
 """
 
 import os
-import pytest
 import shutil
+
+import pytest
 
 from evalscope.agent.external import ExternalAgentConfig
 from evalscope.agent.external.adapter import run_external_agent
@@ -62,12 +63,17 @@ def _docker_available() -> bool:
 
 
 def _image_exists(name: str) -> bool:
+    if shutil.which('docker') is None:
+        return False
     import subprocess
-    result = subprocess.run(
-        ['docker', 'images', '-q', name],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ['docker', 'images', '-q', name],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
     return bool(result.stdout.strip())
 
 

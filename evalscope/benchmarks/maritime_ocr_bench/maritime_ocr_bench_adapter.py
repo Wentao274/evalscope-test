@@ -3,8 +3,9 @@ import io
 import math
 import mimetypes
 import os
-from PIL import Image
 from typing import Any, Dict, List, Optional
+
+from PIL import Image
 
 from evalscope.api.benchmark import BenchmarkMeta, VisionLanguageAdapter
 from evalscope.api.dataset import DatasetDict, Sample, load_local_file_dataset, resolve_snapshot_or_local_path
@@ -32,7 +33,7 @@ TASK_TYPE_MAP = {
     'vqa': 'VQA',
     'parsing': 'parsing',
     'json1': 'json1',
-    'json2': 'json2'
+    'json2': 'json2',
 }
 
 
@@ -63,18 +64,17 @@ Each task type uses a specialized scoring method:
 - json1/json2: DIoU layout score + text score (0.7 * diou + 0.3 * text)
 """,
         dataset_id='HiDolphin/MaritimeOCRBench',
+        hf_dataset_id='ml-resources/MaritimeOCRBench',
         subset_list=SUBSET_LIST,
-        metric_list=['score'],
+        metric_list=['normalized_score'],
         eval_split='test',
         prompt_template='{question}',
     )
 )
 class MaritimeOCRBenchAdapter(VisionLanguageAdapter):
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.reformat_subset = True
-        self.add_aggregation_name = False
         self.data_root: Optional[str] = None
 
     def load(self):
@@ -259,7 +259,7 @@ class MaritimeOCRBenchAdapter(VisionLanguageAdapter):
                 'task_type': normalized_type,
                 'prompt': prompt,
                 'images': images,
-            }
+            },
         )
 
     def match_score(
@@ -317,5 +317,5 @@ class MaritimeOCRBenchAdapter(VisionLanguageAdapter):
             )
             score_value = float(metrics['text_score'])
 
-        score.value = {'score': score_value}
+        score.value = {'normalized_score': score_value}
         return score

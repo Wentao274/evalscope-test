@@ -1,7 +1,11 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { getDataFrame } from '@/api/reports'
+import type { PerfMetrics } from '@/api/types'
 import { LocaleProvider } from '@/contexts/LocaleContext'
+import { formatMetricLabels, metricIdentityKey } from '@/domain/metric'
+import type { MetricIdentity, MetricSemantics } from '@/domain/metric'
 import DetailsTab from './DetailsTab'
 
 vi.mock('@/api/reports', () => ({
@@ -17,6 +21,32 @@ vi.mock('@/api/reports', () => ({
 
 afterEach(cleanup)
 
+/** Official 0-100 scale: already a percentage, so the multiplier is 1. */
+const POINTS_100: MetricSemantics = {
+  semantic_id: 'quality.score.points_100',
+  metric_name: 'Score',
+  kind: 'quality',
+  direction: 'higher_is_better',
+  value_range: { min: 0, max: 100 },
+  display_kind: 'percent',
+  display_multiplier: 1,
+  display_unit: '%',
+  display_precision: 1,
+}
+
+/** Unbounded throughput in its native unit. */
+const THROUGHPUT: MetricSemantics = {
+  semantic_id: 'perf.throughput.tokens_per_second',
+  metric_name: 'Token Throughput',
+  kind: 'quality',
+  direction: 'higher_is_better',
+  raw_unit: 'tok/s',
+  value_range: null,
+  display_kind: 'number',
+  display_unit: 'tok/s',
+  display_precision: 2,
+}
+
 describe('DetailsTab metric semantics', () => {
   it('formats each score from its metric contract instead of its magnitude', async () => {
     render(
@@ -26,7 +56,8 @@ describe('DetailsTab metric semantics', () => {
           datasetName="fixture-dataset"
           rootPath="/outputs"
           overallScore={512}
-          metricName="AverageOutputTps"
+          semantics={THROUGHPUT}
+          semanticsByMetric={{ WeightedScorePercent: POINTS_100, AverageOutputTps: THROUGHPUT }}
         />
       </LocaleProvider>,
     )
@@ -35,9 +66,103 @@ describe('DetailsTab metric semantics', () => {
       await Promise.resolve()
     })
 
-    expect(screen.getAllByText('512.00 tokens/s')).toHaveLength(2)
+    // The headline and the matching row both render the throughput in its native unit.
+    expect(screen.getAllByText('512 tok/s')).toHaveLength(2)
+    // An official 0-100 score keeps its own scale instead of being multiplied again.
     expect(screen.getByText('81.5%')).toBeInTheDocument()
-    expect(screen.queryByText('8150.0%')).not.toBeInTheDocument()
-    expect(screen.queryByText('51200.0%')).not.toBeInTheDocument()
+    expect(screen.queryByText(/8150/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/51200/)).not.toBeInTheDocument()
+  })
+
+  it('labels the headline with the metric name and its direction', async () => {
+    render(
+      <LocaleProvider>
+        <DetailsTab
+          reportName="fixture-report"
+          datasetName="fixture-dataset"
+          rootPath="/outputs"
+          overallScore={512}
+          semantics={THROUGHPUT}
+        />
+      </LocaleProvider>,
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(screen.getByText('Token Throughput ↑')).toBeInTheDocument()
+  })
+
+  it('labels each row by its identity, dimensions included', async () => {
+    const accuracy: MetricSemantics = {
+      semantic_id: 'quality.accuracy.ratio',
+      metric_name: 'Accuracy',
+      kind: 'quality',
+      direction: 'higher_is_better',
+      value_range: { min: 0, max: 1 },
+      display_kind: 'percent',
+      display_multiplier: 100,
+      display_unit: '%',
+      display_precision: 1,
+    }
+    const overall: MetricIdentity = { name: 'accuracy', aggregation: 'mean', dimensions: { scope: 'overall' } }
+    const cell: MetricIdentity = {
+      name: 'accuracy',
+      aggregation: 'mean',
+      dimensions: { context_length: 1000, depth_percent: 0 },
+    }
+    // The dataset frame names each row by its final report name, the identity key.
+    vi.mocked(getDataFrame).mockResolvedValueOnce({
+      columns: ['Subset', 'Metric', 'Score', 'Num'],
+      data: [
+        { Subset: 'english', Metric: metricIdentityKey(overall), Score: 0.5, Num: 4 },
+        { Subset: 'english', Metric: metricIdentityKey(cell), Score: 1, Num: 2 },
+      ],
+    })
+    render(
+      <LocaleProvider>
+        <DetailsTab
+          reportName="fixture-report"
+          datasetName="fixture-dataset"
+          rootPath="/outputs"
+          semanticsByMetric={{ [metricIdentityKey(overall)]: accuracy, [metricIdentityKey(cell)]: accuracy }}
+          labelsByMetric={formatMetricLabels([
+            { identity: overall, semantics: accuracy },
+            { identity: cell, semantics: accuracy },
+          ])}
+        />
+      </LocaleProvider>,
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(screen.getByText('Accuracy ↑ · Overall')).toBeInTheDocument()
+    expect(screen.getByText('Accuracy ↑ · Context 1000 · Depth 0')).toBeInTheDocument()
+    expect(screen.queryByText(/accuracy:mean/)).not.toBeInTheDocument()
+  })
+
+  it('hides the performance panel when only coverage metadata is available', async () => {
+    const perfMetrics: PerfMetrics = {
+      coverage: { requests_with_metrics: 0, total_requests: 3 },
+    }
+    render(
+      <LocaleProvider>
+        <DetailsTab
+          reportName="fixture-report"
+          datasetName="fixture-dataset"
+          rootPath="/outputs"
+          perfMetrics={perfMetrics}
+        />
+      </LocaleProvider>,
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(screen.queryByText('Performance Metrics')).not.toBeInTheDocument()
   })
 })

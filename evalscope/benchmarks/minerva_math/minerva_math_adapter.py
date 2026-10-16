@@ -3,7 +3,7 @@ from typing import Any, Dict
 from evalscope.api.benchmark import BenchmarkMeta, DefaultDataAdapter
 from evalscope.api.dataset import Sample
 from evalscope.api.registry import register_benchmark
-from evalscope.constants import Tags
+from evalscope.constants import ScoringPolicy, Tags
 from evalscope.utils.logger import get_logger
 
 logger = get_logger()
@@ -11,6 +11,7 @@ logger = get_logger()
 
 @register_benchmark(
     BenchmarkMeta(
+        evaluation_version='v1.1',
         name='minerva_math',
         pretty_name='Minerva-Math',
         tags=[Tags.MATH, Tags.REASONING],
@@ -43,19 +44,15 @@ Minerva-Math is a benchmark designed to evaluate advanced mathematical and quant
 - Designed to test the upper limits of model reasoning capabilities
 """,
         dataset_id='knoveleng/Minerva-Math',
+        hf_dataset_id='knoveleng/Minerva-Math',
         subset_list=['default'],
-        metric_list=[{
-            'acc': {
-                'numeric': True
-            }
-        }],
+        metric_list=[{'acc': {'numeric': True}}],
         eval_split='train',
         prompt_template='{question}\nPlease reason step by step, and put your final answer within \\boxed{{}}.',
     )
 )
 class MinervaMathAdapter(DefaultDataAdapter):
-
-    llm_judge_default = True
+    scoring_policy = ScoringPolicy.JUDGE_DEFAULT
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 
 from evalscope.api.benchmark import BenchmarkMeta, DefaultDataAdapter
 from evalscope.api.dataset import Sample
+from evalscope.api.evaluator import TaskState
 from evalscope.api.messages import ChatMessageUser, Content, ContentText
 from evalscope.api.metric.scorer import AggScore, SampleScore, Score
 from evalscope.api.registry import register_benchmark
@@ -14,6 +15,7 @@ from evalscope.benchmarks.halu_eval.halu_eval_instructions import (
 )
 from evalscope.constants import Tags
 from evalscope.utils.logger import get_logger
+from evalscope.utils.yes_no import extract_verdict
 
 DESCRIPTION = """
 ## Overview
@@ -59,16 +61,18 @@ logger = get_logger()
         tags=[Tags.KNOWLEDGE, Tags.HALLUCINATION, Tags.YES_NO],
         description=DESCRIPTION.strip(),
         dataset_id='evalscope/HaluEval',
+        hf_dataset_id='pminervini/HaluEval',
         subset_list=['dialogue_samples', 'qa_samples', 'summarization_samples'],
         default_subset='Full',
         metric_list=['accuracy', 'precision', 'recall', 'f1_score', 'yes_ratio'],
+        primary_metric='accuracy',
         few_shot_num=0,
         eval_split='data',
-        prompt_template='{question}'
+        prompt_template='{question}',
+        evaluation_version='v1.1',
     )
 )
 class HaluEvalAdapter(DefaultDataAdapter):
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_overall_metric = False
@@ -96,19 +100,23 @@ class HaluEvalAdapter(DefaultDataAdapter):
         content_list: List[Content] = [ContentText(text=input_text)]
         answer = str(hallucination).upper()  # 'YES' or 'NO'
         return Sample(
-            input=[ChatMessageUser(content=content_list)], target=answer, metadata={
+            input=[ChatMessageUser(content=content_list)],
+            target=answer,
+            metadata={
                 'answer': hallucination,
-            }
+            },
         )
 
-    def match_score(self, original_prediction, filtered_prediction, reference, task_state) -> Score:
+    def match_score(
+        self, original_prediction: str, filtered_prediction: str, reference: str, task_state: TaskState
+    ) -> Score:
+        verdict = extract_verdict(filtered_prediction)
         score = Score(
             extracted_prediction=filtered_prediction,
             prediction=original_prediction,
         )
-        # Check if the reference answer is in the filtered prediction
-        result = 1 if reference in filtered_prediction.strip().upper() else 0
-        score.value = {'acc': result}
+        # A reply with both verdicts or neither is incorrect, as in the official evaluator
+        score.value = {'acc': 1 if verdict == reference.strip().upper() else 0}
         return score
 
     def aggregate_scores(self, sample_scores: List[SampleScore]) -> List[AggScore]:
@@ -147,7 +155,7 @@ class HaluEvalAdapter(DefaultDataAdapter):
                 'precision': precision,
                 'recall': recall,
                 'f1_score': f1_score,
-                'yes_ratio': yes_ratio
+                'yes_ratio': yes_ratio,
             }
 
         overall_metrics = compute_metrics(sample_scores)

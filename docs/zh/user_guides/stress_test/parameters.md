@@ -14,6 +14,7 @@
 | `--attn-implementation` | `str` | Attention实现方式<br>仅在`api=local`时有效 | `None`<br>（可选：`flash_attention_2`、`eager`、`sdpa`） |
 | `--api-key` | `str` | API密钥 | `None` |
 | `--debug` | `bool` | 是否输出调试信息 | `False` |
+| `--scenario` | `str` | 外部 workload 场景。`agentx` 运行 AIPerf AgentX MVP，也接受 AgentX JSON；见 [AgentX MVP](./agentx.md)。 | `None` |
 
 ## 网络配置
 
@@ -35,8 +36,9 @@
 | `--log-every-n-query` | `int` | 每N个查询记录日志 | `100` |
 | `--stream` | `bool` | 是否使用SSE流输出<br>需要启用以测量TTFT（Time to First Token）指标 | `True` |
 | `--sleep-interval` | `int` | 每次性能测试之间的休眠时间（秒）<br>避免过载服务器 | `5` |
+| `--enable-pd-metrics` | `bool` | 启用可选的PD分离交接指标<br>开启后报告会基于输出chunk间隔展示 `Steady ITL`、`PD Handoff Latency` 和 `PD Handoff Overhead`<br>普通非PD压测建议保持关闭 | `False` |
 | `--open-loop` | `bool` | 启用开放环路（open-loop）模式：<br>请求按 `--rate` 指定的速率发出，无论服务端是否已处理完之前的请求。<br>• `--rate` 变为扫描变量（支持多值）<br>• `--number` 须与 `--rate` 等长，表示每轮发出的请求总数<br>• `--parallel` 在此模式下被忽略（内部设为 -1 / INF）<br>详见[使用示例](./examples.md#open-loop-开放环路) | `False` |
-| `--warmup-num` | `float` | 预热请求数量或比例：<br>• `0`：禁用预热（默认）<br>• `>= 1`：绝对数量，如 `--warmup-num 10` 表示预热 10 个请求<br>• `0 < value < 1`：比例模式，如 `--warmup-num 0.1` 表示预热数量为 `--number` 的 10%<br>预热请求使用与正式压测相同的并发/速率发送，但**不计入性能指标**<br>适用于消除冷启动影响（如 KV-cache 填充、JIT 编译等）<br>详见[使用示例](./examples.md#warmup-预热) | `0` |
+| `--warmup-num` | `float` | 预热请求数量或比例：<br>• `0`：禁用预热（默认）<br>• `>= 1`：绝对数量，如 `--warmup-num 10` 表示预热 10 个请求<br>• `0 < value < 1`：比例模式，如 `--warmup-num 0.1` 表示预热数量为 `--number` 的 10%<br>预热请求使用与正式压测相同的并发/速率发送，但**不计入性能指标**<br>适用于消除冷启动影响（如 KV-cache 填充、JIT 编译等）<br>闭环模式下建议设为 `--parallel` 或更大，否则最初几个请求会拉高 `p99`<br>详见[使用示例](./examples.md#warmup-预热) | `0` |
 | `--duration` | `float` | 单次压测的墙钟时间预算（秒）<br>软退出语义：到点后**不再启动新请求**，但**已经在飞行中的请求会跑完**才退出<br>多轮模式下的"已在飞"指的是**已经 claim 的 trace 跑完所有剩余 turn**（trace-level soft exit，与上游 trie 一致）<br>与 `--number` 同时设置时取**先达到的那个**为停止条件 | `None` |
 
 ```{tip}
@@ -56,7 +58,7 @@
 |------|------|------|--------|
 | `--sla-auto-tune` | `bool` | 是否启用SLA自动调优模式 | `False` |
 | `--sla-variable` | `str` | 自动调优的变量<br>可选：`parallel`（并发数）、`rate`（请求速率） | `parallel` |
-| `--sla-params` | `str` | SLA约束条件<br>JSON字符串<br>支持指标：`avg_latency`, `p99_latency`, `avg_ttft`, `p99_ttft`, `avg_tpot`, `p99_tpot`, `rps`, `tps`<br>支持操作符：`<=`, `<`, `min` (延时类); `>=`, `>`, `max` (吞吐类)<br>示例：`'[{"p99_latency": "<=2"}]'` | `None` |
+| `--sla-params` | `str` | SLA约束条件<br>JSON字符串<br>支持指标：`avg_latency`, `p99_latency`, `avg_ttft`, `p99_ttft`, `avg_tpot`, `p99_tpot`, `rps`, `tps`<br>支持操作符：`<=`, `<`, `min` (延时类); `>=`, `>`, `max` (吞吐类)<br>延迟单位：支持 `s` / `ms` 后缀；不加后缀时，`latency` 按秒、`ttft` / `tpot` 按毫秒解释<br>示例：`'[{"p99_latency": "<=2s"}]'` | `None` |
 | `--sla-upper-bound` | `int` | 被调优变量的搜索上界 | `65536` |
 | `--sla-lower-bound` | `int` | 被调优变量的搜索下界 | `1` |
 | `--sla-fixed-parallel` | `int` | 在 `--sla-variable=rate` 时使用的固定并发数；未设置时默认回退到 `--sla-upper-bound` 以兼容旧行为 | `None` |
@@ -97,7 +99,7 @@ SLA自动调优功能使用详见[自动调优指南](./sla_auto_tune.md)。
 |------|------|------------------|
 | `openqa` | 从ModelScope自动下载[OpenQA](https://www.modelscope.cn/datasets/AI-ModelScope/HC3-Chinese/summary)<br>prompt长度较短（一般<100 token）<br>指定`dataset_path`时使用jsonl文件的`question`字段 | ✓ |
 | `longalpaca` | 从ModelScope自动下载[LongAlpaca-12k](https://www.modelscope.cn/datasets/AI-ModelScope/LongAlpaca-12k/dataPeview)<br>prompt长度较长（一般>6000 token）<br>指定`dataset_path`时使用jsonl文件的`instruction`字段 | ✓ |
-| `line_by_line` | 逐行将txt文件的每一行作为一个prompt<br>**必需提供`dataset_path`** | ✓（必需） |
+| `line_by_line` | 每行可为纯文本 prompt、OpenAI messages JSON 数组或完整请求体 JSON 对象；JSON 按原样转发<br>**必需提供`dataset_path`** | ✓（必需） |
 | `random` | 根据`prefix-length`、`max-prompt-length`和`min-prompt-length`随机生成prompt<br>**必需指定`tokenizer-path`**<br>[使用示例](./examples.md#随机数据集) | ✗ |
 | `custom` | 自定义数据集解析器<br>参考[自定义数据集指南](custom.md/#自定义数据集) | ✓ |
 
@@ -108,6 +110,7 @@ SLA自动调优功能使用详见[自动调优指南](./sla_auto_tune.md)。
 | `flickr8k` | 从ModelScope自动下载[Flick8k](https://www.modelscope.cn/datasets/clip-benchmark/wds_flickr8k/dataPeview)<br>构建图文输入，数据集较大，适合评测多模态模型<br>支持`--dataset-path`指向本地数据集目录（离线环境） | ✓（目录） |
 | `kontext_bench` | 从ModelScope自动下载[Kontext-Bench](https://modelscope.cn/datasets/black-forest-labs/kontext-bench/dataPeview)<br>构建图文输入，约1000条数据，适合快速评测多模态模型<br>支持`--dataset-path`指向本地数据集目录（离线环境） | ✓（目录） |
 | `random_vl` | 随机生成图像和文本输入<br>在`random`基础上增加图像相关参数<br>[使用示例](./examples.md#随机图文数据集) | ✗ |
+| `mmmu_multi_image` | 轮转加载全部 30 个 MMMU validation subject，构造真实多图请求<br>仅用于性能压测；不接受 `--dataset-args`；服务端需支持多图 data URL | ✓（兼容 MMMU schema 的 `datasets` 目录） |
 
 **Embedding 类**
 
@@ -280,11 +283,11 @@ trace 文件为 JSONL，每行一条请求记录：
 
 | 参数 | 类型 | 说明 | 默认值 |
 |------|------|------|--------|
-| `--tokenizer-path` | `str` | 分词器权重路径<br>用于计算输入和输出的token数量<br>通常与模型权重在同一目录 | `None` |
+| `--tokenizer-path` | `str` | 分词器权重路径<br>用于计算输入和输出的token数量<br>通常与模型权重在同一目录<br>压测 chat 接口时，该分词器需自带 chat template（详见下方说明） | `None` |
 | `--frequency-penalty` | `float` | frequency_penalty值 | - |
 | `--logprobs` | `bool` | 是否返回对数概率 | - |
 | `--max-tokens` | `int` 或 `int int` | 可以生成的最大token数量<br>• 单个整数：固定值，如 `--max-tokens 2048`<br>• 两个整数：`最小值 最大值`，每次请求从该范围均匀随机采样，如 `--max-tokens 512 2048` | `2048` |
-| `--min-tokens` | `int` | 生成的最少token数量<br>注意：并非所有模型服务都支持<br>对于`vLLM>=0.8.1`，需额外设置<br>`--extra-args '{"ignore_eos": true}'` | - |
+| `--min-tokens` | `int` | 生成的最少token数量<br>注意：并非所有模型服务都支持<br>对于`vLLM>=0.8.1`，需额外设置<br>`--extra-args '{"ignore_eos": true}'`<br>闭环模式下与 `--max-tokens` 取相同值会让所有请求耗时一致，于是同时完成、又被同时放出，表现为 TTFT 每 `--parallel` 个请求周期性爬高；如需避开，改用 `--max-tokens <最小值> <最大值>` 的范围形式，或改用 `--open-loop`（到达过程与完成解耦，不受影响） | - |
 | `--n-choices` | `int` | 生成的补全选择数量 | - |
 | `--seed` | `int` | 随机种子 | `None` |
 | `--stop` | `str` | 停止生成的tokens | - |
@@ -293,6 +296,12 @@ trace 文件为 JSONL，每行一条请求记录：
 | `--top-p` | `float` | top_p采样 | - |
 | `--top-k` | `int` | top_k采样 | - |
 | `--extra-args` | `str` | 额外传入请求体的参数<br>JSON字符串格式<br>示例：`'{"ignore_eos": true}'` | - |
+
+### 分词器与 chat template
+
+压测 `chat/completions` 接口时 `--apply-chat-template` 默认开启，客户端会先套上 chat template 再统计 token 数，使长度计算与服务端 `usage.prompt_tokens` 对齐；因此 `--tokenizer-path` 指向的分词器必须自带 Jinja 格式的 chat template。DeepSeek-V3.2 / V4 官方改为提供 `encoding` 脚本，base / pretrain 权重也不带模板，这类权重会直接报错，报错信息中列出了可选的处理方式。
+
+两个易错点：不传 `--tokenizer-path` 时 `--min-prompt-length` / `--max-prompt-length` 按字符数而非 token 数过滤；借用其它模型的分词器不会报错，但词表不一致会默默把 token 统计算偏。
 
 ## 结果输出
 

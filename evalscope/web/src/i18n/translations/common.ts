@@ -6,10 +6,13 @@ export const en: Dict = {
   all: 'All',
   openNewTab: 'Open in New Tab',
   github: 'Star on GitHub',
+  evalScopeVersion: 'EvalScope version ${version}',
   stop: 'Stop',
   retry: 'Retry',
   cancel: 'Cancel',
   loadError: 'Failed to load data',
+  pageErrorTitle: 'This page could not be displayed',
+  pageErrorBody: 'An unexpected error occurred while rendering the page.',
 }
 
 export const zh: Dict = {
@@ -18,8 +21,11 @@ export const zh: Dict = {
   all: '全部',
   openNewTab: '在新标签页打开',
   github: 'GitHub 加星',
+  evalScopeVersion: 'EvalScope 版本 ${version}',
   stop: '停止',
   retry: '重试',
   cancel: '取消',
   loadError: '数据加载失败',
+  pageErrorTitle: '此页面无法显示',
+  pageErrorBody: '渲染页面时发生未预期的错误。',
 }

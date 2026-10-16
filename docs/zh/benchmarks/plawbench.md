@@ -3,16 +3,16 @@
 
 ## 概述
 
-PLawBench 是一个基于评分标准（rubric）的基准测试，用于评估大语言模型在真实中国法律实务场景中的表现。
-该基准模拟执业律师的工作流程，涵盖三个层级的任务：在公共法律咨询中梳理事实、通过结构化法律推理分析案件，以及起草专业法律文书。
-每个样本均附有法律专家标注的评分标准，评分由 LLM 裁判模型依据该评分标准进行，而非与单一参考答案比对。
+PLawBench 是一个基于评分标准（rubric）的基准测试，用于评估大语言模型在真实中文法律实务场景中的表现。
+该基准模拟执业律师的工作流程，涵盖三个层级的任务：在公共法律咨询中引导客户陈述事实、运用结构化法律推理分析案件，以及起草专业法律文书。
+每个样本均附有法律专家标注的评分标准，评分由 LLM 裁判模型依据该标准进行，而非与单一参考答案比对。
 
 ## 任务描述
 
-- **任务类型**：开放式中文法律生成任务，使用专家制定的评分标准进行评分
+- **任务类型**：开放式中文法律生成任务，采用专家评分标准进行评分
 - **输入**：客户陈述，或案件描述加法律问题
 - **输出**：问题清单、结构化案件分析，或完整的法律文书
-- **领域**：中国法律实务（个人事务、婚姻家庭、公司治理、知识产权、刑事与民事诉讼、跨境事务、劳动、环境安全等）
+- **领域**：中文法律实务（个人事务、婚姻家庭、公司治理、知识产权、刑事与民事诉讼、跨境事务、劳动、环境安全等）
 
 ## 核心特性
 
@@ -22,18 +22,18 @@ PLawBench 是一个基于评分标准（rubric）的基准测试，用于评估�
   - `plaintiff_statement`（6 个）：根据客户陈述起草起诉状。
   - `defendant_statement`（6 个）：根据客户陈述及对方起诉状起草答辩状。
 - 客户陈述故意设计得模糊、情绪化或具有误导性，因此模型必须识别陷阱，而非简单复述客户主张。
-- 任务提示词和裁判提示词直接沿用官方发布版本，`case_analysis` 的评分标准保留了各维度的分值分配。
+- 任务提示词和裁判提示词均直接来自官方发布版本，`case_analysis` 的评分标准保留了各维度的原始分值分配。
 
 ## 评估说明
 
-- 需要 LLM 裁判模型：运行时需设置 `judge_strategy='llm'`（或 `'auto'`，该选项会为此基准自动启用裁判模型），并提供 `judge_model_args`。不支持 `judge_strategy='rule'`。
+- 需要使用 LLM 裁判模型：设置 `judge.strategy='llm'`（或 `'auto'`，该选项会为此基准自动启用裁判模型），并提供 `judge.models`。不支持 `judge.strategy='rule'`。
 - 指标为 `[0, 1]` 区间内的得分比例。每个子集均报告 `acc`；`case_analysis` 额外报告 `conclusion_acc`、`fact_acc`、`reasoning_acc` 和 `law_acc`。这些指标与官方排行榜列一一对应：`legal_consultation` 对应 Task1，`case_analysis` 对应 Task2-Avg 及其四个维度，两个文书起草子集分别对应 Task3-Plaintiff 和 Task3-Defendant。
-- 应比较各子集得分，而非 `OVERALL` 行。`OVERALL` 是按样本数量计算的平均值，因此被 `case_analysis` 主导（250/280 个样本）。论文中的 `Overall` 列是三项任务得分的等权重平均值，与官方表格更吻合（在官方排名的 24 个模型上拟合，平均绝对误差为 0.72，而样本加权平均的误差为 2.87）。
+- 应比较各子集得分，而非 `OVERALL` 行。`OVERALL` 是按样本数量计算的平均值，因此被 `case_analysis` 主导（250/280 个样本）。论文中的 `Overall` 列是三项任务得分的等权重平均值，与官方公布表格更吻合（在官方排名的 24 个模型上拟合，平均绝对误差为 0.72，而样本加权平均的误差为 2.87）。
 - 评分标准的总分来自数据集本身，而非裁判模型输出，且实际得分会被限制在 `[0, max_points]` 范围内，因此即使裁判模型错误报告分母，也不会扭曲最终得分。
-- 相较于官方脚本，本实现修复了 `case_analysis` 的裁判输出模板。官方脚本输出格式错误的 JSON，并将结论部分固定为零分；此处每个部分均按其评分标准分配进行评分。
-- 当裁判响应无法解析时，会重试最多 `judge_retries` 次；若仍失败，则该样本得分为 0，并在评审元数据中标记 `judge_failed`。
-- 案件分析的裁判会返回详细的逐项分解。建议在 `judge_model_args.generation_config` 中为裁判模型设置较大的 `max_tokens`（例如 8192）。
-- 文书起草子集要求生成 2,500–3,000 字符的法律文书，因此被评估模型也需要较大的 `generation_config.max_tokens`。若生成内容被截断，将被视为不完整文书，得分接近零，从而因非法律能力原因拉低 Task3 得分。
+- 相较于官方脚本，本实现修复了 `case_analysis` 的裁判输出模板。官方脚本输出格式错误的 JSON，并将结论部分固定为零分；此处每个部分均按其评分标准独立评分。
+- 裁判模型的传输重试策略通过其 `generation_config` 配置。若回复仍不符合输出协议，则视为不可用并被排除，而非静默记为零分。
+- 案件分析的裁判会返回详细的逐项分解。建议为裁判模型设置较大的 `max_tokens`（例如 8192），通过 `judge.models[].generation_config` 配置。
+- 文书起草子集要求生成 2500–3000 字符的法律文书，因此被评估模型也需要较大的 `generation_config.max_tokens`。截断的文书将被视为不完整，得分接近零，从而因非法律能力原因拉低 Task3 得分。
 
 资源：[GitHub](https://github.com/skylenage/PLawbench) |
 [数据集](https://modelscope.cn/datasets/evalscope/PLawBench)
@@ -47,9 +47,9 @@ PLawBench 是一个基于评分标准（rubric）的基准测试，用于评估�
 | **数据集ID** | [evalscope/PLawBench](https://modelscope.cn/datasets/evalscope/PLawBench/summary) |
 | **论文** | [Paper](https://github.com/skylenage/PLawbench) |
 | **标签** | `Chinese`, `Knowledge`, `QA`, `Reasoning` |
-| **指标** | `acc`, `conclusion_acc`, `fact_acc`, `reasoning_acc`, `law_acc` |
+| **指标** | `accuracy`, `conclusion_acc`, `fact_acc`, `reasoning_acc`, `law_acc` |
 | **默认示例数** | 0-shot |
-| **评估分割** | `test` |
+| **评估划分** | `test` |
 
 
 ## 数据统计
@@ -62,7 +62,7 @@ PLawBench 是一个基于评分标准（rubric）的基准测试，用于评估�
 
 **各子集统计：**
 
-| 子集 | 样本数 | 提示平均长度 | 提示最小长度 | 提示最大长度 |
+| 子集 | 样本数 | 提示词平均长度 | 提示词最小长度 | 提示词最大长度 |
 |--------|---------|-------------|------------|------------|
 | `case_analysis` | 250 | 2720.18 | 2137 | 4873 |
 | `legal_consultation` | 18 | 1851.94 | 1512 | 2611 |
@@ -97,7 +97,7 @@ PLawBench 是一个基于评分标准（rubric）的基准测试，用于评估�
 }
 ```
 
-*注：部分内容因显示需要已被截断。*
+*注：部分内容因显示需要已截断。*
 
 ## 提示模板
 
@@ -105,12 +105,6 @@ PLawBench 是一个基于评分标准（rubric）的基准测试，用于评估�
 ```text
 {question}
 ```
-
-## 额外参数
-
-| 参数 | 类型 | 默认值 | 描述 |
-|-----------|------|---------|-------------|
-| `judge_retries` | `int` | `3` | 每次评分标准裁判请求的最大重试次数，超过后该样本得分为 0。 |
 
 ## 使用方法
 
@@ -122,6 +116,7 @@ evalscope eval \
     --api-url OPENAI_API_COMPAT_URL \
     --api-key EMPTY_TOKEN \
     --datasets plawbench \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # 正式评估时请删除此行
 ```
 
@@ -136,10 +131,10 @@ task_cfg = TaskConfig(
     api_url='OPENAI_API_COMPAT_URL',
     api_key='EMPTY_TOKEN',
     datasets=['plawbench'],
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     dataset_args={
         'plawbench': {
-            # subset_list: ['case_analysis', 'legal_consultation', 'plaintiff_statement']  # 可选，用于评估指定子集
-            # extra_params: {}  # 使用默认额外参数
+            # subset_list: ['case_analysis', 'legal_consultation', 'plaintiff_statement']  # 可选，用于评估特定子集
         }
     },
     limit=10,  # 正式评估时请删除此行

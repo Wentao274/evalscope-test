@@ -37,7 +37,7 @@ FRAMES is a comprehensive evaluation dataset designed to test the capabilities o
 | **Dataset ID** | [iic/frames](https://modelscope.cn/datasets/iic/frames/summary) |
 | **Paper** | N/A |
 | **Tags** | `LongContext`, `Reasoning` |
-| **Metrics** | `acc` |
+| **Metrics** | `accuracy` |
 | **Default Shots** | 0-shot |
 | **Evaluation Split** | `test` |
 
@@ -135,6 +135,7 @@ evalscope eval \
     --api-url OPENAI_API_COMPAT_URL \
     --api-key EMPTY_TOKEN \
     --datasets frames \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # Remove this line for formal evaluation
 ```
 
@@ -149,6 +150,7 @@ task_cfg = TaskConfig(
     api_url='OPENAI_API_COMPAT_URL',
     api_key='EMPTY_TOKEN',
     datasets=['frames'],
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     limit=10,  # Remove this line for formal evaluation
 )
 

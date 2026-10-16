@@ -1,3 +1,5 @@
+import pytest
+
 from evalscope.api.dataset import Sample
 from evalscope.api.evaluator import TaskState
 from evalscope.api.model import ModelOutput
@@ -36,6 +38,58 @@ def test_parse_answers_multiple_correct() -> None:
     assert parse_answers(_make_state('reasoning\nANSWER: AB'), multiple_correct=True) == {'A', 'B'}
 
 
+def test_parse_answers_multiple_correct_connector_words() -> None:
+    """'A and B' / 'A or B' list two labels; the connector must not truncate the answer.
+
+    Regression test: the connector used to end the label prefix, so only its first label
+    was scored and the multi-select answer was marked wrong.
+    """
+    assert parse_answers(_make_state('reasoning\nANSWER: A and B'), multiple_correct=True) == {'A', 'B'}
+    assert parse_answers(_make_state('reasoning\nANSWER: B or C'), multiple_correct=True) == {'B', 'C'}
+    assert parse_answers(_make_state('reasoning\nANSWER: A and B and D'), multiple_correct=True) == {'A', 'B', 'D'}
+    assert parse_answers(_make_state('reasoning\nANSWER: A, B and C'), multiple_correct=True) == {'A', 'B', 'C'}
+    assert parse_answers(_make_state('reasoning\nANSWER: A AND B'), multiple_correct=True) == {'A', 'B'}
+    assert parse_answers(_make_state('reasoning\nANSWER: B Or C'), multiple_correct=True) == {'B', 'C'}
+
+
+def test_parse_answers_multiple_correct_slash_and_ideographic_comma() -> None:
+    """A slash or an ideographic comma between labels is a separator, not the end of them."""
+    assert parse_answers(_make_state('reasoning\nANSWER: A/B'), multiple_correct=True) == {'A', 'B'}
+    assert parse_answers(_make_state('reasoning\nANSWER: A/B/C'), multiple_correct=True) == {'A', 'B', 'C'}
+    assert parse_answers(_make_state('reasoning\nANSWER: A、B'), multiple_correct=True) == {'A', 'B'}
+    assert parse_answers(_make_state('reasoning\nANSWER: (A/B)'), multiple_correct=True) == {'A', 'B'}
+
+
+def test_parse_answers_multiple_correct_full_width_comma() -> None:
+    """A full-width comma between labels separates them in the unbracketed form too.
+
+    Regression test: the bracketed pattern and the Chinese parser already read ``，`` as a
+    separator, and the splitting below normalizes it to a plain comma, but the plain-label
+    pattern stopped at it. 'ANSWER: A，C' therefore kept only its first label and a correct
+    multi-select answer was scored as wrong.
+    """
+    assert parse_answers(_make_state('reasoning\nANSWER: A，C'), multiple_correct=True) == {'A', 'C'}
+    assert parse_answers(_make_state('reasoning\nANSWER: A，B，D'), multiple_correct=True) == {'A', 'B', 'D'}
+    assert parse_answers(_make_state('reasoning\nANSWER: A， B'), multiple_correct=True) == {'A', 'B'}
+    # A full-width comma now scores exactly like its ASCII spelling.
+    assert parse_answers(_make_state('reasoning\nANSWER: A，C')) == parse_answers(
+        _make_state('reasoning\nANSWER: A,C')
+    )
+
+
+def test_parse_answers_connector_joins_labels_only() -> None:
+    """A connector is stepped over only when another label follows it.
+
+    Otherwise prose naming extra labels ('B, not C', 'A and then B is right') would be
+    swallowed into the answer.
+    """
+    assert parse_answers(_make_state('reasoning\nANSWER: B, not C'), multiple_correct=True) == {'B'}
+    assert parse_answers(_make_state('reasoning\nANSWER: B and not C'), multiple_correct=True) == {'B'}
+    assert parse_answers(_make_state('reasoning\nANSWER: A and then B is right'), multiple_correct=True) == {'A'}
+    assert parse_answers(_make_state('reasoning\nANSWER: A and'), multiple_correct=True) == {'A'}
+    assert parse_answers(_make_state('reasoning\nANSWER: A and no others'), multiple_correct=True) == {'A'}
+
+
 def test_parse_answers_ignores_echoed_prompt_placeholder() -> None:
     """The model may restate the required format before giving the real answer.
 
@@ -50,24 +104,196 @@ def test_parse_answers_bracketed_letter() -> None:
     assert parse_answers(_make_state('reasoning\nANSWER: [B]')) == {'B'}
 
 
+TRAILING_SENTENCE = '\nLet me know if you need more.'
+
+WRAPPED_ANSWER_LINES = [
+    'ANSWER: B',
+    'ANSWER: (B)',
+    'ANSWER: [B]',
+    'ANSWER: **B**',
+    'ANSWER: (B) 300',
+    '### Final Answer: **(B) 300**',
+]
+
+
+def test_parse_answers_wrapped_label_does_not_depend_on_trailing_text() -> None:
+    """A wrapped label must be parsed, not guessed from the last capital in the reply.
+
+    Regression test: these forms used to reach `_fallback_parse_answer`, which returns the
+    last upper-case character of the whole reply. They therefore appeared to work whenever the
+    chosen label happened to be that character, and silently broke as soon as any prose
+    followed - scoring a correct answer as a miss.
+    """
+    for answer_line in WRAPPED_ANSWER_LINES:
+        assert parse_answers(_make_state(f'reasoning\n{answer_line}')) == {'B'}, answer_line
+        assert parse_answers(_make_state(f'reasoning\n{answer_line}{TRAILING_SENTENCE}')) == {'B'}, answer_line
+
+
+def test_parse_answers_wrapped_multiple_answers() -> None:
+    assert parse_answers(_make_state('reasoning\nANSWER: (A, C)'), multiple_correct=True) == {'A', 'C'}
+
+
+def test_parse_answers_wrapped_multiple_answers_full_width_comma() -> None:
+    """The bracketed pattern accepts a full-width comma, so the splitting must too.
+
+    Otherwise the label is captured but never split, and a valid multi-select answer is
+    recorded as no answer at all.
+    """
+    assert parse_answers(_make_state('reasoning\nANSWER: (A，C)'), multiple_correct=True) == {'A', 'C'}
+    assert parse_answers_zh(_make_state('推理过程\n答案：（A，C）'), multiple_correct=True) == {'A', 'C'}
+
+
+def test_parse_answers_zh_multiple_correct_slash_and_ideographic_comma() -> None:
+    """An unbracketed slash or ideographic comma between labels is a separator, not the end.
+
+    Mirrors ``test_parse_answers_multiple_correct_slash_and_ideographic_comma`` for the Chinese
+    parser. The plain-label pattern used to stop at ``、`` / ``/``, so a multi-select answer such
+    as ``答案：A、C`` kept only its first label and was scored as wrong.
+    """
+    assert parse_answers_zh(_make_state('推理过程\n答案：A、C'), multiple_correct=True) == {'A', 'C'}
+    assert parse_answers_zh(_make_state('推理过程\n答案：A/C'), multiple_correct=True) == {'A', 'C'}
+    assert parse_answers_zh(_make_state('推理过程\n答案：A、B、D'), multiple_correct=True) == {'A', 'B', 'D'}
+    assert parse_answers_zh(_make_state('推理过程\n答案：A，C'), multiple_correct=True) == {'A', 'C'}
+
+
+def test_parse_answers_zh_multiple_correct_space_separated() -> None:
+    """A space between labels ('A, C', 'A C') does not end a Chinese multi-select answer.
+
+    The English plain-label pattern already allows spaces; the Chinese one stopped at the
+    first space, so '答案：A, C' was read as 'A' and a correct answer was scored as wrong.
+    """
+    assert parse_answers_zh(_make_state('推理过程\n答案：A, C'), multiple_correct=True) == {'A', 'C'}
+    assert parse_answers_zh(_make_state('推理过程\n答案：A C'), multiple_correct=True) == {'A', 'C'}
+    assert parse_answers_zh(_make_state('推理过程\n答案：A, B, D'), multiple_correct=True) == {'A', 'B', 'D'}
+    # Prose after the labels still ends the answer.
+    assert parse_answers_zh(_make_state('推理过程\n答案：A, C 是正确的'), multiple_correct=True) == {'A', 'C'}
+    assert parse_answers_zh(_make_state('推理过程\n答案：B because C is wrong')) == {'B'}
+
+
+def test_parse_answers_ignores_bracketed_prose() -> None:
+    """Only label-shaped bracket contents may be read as an answer."""
+    assert parse_answers(_make_state('ANSWER: (see the diagram above)')).isdisjoint(set('ABCD'))
+
+
+def test_fallback_rejects_letters_outside_the_choice_set() -> None:
+    """A guessed letter that is not one of the sample's labels must not be reported.
+
+    It cannot be the model's choice, so recording it invents an answer that never existed;
+    reporting nothing scores the same and leaves the review file diagnosable.
+    """
+    assert parse_answers(_make_state('the shape is Z-like')) == set()
+
+
+def test_parse_answers_zh_wrapped_label() -> None:
+    """The Chinese parser accepts half- and full-width wrappers around the label."""
+    for answer_line in ['答案：(B)', '答案：（B）', '答案：**B**', '答案：（B）36 千克']:
+        assert parse_answers_zh(_make_state(f'推理过程\n{answer_line}')) == {'B'}, answer_line
+        # A trailing English sentence would otherwise hand the fallback an unrelated capital
+        assert parse_answers_zh(_make_state(f'推理过程\n{answer_line}\nNote: hope this helps.')) == {'B'}, answer_line
+
+
 def test_parse_answers_placeholder_only_yields_no_valid_option() -> None:
     completion = 'The last line of your response should be ANSWER: [LETTER] and nothing else.'
     assert parse_answers(_make_state(completion)).isdisjoint({'A', 'B', 'C', 'D'})
 
 
+def test_parse_answers_keeps_last_valid_label() -> None:
+    """Reasoning models may emit several `ANSWER:` markers (format restatements,
+    hedges like `Final answer: ANSWER: X`, or a letter leaked into the chain of
+    thought) before the real answer.  The LAST marker whose capture is a valid
+    label is the model's final choice, not the first one.
+    """
+    # `Final answer: ANSWER: D` makes the first marker capture the word `ANSWER`;
+    # the actual label `D` only appears in the final marker.
+    assert parse_answers(_make_state('Final answer: ANSWER: D</think>ANSWER: D')) == {'D'}
+    # A wrong letter inside the reasoning must not shadow the final answer.
+    assert parse_answers(_make_state('ANSWER: A is wrong.</think>ANSWER: B')) == {'B'}
+    # Placeholder restated in the reasoning, real answer at the end.
+    assert parse_answers(_make_state("format 'ANSWER: [LETTER]'. So B.</think>ANSWER: B")) == {'B'}
+    # Chinese counterpart.
+    assert parse_answers_zh(_make_state('推理：答案：A 不对。</think>答案：B')) == {'B'}
+
+
+def test_parse_answers_last_marker_wins_in_every_label_form() -> None:
+    """The last-marker rule must not depend on the form the label is written in.
+
+    A per-form cascade (bare label first, wrapped label second) answers a revised
+    reply with the discarded choice whenever the two markers use different forms.
+    """
+    assert parse_answers(_make_state('ANSWER: A\nANSWER: B')) == {'B'}
+    assert parse_answers(_make_state('ANSWER: (A)</think>ANSWER: (B)')) == {'B'}
+    assert parse_answers(_make_state('ANSWER: A\nreasoning\nANSWER: (B) 300')) == {'B'}
+    assert parse_answers_zh(_make_state('答案：(A)</think>答案：（B）')) == {'B'}
+
+
+def test_parse_answers_finds_a_marker_that_follows_prose_on_one_line() -> None:
+    """Regression test: a greedy label pattern used to run past the next `ANSWER:`.
+
+    The second marker was then never examined, so a revision stated on the same line
+    was scored as the discarded choice, or lost to the last-capital fallback.
+    """
+    assert parse_answers(_make_state('ANSWER: A is not right, ANSWER: B. Hope this helps.')) == {'B'}
+    assert parse_answers(_make_state('I first said ANSWER: A but ANSWER: C is correct.')) == {'C'}
+    assert parse_answers(_make_state('ANSWER: A,B then ANSWER: C,D'), multiple_correct=True) == {'C', 'D'}
+    assert parse_answers_zh(_make_state('先写答案：A，再改为答案：C。')) == {'C'}
+
+
+def test_parse_answers_skips_a_trailing_marker_without_a_label() -> None:
+    """A placeholder echoed after the real answer must not discard it."""
+    assert parse_answers(_make_state('ANSWER: B</think>ANSWER: [LETTER]')) == {'B'}
+
+
+JUSTIFIED_ANSWERS = [
+    'ANSWER: B because it fits',
+    'ANSWER: B is the correct choice',
+    'ANSWER: B second option',
+    'ANSWER: B - energy is conserved',
+    'ANSWER: B; energy is conserved',
+    'ANSWER: B because Energy is conserved',
+    'ANSWER: B is correct per Newton',
+    'ANSWER: B because option A is wrong',
+    'ANSWER: B, not C',
+    'ANSWER: B is correct, D is a distractor',
+]
+
+
+def test_parse_answers_reads_a_label_that_is_justified_in_the_same_breath() -> None:
+    """A label must be read from its own token, not from the whole trailing sentence.
+
+    Regression test: the capture used to be validated as a whole, so the label was
+    discarded together with the justification and the reply fell through to the
+    last-capital fallback - which answers with whichever distractor the justification
+    happens to name last.
+    """
+    for completion in JUSTIFIED_ANSWERS:
+        assert parse_answers(_make_state(completion)) == {'B'}, completion
+
+
+def test_parse_answers_zh_reads_a_label_that_is_justified_in_the_same_breath() -> None:
+    for completion in ['答案：B，因为能量守恒', '答案：B，因为A是错的', '答案：B是正确的，D是干扰项']:
+        assert parse_answers_zh(_make_state(completion)) == {'B'}, completion
+
+
+def test_parse_answers_still_rejects_prose_that_names_no_label() -> None:
+    """Reading a label prefix must not turn an unparseable reply into an answer."""
+    assert parse_answers(_make_state('ANSWER: None of the above')) == set()
+    assert parse_answers(_make_state('ANSWER: A B C D are all plausible')) == set()
+    assert parse_answers_zh(_make_state('答案：无法确定')) == set()
+
+
 def test_completion_argument_overrides_raw_model_output() -> None:
     """An explicit `completion` must be parsed instead of the raw model output.
 
-    Reasoning models can leak a wrong letter into their chain of thought; callers
-    pass the filtered text so the discarded reasoning cannot win the match.
+    Asserted with a `completion` that resolves differently from the raw output, so the
+    argument cannot appear to be honoured while the raw text is what actually got parsed.
     """
     state = _make_state('If I answer ANSWER: A that is wrong.</think>ANSWER: B')
-    assert parse_answers(state) == set()
-    assert parse_answers(state, completion='ANSWER: B') == {'B'}
+    assert parse_answers(state) == {'B'}
+    assert parse_answers(state, completion='ANSWER: A') == {'A'}
 
     zh_state = _make_state('如果答案：A 就错了。</think>答案：B')
-    assert parse_answers_zh(zh_state) == {'A'}
-    assert parse_answers_zh(zh_state, completion='答案：B') == {'B'}
+    assert parse_answers_zh(zh_state) == {'B'}
+    assert parse_answers_zh(zh_state, completion='答案：A') == {'A'}
 
 
 def test_configured_filter_reaches_multi_choice_extraction() -> None:
@@ -92,3 +318,10 @@ def test_configured_filter_reaches_multi_choice_extraction() -> None:
 
     assert adapter.filter_ensemble is not None
     assert adapter.filter_prediction(state.output.completion, state) == 'B'
+
+
+@pytest.mark.parametrize('label', ['$B$', '$\\boxed{B}$', '\\boxed{B}', '\\(\\text{B}\\)', '$\\boxed{\\text{B}}$'])
+def test_parse_answers_math_wrapped_label_with_trailing_text(label: str) -> None:
+    # Without the label, the last capital of the trailing sentence ('I') was taken instead.
+    assert parse_answers(_make_state(f'reasoning\nANSWER: {label}\n\nI hope this helps.')) == {'B'}
+    assert parse_answers_zh(_make_state(f'推理\n答案：{label}\n\nHope this helps.')) == {'B'}

@@ -1,11 +1,158 @@
 import asyncio
-import pytest
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import AsyncGenerator
 
+import pytest
+
 from evalscope.utils import asyncio_runtime
 from evalscope.utils.asyncio_runtime import AsyncioLoopRunner, AsyncioLoopThread, cancel_and_wait
+from evalscope.utils.function_utils import async_retry_call, retry_call
+
+
+class _CountingError(Exception):
+    """Test exception whose raises are counted via the shared `calls` list."""
+
+    def __init__(self, calls: list) -> None:
+        super().__init__('boom')
+        calls.append(1)
+
+
+def test_retry_call_clamps_zero_retries_to_one_attempt() -> None:
+    calls: list = []
+
+    def _ok() -> str:
+        calls.append(1)
+        return 'ok'
+
+    assert retry_call(_ok, retries=0) == 'ok'
+    assert len(calls) == 1
+
+
+def test_retry_call_clamps_negative_retries_to_one_attempt() -> None:
+    calls: list = []
+
+    def _fail() -> str:
+        raise _CountingError(calls)
+
+    with pytest.raises(_CountingError):
+        retry_call(_fail, retries=-2, sleep_interval=0)
+    assert len(calls) == 1
+
+
+def test_retry_call_treats_none_retries_as_default_attempts() -> None:
+    calls: list = []
+
+    def _fail() -> str:
+        raise _CountingError(calls)
+
+    with pytest.raises(_CountingError):
+        retry_call(_fail, retries=None, sleep_interval=0)
+    assert len(calls) == 3
+
+
+def test_retry_call_returns_value_on_success() -> None:
+    calls: list = []
+
+    def _ok() -> str:
+        calls.append(1)
+        return 'ok'
+
+    assert retry_call(_ok, retries=3) == 'ok'
+    assert len(calls) == 1
+
+
+def test_retry_call_exhausts_attempts_and_reraises_last_error() -> None:
+    calls: list = []
+
+    def _fail() -> str:
+        raise _CountingError(calls)
+
+    with pytest.raises(_CountingError):
+        retry_call(_fail, retries=3, sleep_interval=0)
+    assert len(calls) == 3
+
+
+def test_async_retry_call_clamps_zero_retries_to_one_attempt() -> None:
+    calls: list = []
+
+    async def _ok() -> str:
+        calls.append(1)
+        return 'ok'
+
+    assert asyncio.run(async_retry_call(_ok, retries=0)) == 'ok'
+    assert len(calls) == 1
+
+
+def test_async_retry_call_treats_none_retries_as_default_attempts() -> None:
+    calls: list = []
+
+    async def _fail() -> str:
+        raise _CountingError(calls)
+
+    with pytest.raises(_CountingError):
+        asyncio.run(async_retry_call(_fail, retries=None, sleep_interval=0))
+    assert len(calls) == 3
+
+
+def test_async_retry_call_exhausts_attempts_and_reraises_last_error() -> None:
+    calls: list = []
+
+    async def _fail() -> str:
+        raise _CountingError(calls)
+
+    with pytest.raises(_CountingError):
+        asyncio.run(async_retry_call(_fail, retries=2, sleep_interval=0))
+    assert len(calls) == 2
+
+
+def test_retry_call_reraises_no_retry_exceptions_immediately() -> None:
+    calls: list = []
+
+    def _fail() -> str:
+        raise _CountingError(calls)
+
+    with pytest.raises(_CountingError):
+        retry_call(_fail, retries=5, sleep_interval=0, no_retry_exceptions=(_CountingError, ))
+    assert len(calls) == 1
+
+
+def test_retry_call_no_retry_exceptions_match_subclasses() -> None:
+
+    class _ChildError(_CountingError):
+        pass
+
+    calls: list = []
+
+    def _fail() -> str:
+        raise _ChildError(calls)
+
+    with pytest.raises(_ChildError):
+        retry_call(_fail, retries=5, sleep_interval=0, no_retry_exceptions=(_CountingError, ))
+    assert len(calls) == 1
+
+
+def test_retry_call_still_retries_unrelated_exceptions_with_no_retry_set() -> None:
+    calls: list = []
+
+    def _fail() -> str:
+        calls.append(1)
+        raise ValueError('transient')
+
+    with pytest.raises(ValueError):
+        retry_call(_fail, retries=3, sleep_interval=0, no_retry_exceptions=(_CountingError, ))
+    assert len(calls) == 3
+
+
+def test_async_retry_call_reraises_no_retry_exceptions_immediately() -> None:
+    calls: list = []
+
+    async def _fail() -> str:
+        raise _CountingError(calls)
+
+    with pytest.raises(_CountingError):
+        asyncio.run(async_retry_call(_fail, retries=5, sleep_interval=0, no_retry_exceptions=(_CountingError, )))
+    assert len(calls) == 1
 
 
 async def _current_loop() -> asyncio.AbstractEventLoop:
@@ -364,8 +511,7 @@ def test_asyncio_loop_thread_drains_task_finalizer_callbacks_before_loop_close()
     assert owner_loop.is_closed()
 
 
-def test_asyncio_loop_runner_keeps_timed_out_generation_registered() -> None:
-    owner_loop = AsyncioLoopRunner.run(_current_loop())
+def test_asyncio_loop_runner_replaces_timed_out_worker_handle() -> None:
     blocker_started = threading.Event()
     release_blocker = threading.Event()
 
@@ -373,21 +519,38 @@ def test_asyncio_loop_runner_keeps_timed_out_generation_registered() -> None:
         blocker_started.set()
         release_blocker.wait()
 
-    owner_loop.call_soon_threadsafe(_block_owner_loop)
-    assert blocker_started.wait(timeout=1)
+    def _start_blocked_loop() -> tuple[str, AsyncioLoopThread, asyncio.AbstractEventLoop, bool]:
+        owner_loop = AsyncioLoopRunner.run(_current_loop())
+        handle = AsyncioLoopRunner._local.handle
+        owner_loop.call_soon_threadsafe(_block_owner_loop)
+        assert blocker_started.wait(timeout=1)
 
-    AsyncioLoopRunner.shutdown_for_thread(join_timeout=0.01)
-    handle = AsyncioLoopRunner._local.handle
-    assert handle is not None
-    assert handle in AsyncioLoopRunner._all_handles
-    assert handle.owns(owner_loop)
+        AsyncioLoopRunner.shutdown_for_thread(join_timeout=0.01)
+        released = getattr(AsyncioLoopRunner._local, 'handle', None) is None
+        return threading.current_thread().name, handle, owner_loop, released
 
-    release_blocker.set()
-    AsyncioLoopRunner.shutdown_for_thread(join_timeout=1)
+    def _run_on_reused_worker() -> tuple[str, AsyncioLoopThread, asyncio.AbstractEventLoop]:
+        owner_loop = AsyncioLoopRunner.run(_current_loop())
+        return threading.current_thread().name, AsyncioLoopRunner._local.handle, owner_loop
 
-    assert AsyncioLoopRunner._local.handle is None
-    assert handle not in AsyncioLoopRunner._all_handles
-    assert owner_loop.is_closed()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first_thread, timed_out_handle, first_loop, released = executor.submit(_start_blocked_loop).result()
+        try:
+            second_thread, replacement_handle, second_loop = executor.submit(_run_on_reused_worker).result()
+
+            assert released
+            assert first_thread == second_thread
+            assert replacement_handle is not timed_out_handle
+            assert second_loop is not first_loop
+            assert timed_out_handle in AsyncioLoopRunner._all_handles
+            assert timed_out_handle.owns(first_loop)
+        finally:
+            release_blocker.set()
+            assert timed_out_handle.stop(join_timeout=1)
+            executor.submit(AsyncioLoopRunner.shutdown_for_thread).result()
+
+    assert first_loop.is_closed()
+    assert second_loop.is_closed()
 
 
 def test_asyncio_loop_runner_keeps_worker_handle_registered_after_shutdown_all() -> None:

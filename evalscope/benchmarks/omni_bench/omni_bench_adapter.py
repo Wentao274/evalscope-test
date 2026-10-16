@@ -54,6 +54,7 @@ OmniBench is a pioneering universal multimodal benchmark designed to rigorously 
 - Supports textual alternatives for image/audio
 """,  # noqa: E501
         dataset_id='m-a-p/OmniBench',
+        hf_dataset_id='m-a-p/OmniBench',
         metric_list=['acc'],
         eval_split='train',
         prompt_template=MULT_CHOICE_PROMPT,
@@ -61,18 +62,17 @@ OmniBench is a pioneering universal multimodal benchmark designed to rigorously 
             'use_image': {
                 'type': 'bool',
                 'description': 'Whether to provide the raw image. False uses textual alternative.',
-                'value': True
+                'value': True,
             },
             'use_audio': {
                 'type': 'bool',
                 'description': 'Whether to provide the raw audio. False uses textual alternative.',
-                'value': True
-            }
-        }
+                'value': True,
+            },
+        },
     )
 )
 class OmniBenchAdapter(VisionLanguageAdapter, AudioLanguageAdapter, MultiChoiceAdapter):
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
@@ -115,5 +115,5 @@ class OmniBenchAdapter(VisionLanguageAdapter, AudioLanguageAdapter, MultiChoiceA
                 'answer': answer,
                 'image_content': record['image content'],
                 'audio_content': record['audio content'],
-            }
+            },
         )

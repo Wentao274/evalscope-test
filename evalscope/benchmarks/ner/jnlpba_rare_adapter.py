@@ -33,20 +33,22 @@ The JNLPBA-Rare dataset is a specialized subset of the JNLPBA test set created t
 
 @register_benchmark(
     BenchmarkMeta(
+        evaluation_version='v1.1',
         name='jnlpba_rare',
         pretty_name='JNLPBA-Rare',
         dataset_id='extraordinarylab/jnlpba-rare',
+        hf_dataset_id='extraordinarylab/jnlpba-rare',
         tags=[Tags.KNOWLEDGE, Tags.NER],
         description=DESCRIPTION,
         few_shot_num=0,
         eval_split='test',
         metric_list=['precision', 'recall', 'f1_score', 'accuracy'],
+        primary_metric='f1',
         prompt_template=PROMPT_TEMPLATE,
         few_shot_prompt_template=FEWSHOT_TEMPLATE,
     )
 )
 class JNLPBARareAdapter(NERAdapter):
-
     def __init__(self, **kwargs):
         # Initialize the parent class first
         super().__init__(**kwargs)
@@ -57,7 +59,7 @@ class JNLPBARareAdapter(NERAdapter):
         # Add descriptions for each entity type
         self.entity_descriptions = {
             'RNA': 'Names of RNA molecules',
-            'CELL_LINE': 'Names of specific, cultured cell lines'
+            'CELL_LINE': 'Names of specific, cultured cell lines',
         }
 
         # Setup entity mappings based on the defined entity types

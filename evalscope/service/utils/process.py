@@ -1,10 +1,11 @@
 import contextlib
-import io
 import multiprocessing
 import queue
 import sys
+import tempfile
 import threading
 import traceback
+from typing import Iterator, TextIO
 
 from evalscope.config import TaskConfig
 from evalscope.perf.arguments import Arguments as PerfArguments
@@ -96,19 +97,20 @@ def stop_process(task_id: str) -> bool:
 
 
 @contextlib.contextmanager
-def _capture_stderr():
-    """Context manager that redirects sys.stderr to a StringIO buffer.
+def _capture_stderr() -> Iterator[TextIO]:
+    """Redirect stderr to a temporary text file usable by nested subprocesses.
 
-    Yields the buffer so the caller can read captured output after the block.
-    Always restores the original sys.stderr on exit.
+    The file stays open for the worker's entire task, including libraries
+    that bind sys.stderr when lazily imported. Read it before leaving the
+    context; exit restores sys.stderr and closes the temporary file.
     """
-    buf = io.StringIO()
-    original = sys.stderr
-    sys.stderr = buf
-    try:
-        yield buf
-    finally:
-        sys.stderr = original
+    with tempfile.TemporaryFile(mode='w+', encoding='utf-8', errors='replace', buffering=1) as buf:
+        original = sys.stderr
+        sys.stderr = buf
+        try:
+            yield buf
+        finally:
+            sys.stderr = original
 
 
 def _process_worker(func, result_queue, *args, **kwargs):
@@ -122,12 +124,16 @@ def _process_worker(func, result_queue, *args, **kwargs):
             result = func(*args, **kwargs)
             result_queue.put({'status': 'success', 'result': result})
         except BaseException as e:
-            result_queue.put({
-                'status': 'error',
-                'error': str(e),
-                'traceback': traceback.format_exc(),
-                'stderr': stderr_buf.getvalue(),
-            })
+            stderr_buf.flush()
+            stderr_buf.seek(0)
+            result_queue.put(
+                {
+                    'status': 'error',
+                    'error': str(e),
+                    'traceback': traceback.format_exc(),
+                    'stderr': stderr_buf.read(),
+                }
+            )
 
 
 def run_in_subprocess(func, *args, task_id=None, **kwargs):
@@ -196,7 +202,7 @@ def run_in_subprocess(func, *args, task_id=None, **kwargs):
                 raise TaskStoppedError(task_id)
             stderr_info = res.get('stderr', '')
             stderr_section = f'\n[stderr]\n{stderr_info}' if stderr_info.strip() else ''
-            raise RuntimeError(f"Subprocess error: {res['error']}\n{res.get('traceback', '')}{stderr_section}")
+            raise RuntimeError(f'Subprocess error: {res["error"]}\n{res.get("traceback", "")}{stderr_section}')
         return res['result']
 
     # If the task was explicitly stopped by the user, treat it as a graceful

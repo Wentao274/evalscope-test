@@ -1,19 +1,22 @@
 import os
 from collections import defaultdict
 from functools import partial
-from overrides import override
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
+
+from typing_extensions import override
 
 from evalscope.api.agent import AgentLoopResult
 from evalscope.api.dataset import DataLoader, Dataset, DatasetDict, LocalDataLoader, RemoteDataLoader, Sample
+from evalscope.api.dataset.loader import dataset_loading_session
 from evalscope.api.evaluator import InferenceResult, InferenceReturn, TaskState
 from evalscope.api.messages import ChatMessage, ChatMessageSystem, ChatMessageUser
-from evalscope.api.metric import AggScore, SampleScore, Score
+from evalscope.api.metric import AggScore, MetricUnavailableError, SampleScore, Score
 from evalscope.api.model import Model, ModelOutput
 from evalscope.api.registry import get_aggregation, get_metric
-from evalscope.constants import HubType, JudgeStrategy
+from evalscope.constants import HubType, JudgeStrategy, ScoreStatus
 from evalscope.report import Report, ReportGenerator
 from evalscope.utils import get_logger
+
 from ..benchmark import DataAdapter
 
 logger = get_logger()
@@ -60,6 +63,8 @@ class DefaultDataAdapter(DataAdapter):
                         organized by subset names.
         """
         # Load the dataset
+        if self._task_config is not None and self.eval_type == 'systemone_api':
+            self.validate_choice_config()
         self.test_dataset, self.fewshot_dataset = self.load()
 
         # Process each sample's input by applying prompt templates and few-shot formatting
@@ -81,18 +86,15 @@ class DefaultDataAdapter(DataAdapter):
             # Load dataset from remote source (e.g., ModelScope, Huggingface)
             return self.load_from_remote()
 
-    def load_from_remote(self):
+    def load_from_remote(self) -> Tuple[DatasetDict, Optional[DatasetDict]]:
         """Load dataset from remote source and prepare few-shot examples if needed."""
-        test_dataset = None
-        fewshot_dataset = None
-        # Load dataset from remote source
-        test_load_func = partial(self.load_subset, data_loader=RemoteDataLoader)
-        test_dataset = self.load_subsets(test_load_func)
-
-        # Load few-shot examples if few-shot prompting is enabled
-        if self._should_load_fewshot():
-            fewshot_load_func = partial(self.load_fewshot_subset, data_loader=RemoteDataLoader)
-            fewshot_dataset = self.load_subsets(fewshot_load_func, is_fewshot=True)
+        with dataset_loading_session():
+            test_load_func = partial(self.load_subset, data_loader=RemoteDataLoader)
+            test_dataset = self.load_subsets(test_load_func)
+            fewshot_dataset = None
+            if self._should_load_fewshot():
+                fewshot_load_func = partial(self.load_fewshot_subset, data_loader=RemoteDataLoader)
+                fewshot_dataset = self.load_subsets(fewshot_load_func, is_fewshot=True)
         return test_dataset, fewshot_dataset
 
     def load_from_disk(self, use_local_loader: bool = False):
@@ -120,8 +122,8 @@ class DefaultDataAdapter(DataAdapter):
             return self.load_from_remote()
 
     def _should_load_fewshot(self) -> bool:
-        """Check if few-shot dataset should be loaded."""
-        return self.few_shot_num > 0 and self.train_split is not None
+        """Check whether auto few-shot examples should be loaded from a split."""
+        return self.few_shot_mode == 'auto' and self.few_shot_num > 0
 
     def _post_process_samples(self):
         """Process all sample inputs with prompt formatting."""
@@ -256,7 +258,9 @@ class DefaultDataAdapter(DataAdapter):
             repeats=1 if self.reformat_subset else self.repeats,  # Number of repetitions for each sample
             shuffle=self.shuffle,  # Shuffle dataset if enabled
             shuffle_choices=self.shuffle_choices,  # Shuffle choices if requested
+            seed=self.seed,
             data_source=self.dataset_hub,  # Data source configuration
+            version=self.dataset_revision,  # Remote dataset revision when pinned
             force_redownload=self.force_redownload,  # Force redownload if enabled
             dataset_dir=self.dataset_dir,  # Dataset directory
         )
@@ -286,10 +290,13 @@ class DefaultDataAdapter(DataAdapter):
             sample_fields=self.record_to_sample,
             filter_func=self.sample_filter,  # Apply sample filtering if defined
             limit=self.few_shot_num
-            if not self.reformat_subset else None,  # Limit to specified number of few-shot examples
+            if not self.reformat_subset
+            else None,  # Limit to specified number of few-shot examples
             shuffle=self.few_shot_random,  # Randomize selection if enabled
             shuffle_choices=self.shuffle_choices,  # Shuffle choices if requested
+            seed=self.seed,
             data_source=self.dataset_hub,  # Data source configuration
+            version=self.dataset_revision,  # Remote dataset revision when pinned
             force_redownload=self.force_redownload,  # Force redownload if enabled
             dataset_dir=self.dataset_dir,  # Dataset directory
         )
@@ -426,6 +433,7 @@ class DefaultDataAdapter(DataAdapter):
         if ac is not None:
             # Local import to avoid pulling the bridge stack at module load.
             from evalscope.agent.external.config import ExternalAgentConfig
+
             if isinstance(ac, ExternalAgentConfig):
                 return self._on_external_agent_inference(model, sample)
             return self._on_agent_inference(model, sample)
@@ -574,7 +582,7 @@ class DefaultDataAdapter(DataAdapter):
         return any(name in d for d in (self.metric_list or []))
 
     def get_metric_args(self, name: str) -> Dict[str, Any]:
-        for d in (self.metric_list or []):
+        for d in self.metric_list or []:
             if isinstance(d, dict) and name in d:
                 cfg = d.get(name, {})
                 return cfg if isinstance(cfg, dict) else {}
@@ -643,25 +651,33 @@ class DefaultDataAdapter(DataAdapter):
         )
 
         # Calculate scores for each configured metric
+        metric_failed = False
         for metric in self.metric_list:
             try:
                 if isinstance(metric, str):
                     metric_name = metric
-                    metric_scorer = get_metric(metric)  # Get metric implementation from registry
-                    metric_func = metric_scorer()  # Instantiate the metric scorer
+                    metric_args = {}
                 elif isinstance(metric, dict):
                     metric_name = list(metric.keys())[0]
-                    metric_cls = get_metric(metric_name)
-                    metric_func = metric_cls(**metric[metric_name])  # Initialize with parameters
+                    metric_args = metric[metric_name]
+                if score.main_score_name is None:
+                    score.main_score_name = metric_name
+                metric_cls = get_metric(metric_name)
+                metric_func = metric_cls(**metric_args)
                 metric_score = metric_func(
                     prediction=filtered_prediction,
-                    reference=reference,
+                    reference=metric_func.prepare_reference(task_state.target_reference),
                 )
                 score.value[metric_name] = metric_score
             except Exception as e:
                 logger.error(f'Error calculating metric {metric}: {e}')
-                score.value[metric_name] = 0
+                metric_failed = True
                 score.metadata[metric_name] = f'error: {str(e)}'
+                if isinstance(e, MetricUnavailableError):
+                    score.metadata['metric_unavailable'] = True
+
+        if metric_failed:
+            score.status = ScoreStatus.DEGRADED if score.value else ScoreStatus.EXCLUDED
 
         return score
 
@@ -683,8 +699,7 @@ class DefaultDataAdapter(DataAdapter):
         Raises:
             AssertionError: If the task state is not marked as completed
         """
-        assert task_state.completed, \
-            'TaskState must be completed before calculating metrics.'
+        assert task_state.completed, 'TaskState must be completed before calculating metrics.'
 
         # Extract the raw prediction from the model output
         if task_state.output is None:
@@ -692,57 +707,94 @@ class DefaultDataAdapter(DataAdapter):
         else:
             prediction = task_state.output.completion
 
-        # Apply filtering and answer extraction
-        filtered_prediction = self.filter_prediction(prediction, task_state)
+        filtered_prediction = ''
+        try:
+            # Apply filtering and answer extraction
+            filtered_prediction = self.filter_prediction(prediction, task_state)
 
-        if self.judge_strategy == JudgeStrategy.LLM_RECALL:
-            # Step 1: Calculate standard metric scores (rule-based)
-            rule_based_score = self.match_score(
-                original_prediction=prediction,
-                filtered_prediction=filtered_prediction,
-                reference=task_state.target,
-                task_state=task_state
-            )
-
-            # Step 2: Apply LLM judge if enabled and get final score
-            final_score = self.maybe_llm_match_score(
-                original_prediction=prediction,
-                filtered_prediction=filtered_prediction,
-                reference=task_state.target,
-                task_state=task_state,
-                rule_based_score=rule_based_score
-            )
-        else:
-            if self.use_llm_judge:
-                # Use LLM judge to compute the match score directly
-                final_score = self.llm_match_score(
+            if self.judge_strategy == JudgeStrategy.LLM_RECALL:
+                # Step 1: Calculate standard metric scores (rule-based)
+                rule_based_score = self.match_score(
                     original_prediction=prediction,
                     filtered_prediction=filtered_prediction,
                     reference=task_state.target,
-                    task_state=task_state
+                    task_state=task_state,
                 )
+
+                rule_main_available = rule_based_score.status.is_usable and (
+                    rule_based_score.main_score_name is None
+                    or rule_based_score.main_score_name in rule_based_score.value
+                )
+                if rule_based_score.metadata.get('metric_unavailable'):
+                    # Invalid inputs and failed execution remain excluded before judge I/O.
+                    final_score = rule_based_score
+                elif rule_main_available and float(rule_based_score.main_value or 0.0) > 0.99:
+                    final_score = rule_based_score
+                else:
+                    # A valid judge may raise the rule score; an unavailable judge preserves it.
+                    judge_score = self.score_with_judge_contracts(
+                        original_prediction=prediction,
+                        filtered_prediction=filtered_prediction,
+                        reference=task_state.target,
+                        task_state=task_state,
+                    )
+                    final_score = self._merge_scores(rule_based_score, judge_score)
             else:
-                # Use standard match score calculation without LLM judge
-                final_score = self.match_score(
-                    original_prediction=prediction,
-                    filtered_prediction=filtered_prediction,
-                    reference=task_state.target,
-                    task_state=task_state
-                )
+                if self.use_llm_judge:
+                    # Judge-default benchmarks retain their usable rule score when the judge fails.
+                    judge_score = self.score_with_judge_contracts(
+                        original_prediction=prediction,
+                        filtered_prediction=filtered_prediction,
+                        reference=task_state.target,
+                        task_state=task_state,
+                    )
+                    if not judge_score.status.is_usable and self.scoring_policy.rule_supported:
+                        final_score = self.fallback_to_rule_score(
+                            self.match_score(
+                                original_prediction=prediction,
+                                filtered_prediction=filtered_prediction,
+                                reference=task_state.target,
+                                task_state=task_state,
+                            ),
+                            judge_score,
+                        )
+                    else:
+                        final_score = judge_score
+                else:
+                    # Use standard match score calculation without LLM judge
+                    final_score = self.match_score(
+                        original_prediction=prediction,
+                        filtered_prediction=filtered_prediction,
+                        reference=task_state.target,
+                        task_state=task_state,
+                    )
+        except MetricUnavailableError as exc:
+            logger.error(f'Scoring unavailable for sample {task_state.sample_id}: {exc}')
+            final_score = Score(
+                prediction=prediction,
+                extracted_prediction=filtered_prediction,
+                status=ScoreStatus.EXCLUDED,
+                explanation=str(exc),
+                metadata={'metric_unavailable': True, 'error': str(exc)},
+            )
 
         # Package the results into a sample score object
         sample_score = SampleScore(
             score=final_score,
             sample_id=task_state.sample_id,
             group_id=task_state.group_id,
+            generation_index=(task_state.sample_id % self.repeats) if self.repeats > 1 else 0,
             sample_metadata=task_state.metadata,
         )
 
         return sample_score
 
     def batch_match_score(
-        self, original_predictions: List[str], filtered_predictions: List[str], references: List[str],
-        task_states: List[TaskState]
+        self,
+        original_predictions: List[str],
+        filtered_predictions: List[str],
+        references: List[str],
+        task_states: List[TaskState],
     ) -> Optional[List[Score]]:
         """
         Batch calculate evaluation scores by comparing predictions with references.
@@ -762,8 +814,9 @@ class DefaultDataAdapter(DataAdapter):
         return None  # Default implementation does not support batch scoring
 
     @override
-    def batch_calculate_metrics(self, task_states: List[TaskState],
-                                sample_scores: List[SampleScore]) -> List[SampleScore]:
+    def batch_calculate_metrics(
+        self, task_states: List[TaskState], sample_scores: List[SampleScore]
+    ) -> List[SampleScore]:
         """Batch calculate metrics for a list of task states with tqdm progress and batch processing."""
         total = len(task_states)
         if total == 0:
@@ -784,12 +837,11 @@ class DefaultDataAdapter(DataAdapter):
             original_predictions=original_predictions,
             filtered_predictions=filtered_predictions,
             references=references,
-            task_states=task_states
+            task_states=task_states,
         )
 
         if batch_scores is not None:
-            assert len(batch_scores) == len(sample_scores), \
-                'Batch scores length must match sample scores length.'
+            assert len(batch_scores) == len(sample_scores), 'Batch scores length must match sample scores length.'
             for batch_score, sample_score in zip(batch_scores, sample_scores):
                 sample_score.score.value.update(batch_score.value)
 
@@ -852,9 +904,7 @@ class DefaultDataAdapter(DataAdapter):
         Returns:
             Report: The generated evaluation report
         """
-        return ReportGenerator.generate_report(
-            score_dict=scores, model_name=model_name, data_adapter=self, add_aggregation_name=self.add_aggregation_name
-        )
+        return ReportGenerator.generate_report(score_dict=scores, model_name=model_name, data_adapter=self)
 
     @override
     def generate_report(self, scores: Dict[str, List[AggScore]], model_name: str, output_dir: str, **kwargs) -> Report:

@@ -1,9 +1,11 @@
 import os
 import uuid
-from pydantic import BaseModel, Field, JsonValue, model_validator
 from typing import Any, Dict, List, Literal, Optional, Type, Union
 
+from pydantic import BaseModel, Field, JsonValue, model_validator
+
 from evalscope.api.tool import ToolCall, ToolCallError
+
 from .content import Content, ContentAudio, ContentImage, ContentReasoning, ContentText, ContentVideo
 from .perf_metrics import PerformanceMetrics
 from .utils import parse_content_with_reasoning
@@ -13,7 +15,7 @@ class ChatMessageBase(BaseModel):
     """Base class for chat messages."""
 
     id: Optional[str] = Field(default=None)
-    """Unique identifer for message."""
+    """Unique identifier for message."""
 
     content: Union[str, List[Content]]
     """Content (simple string or list of content objects)"""
@@ -225,9 +227,12 @@ def messages_to_markdown(messages: List[ChatMessage], max_length: Optional[int] 
                     # Use markdown image syntax
                     image_base64_or_url = content_item.image
                     if os.path.isfile(image_base64_or_url):
+                        # Local file: emit the absolute path so that renderers can resolve it,
+                        # e.g. the Web dashboard proxies it through its media file endpoint.
+                        # The destination is wrapped in <> so that paths containing spaces or
+                        # unbalanced parentheses still parse as a markdown image.
                         image_base64_or_url = os.path.abspath(image_base64_or_url)
-                        # If it's a file, convert to a markdown image with a gradio-compatible path
-                        content_parts.append(f'![image](gradio_api/file={image_base64_or_url})')
+                        content_parts.append(f'![image](<{image_base64_or_url}>)')
                     else:
                         # If it's not a file, assume it's a base64 string
                         if max_length and len(image_base64_or_url) > max_length:
@@ -235,12 +240,18 @@ def messages_to_markdown(messages: List[ChatMessage], max_length: Optional[int] 
                         content_parts.append(f'![image]({image_base64_or_url})')
                 elif isinstance(content_item, ContentAudio):
                     audio_base64_or_url = content_item.audio
-                    if max_length and len(audio_base64_or_url) > max_length:
+                    if os.path.isfile(audio_base64_or_url):
+                        # Local file: absolutise it as the image branch does; never truncate a real path.
+                        audio_base64_or_url = os.path.abspath(audio_base64_or_url)
+                    elif max_length and len(audio_base64_or_url) > max_length:
                         audio_base64_or_url = audio_base64_or_url[:max_length]
                     content_parts.append(f"<audio controls src='{audio_base64_or_url}'></audio>")
                 elif isinstance(content_item, ContentVideo):
                     video_base64_or_url = content_item.video
-                    if max_length and len(video_base64_or_url) > max_length:
+                    if os.path.isfile(video_base64_or_url):
+                        # Local file: absolutise it as the image branch does; never truncate a real path.
+                        video_base64_or_url = os.path.abspath(video_base64_or_url)
+                    elif max_length and len(video_base64_or_url) > max_length:
                         video_base64_or_url = video_base64_or_url[:max_length]
                     content_parts.append(f"<video controls src='{video_base64_or_url}'></video>")
                 elif isinstance(content_item, ContentReasoning):

@@ -26,6 +26,7 @@ from evalscope.api.sandbox import DockerImageSpec, prepare_docker_image
 from evalscope.constants import Tags
 from evalscope.utils.asyncio_runtime import AsyncioLoopRunner
 from evalscope.utils.import_utils import is_build_doc
+
 from .utils import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_WITH_SKILL,
@@ -139,7 +140,7 @@ task Docker image, runs the selected agent or oracle in that image, then execute
         dataset_id='skillsbench',
         subset_list=[_DEFAULT_SUBSET],
         default_subset=_DEFAULT_SUBSET,
-        metric_list=['score'],
+        metric_list=['normalized_score'],
         prompt_template='{question}',
         extra_params=_EXTRA_PARAMS,
     )
@@ -185,7 +186,7 @@ class SkillsBenchAdapter(AgentAdapter):
         if isinstance(limit, int):
             dirs = dirs[:limit]
         elif isinstance(limit, float) and 0 < limit < 1:
-            dirs = dirs[:max(1, int(len(dirs) * limit))]
+            dirs = dirs[: max(1, int(len(dirs) * limit))]
         return dirs
 
     def _task_to_sample(self, task_dir: Path, index: int) -> Sample:
@@ -323,8 +324,7 @@ class SkillsBenchAdapter(AgentAdapter):
             )
             return InferenceResult(
                 output=output,
-                messages=[ChatMessageUser(content=sample_instruction(sample)),
-                          ChatMessageAssistant(content=text)],
+                messages=[ChatMessageUser(content=sample_instruction(sample)), ChatMessageAssistant(content=text)],
             )
         finally:
             await env.close()
@@ -396,7 +396,7 @@ class SkillsBenchAdapter(AgentAdapter):
     ) -> Score:
         reward = float(task_state.metadata.get('reward') or 0.0)
         value = {
-            'score': reward,
+            'normalized_score': reward,
             'success': 1.0 if reward > 0 else 0.0,
         }
         return Score(
@@ -415,7 +415,7 @@ class SkillsBenchAdapter(AgentAdapter):
                 'reward_path': task_state.metadata.get('reward_path'),
                 'ctrf_path': task_state.metadata.get('ctrf_path'),
             },
-            main_score_name='score',
+            main_score_name='normalized_score',
         )
 
     def _save_verifier_artifacts(
@@ -429,7 +429,9 @@ class SkillsBenchAdapter(AgentAdapter):
         if not self._current_output_dir:
             return
         artifact_dir = (
-            Path(self._current_output_dir) / 'artifacts' / 'skillsbench'
+            Path(self._current_output_dir)
+            / 'artifacts'
+            / 'skillsbench'
             / safe_path_part(str(sample.metadata.get('task_id') or sample.id))
             / safe_path_part(str(sample.metadata.get('skill_mode') or self.skill_mode))
         )

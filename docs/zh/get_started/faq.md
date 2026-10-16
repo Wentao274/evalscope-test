@@ -70,15 +70,15 @@
     --dataset-args '{"ifeval": {"filters": {"remove_until": "</think>"}}}'
     ```
     如果您的模型使用不同的思考标签，如 `<|end_of_thinking|>`，只需替换即可。
-3.  **用裁判模型兜底**：设置 `judge_strategy=JudgeStrategy.LLM_RECALL`，规则提取失败的样本会交给裁判模型重新判定，详见下文“结果异常与问题排查”。
+3.  **用裁判模型兜底**：设置 `judge={'strategy': 'llm_recall', 'models': {...}}`。规则已满分的样本不调用 Judge；其余样本会用 Judge 复核，详见下文“结果异常与问题排查”。
 
 **Q: 如何使用本地模型作为裁判模型（Judge Model）？**
 
-**A:** 您可以使用 vLLM 等框架将本地模型部署为一个 API 服务，然后在 `--judge-model-args` 中指定其服务地址。
+**A:** 您可以使用 vLLM 等框架将本地模型部署为一个 API 服务，然后在 `--judge` 的 `models` 中指定其服务地址。
 
 **Q: 如何为裁判模型设置超时时间？**
 
-**A:** 在 `--judge-model-args` 的 `generation_config` 中设置 `timeout` 参数。
+**A:** 在 `--judge` 的 `models.generation_config` 中设置 `timeout` 参数。
 
 **Q: 如何在评测 API 服务时添加自定义请求头（Header）？**
 
@@ -110,6 +110,10 @@ task_config = TaskConfig(
 2.  **查看预测文件**：检查 `outputs/<timestamp>/predictions/` 目录下的 JSONL 文件，确认模型输出是否符合预期。
 3.  **可视化分析**：使用 `evalscope service` 启动可视化界面，直观地查看和分析评测结果。
 
+**Q: 为什么 OpenAI 兼容接口的响应会出现 `stop_reason="unknown"`？**
+
+**A:** 服务商可能返回 OpenAI 标准值以外的结束原因，例如 MiMo 的 `repetition_truncation`。EvalScope 会保留回答，将无法识别的原因映射为 `unknown`，而不是视为正常结束或达到 token 上限。预测 JSONL 文件中的 `model_output.metadata.finish_reasons` 会按原始 choice 索引保存这些字符串，例如 `{"0": "repetition_truncation"}`。流式和非流式响应均适用。
+
 **Q: 评测结果不稳定，两次运行结果不一致怎么办？**
 
 **A:** 结果不一致通常由采样随机性导致。可以尝试以下方法固定结果：
@@ -128,12 +132,9 @@ task_config = TaskConfig(
 **A:** 数学问题的答案格式复杂，规则解析难以覆盖所有情况。建议使用 LLM 作为辅助裁判来提升准确率：
 ```python
 # 在 TaskConfig 中设置
-judge_strategy=JudgeStrategy.LLM_RECALL,
-judge_model_args={
-    'model_id': 'qwen2.5-72b-instruct',
-    'api_url': '...',
-    'api_key': '...'
-}
+judge={'strategy': 'llm_recall', 'models': {
+    'model_id': 'qwen2.5-72b-instruct', 'api_url': '...', 'api_key': '...'
+}}
 ```
 参考文档：[裁判模型参数](https://evalscope.readthedocs.io/zh-cn/latest/get_started/parameters.html#judge)。
 
@@ -144,14 +145,13 @@ judge_model_args={
 2.  再配合裁判模型兜底，规则提取失败时自动召回：
     ```python
     # 在 TaskConfig 中设置
-    judge_strategy=JudgeStrategy.LLM_RECALL,
-    judge_model_args={'model_id': '...', 'api_url': '...', 'api_key': '...'}
+    judge={'strategy': 'llm_recall', 'models': {'model_id': '...', 'api_url': '...', 'api_key': '...'}}
     ```
     `llm_recall` 仅在规则得分不满分时才调用裁判模型，不会带来额外的全量开销。
 
 **Q: 评测 `alpaca_eval` 时报错 `Connection error`？**
 
-**A:** `alpaca_eval` 需要指定一个裁判模型（Judge Model）进行打分。默认使用 OpenAI API，如果未配置相关 Key 会导致连接失败。请通过 `--judge-model-args` 指定一个可用的裁判模型。
+**A:** `alpaca_eval` 需要指定一个裁判模型（Judge Model）进行打分。默认使用 OpenAI API，如果未配置相关 Key 会导致连接失败。请通过 `--judge` 指定一个可用的裁判模型。
 
 **Q: 评测中断后，如何从断点处继续？**
 
@@ -273,7 +273,7 @@ judge_model_args={
 
 **Q: 压测结果如何可视化？**
 
-**A:** `perf` 子命令的结果不适用于 `evalscope service`。但支持通过 `wandb` 或 `swanlab` 进行可视化。请参考[压测结果可视化指南](https://evalscope.readthedocs.io/zh-cn/latest/user_guides/stress_test/quick_start.html#id6)。
+**A:** 使用包含 `perf` 结果的输出根目录（默认：`outputs/`）启动 `evalscope service`，然后在 Web Dashboard 中打开**性能测试**页面。也可以将结果发送到 `wandb`、`swanlab` 或 `clearml`。请参考[压测结果可视化指南](../user_guides/stress_test/quick_start.md#可视化测试结果)。
 
 ## 引用我们
 

@@ -43,11 +43,14 @@ PubMedQA is a biomedical question answering dataset designed to evaluate models'
 @register_benchmark(
     BenchmarkMeta(
         name='pubmedqa',
+        evaluation_version='v1.1',
         pretty_name='PubMedQA',
         tags=[Tags.KNOWLEDGE, Tags.YES_NO],
         description=DESCRIPTION.strip(),
         dataset_id='extraordinarylab/pubmed-qa',
+        hf_dataset_id='extraordinarylab/pubmed-qa',
         metric_list=['accuracy', 'precision', 'recall', 'f1_score', 'yes_ratio', 'maybe_ratio'],
+        primary_metric='accuracy',
         aggregation='f1',
         few_shot_num=0,
         eval_split='test',
@@ -55,7 +58,6 @@ PubMedQA is a biomedical question answering dataset designed to evaluate models'
     )
 )
 class PubMedQAAdapter(DefaultDataAdapter):
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_overall_metric = False
@@ -73,7 +75,7 @@ class PubMedQAAdapter(DefaultDataAdapter):
             metadata={
                 'answer': record['answer'],
                 'reasoning': record['reasoning'],
-            }
+            },
         )
 
     def match_score(self, original_prediction, filtered_prediction, reference, task_state) -> Score:
@@ -95,30 +97,21 @@ class PubMedQAAdapter(DefaultDataAdapter):
         def compute_metrics(scores: List[SampleScore]):
             # Initialize confusion matrix for multi-class classification
             confusion_matrix = {
-                'YES': {
-                    'YES': 0,
-                    'NO': 0,
-                    'MAYBE': 0
-                },
-                'NO': {
-                    'YES': 0,
-                    'NO': 0,
-                    'MAYBE': 0
-                },
-                'MAYBE': {
-                    'YES': 0,
-                    'NO': 0,
-                    'MAYBE': 0
-                }
+                'YES': {'YES': 0, 'NO': 0, 'MAYBE': 0},
+                'NO': {'YES': 0, 'NO': 0, 'MAYBE': 0},
+                'MAYBE': {'YES': 0, 'NO': 0, 'MAYBE': 0},
             }
 
             yes_count = 0
             maybe_count = 0
             total_count = len(scores)
             correct_count = 0
+            actual_counts = dict.fromkeys(confusion_matrix, 0)
 
             for ss in scores:
                 gt = ss.sample_metadata['answer'].strip().upper()
+                if gt in actual_counts:
+                    actual_counts[gt] += 1
 
                 if ss.score.main_value == 1:
                     correct_count += 1
@@ -160,16 +153,19 @@ class PubMedQAAdapter(DefaultDataAdapter):
                 # Calculate predicted positives (column sum)
                 pred_pos = sum(confusion_matrix[true_cls][cls] for true_cls in classes)
 
-                # Calculate actual positives (row sum)
-                act_pos = sum(confusion_matrix[cls][pred_cls] for pred_cls in classes)
+                # Unrecognized answers are false negatives, even without a predicted class.
+                act_pos = actual_counts[cls]
 
                 # Calculate precision and recall for this class
                 cls_precision = tp / pred_pos if pred_pos > 0 else 0.0
                 cls_recall = tp / act_pos if act_pos > 0 else 0.0
 
                 # Calculate F1 for this class
-                cls_f1 = (2 * cls_precision * cls_recall) / (cls_precision
-                                                             + cls_recall) if (cls_precision + cls_recall) > 0 else 0.0
+                cls_f1 = (
+                    (2 * cls_precision * cls_recall) / (cls_precision + cls_recall)
+                    if (cls_precision + cls_recall) > 0
+                    else 0.0
+                )
 
                 precision_values.append(cls_precision)
                 recall_values.append(cls_recall)
@@ -190,7 +186,7 @@ class PubMedQAAdapter(DefaultDataAdapter):
                 'recall': recall,
                 'f1_score': f1_score,
                 'yes_ratio': yes_ratio,
-                'maybe_ratio': maybe_ratio
+                'maybe_ratio': maybe_ratio,
             }
 
         overall_metrics = compute_metrics(sample_scores)

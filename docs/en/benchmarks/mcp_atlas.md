@@ -40,7 +40,7 @@ and expert claims used for LLM-as-judge coverage scoring.
 | **Dataset ID** | [ScaleAI/MCP-Atlas](https://modelscope.cn/datasets/ScaleAI/MCP-Atlas/summary) |
 | **Paper** | [Paper](https://static.scale.com/uploads/674f4cc7a74e35bcaae1c29a/MCP_Atlas.pdf) |
 | **Tags** | `Agent`, `MultiTurn` |
-| **Metrics** | `coverage_score`, `pass` |
+| **Metrics** | `coverage_score`, `pass_rate` |
 | **Default Shots** | 0-shot |
 | **Evaluation Split** | `train` |
 
@@ -326,6 +326,7 @@ evalscope eval \
     --api-key EMPTY_TOKEN \
     --datasets mcp_atlas \
     --agent-config '{"mode":"native","strategy":"function_calling","max_steps":100}' \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # Remove this line for formal evaluation
 ```
 
@@ -344,6 +345,7 @@ task_cfg = TaskConfig(
         strategy='function_calling',
         max_steps=100,
     ),
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     dataset_args={
         'mcp_atlas': {
             # extra_params: {}  # uses default extra parameters

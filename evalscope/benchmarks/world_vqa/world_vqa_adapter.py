@@ -6,7 +6,7 @@ from evalscope.api.evaluator import TaskState
 from evalscope.api.messages import ChatMessageUser, Content, ContentImage, ContentText
 from evalscope.api.metric import Score
 from evalscope.api.registry import register_benchmark
-from evalscope.constants import Tags
+from evalscope.constants import ScoringPolicy, Tags
 from evalscope.utils.logger import get_logger
 
 logger = get_logger()
@@ -59,6 +59,7 @@ WorldVQA is a benchmark designed to evaluate the atomic visual world knowledge o
 - Results reported per category and overall
 """,
         dataset_id='evalscope/WorldVQA',
+        hf_dataset_id='moonshotai/WorldVQA',
         subset_list=SUBSET_LIST,
         metric_list=['acc'],
         eval_split='train',
@@ -66,8 +67,7 @@ WorldVQA is a benchmark designed to evaluate the atomic visual world knowledge o
     )
 )
 class WorldVQAAdapter(VisionLanguageAdapter):
-
-    llm_judge_default = True
+    scoring_policy = ScoringPolicy.JUDGE_ONLY
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

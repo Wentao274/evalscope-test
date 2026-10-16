@@ -13,6 +13,7 @@ from evalscope.constants import Tags
 from evalscope.utils.logger import get_logger
 from evalscope.utils.media_utils import guess_video_format
 from evalscope.utils.multi_choices import MultipleChoiceTemplate, answer_character, prompt
+
 from .utils import archive_path, build_question, find_archive_member, optional_float, safe_join
 
 logger = get_logger()
@@ -50,7 +51,7 @@ The EvalScope native adapter reads the official per-task JSON annotations from t
 ## Evaluation Notes
 
 - Default evaluation uses 0-shot Chain-of-Thought multiple-choice prompting via `MultipleChoiceTemplate.SINGLE_ANSWER_COT`.
-- Primary metric: Accuracy (`acc`). The dataset answer is stored as candidate text and is converted to the corresponding option letter before scoring.
+- Primary metric: Accuracy (`accuracy`). The dataset answer is stored as candidate text and is converted to the corresponding option letter before scoring.
 - Some subsets provide `start`/`end` fields. The adapter passes these values to `ContentVideo` and also adds a concise segment instruction to the prompt.
 - Video files are downloaded lazily from subset-specific archives. `egocentric_sequence` uses segmented archives under `video/egocentric_sequence/<prefix>.zip`.
 - The `action_antonym` annotations reference AVI files. If the repository media archive is unavailable, configure `extra_params.video_dir` to a local directory containing the AVI files.
@@ -63,6 +64,7 @@ The EvalScope native adapter reads the official per-task JSON annotations from t
         name='tvbench',
         pretty_name='TVBench',
         dataset_id=DATASET_ID,
+        hf_dataset_id='FunAILab/TVBench',
         tags=[Tags.MULTI_MODAL, Tags.VIDEO, Tags.MULTIPLE_CHOICE],
         description=DESCRIPTION,
         subset_list=DEFAULT_SUBSET_LIST,
@@ -96,6 +98,7 @@ class TVBenchAdapter(VisionLanguageAdapter, MultiChoiceAdapter):
         return DatasetHub(
             data_id_or_path=self.dataset_id,
             data_source=self.dataset_hub,
+            revision=self.dataset_revision,
             force_redownload=self.force_redownload,
         )
 

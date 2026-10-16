@@ -19,6 +19,7 @@ from evalscope.constants import DEFAULT_EVALSCOPE_CACHE_DIR, HubType, JudgeStrat
 from evalscope.utils.argument_utils import get_secret_value
 from evalscope.utils.import_utils import check_import
 from evalscope.utils.logger import get_logger
+
 from .utils import (
     DEFAULT_CLAW_EVAL_DATASET_ID,
     DEFAULT_CLAW_EVAL_PACKAGE,
@@ -85,9 +86,11 @@ parallel execution, reporting, and dashboard trace review.
         name='claw_eval',
         pretty_name='Claw-Eval',
         dataset_id=DEFAULT_CLAW_EVAL_DATASET_ID,
+        hf_dataset_id='claw-eval/Claw-Eval',
         tags=[Tags.AGENT, Tags.MULTI_MODAL, Tags.MULTI_TURN],
         description=_DESCRIPTION,
-        metric_list=['avg_score', 'pass_at_k', 'pass_hat_k', 'error_rate'],
+        metric_list=['judge_score', 'pass_at_k', 'pass_hat_k', 'error_rate'],
+        primary_metric='judge_score',
         aggregation='mean',
         eval_split='test',
         subset_list=_DEFAULT_SPLITS,
@@ -117,8 +120,9 @@ class ClawEvalAdapter(AgentAdapter):
             task_ids_filter = {str(task_id).strip() for task_id in task_ids if str(task_id).strip()}
         records = load_task_manifest(
             dataset_id=self.dataset_id,
-            data_source=self.dataset_hub or HubType.MODELSCOPE,
+            data_source=self.dataset_hub,
             splits=selected_splits,
+            revision=self.dataset_revision,
             force_redownload=self.force_redownload,
         )
 
@@ -188,9 +192,13 @@ class ClawEvalAdapter(AgentAdapter):
         trace_root = output_root / 'traces'
         api_key = self._resolve_api_key(model)
         base_url = self._resolve_base_url(model)
-        judge_args = self._task_config.judge_model_args or {}
+        judge_args = (
+            self._task_config.judge.models[0].model_dump(exclude={'judge_id'}, exclude_none=True)
+            if self._task_config.judge.models
+            else {}
+        )
         judge_model = judge_args.get('model_id')
-        no_judge = self._task_config.judge_strategy == JudgeStrategy.RULE
+        no_judge = self._task_config.judge.strategy == JudgeStrategy.RULE
         official_config = self._build_official_config(
             model=model,
             tasks_dir=tasks_dir,
@@ -245,11 +253,13 @@ class ClawEvalAdapter(AgentAdapter):
     ) -> Score:
         result = task_state.metadata.get('claw_eval_result') or {}
         metrics = dict(result.get('metrics') or {})
+        if 'avg_score' in metrics:
+            metrics['judge_score'] = metrics.pop('avg_score')
         return Score(
             extracted_prediction=filtered_prediction,
             prediction=original_prediction,
             value=metrics,
-            main_score_name='avg_score',
+            main_score_name='judge_score',
             metadata={
                 'task_id': result.get('task_id'),
                 'task_name': result.get('task_name'),
@@ -277,7 +287,7 @@ class ClawEvalAdapter(AgentAdapter):
         group_pass_hat = []
         sample_errors = 0
         for group_scores in grouped.values():
-            trial_scores = [float(item.score.value.get('avg_score', 0.0)) for item in group_scores]
+            trial_scores = [float(item.score.value.get('judge_score', 0.0)) for item in group_scores]
             group_avg_scores.append(sum(trial_scores) / len(trial_scores) if trial_scores else 0.0)
             k = len(trial_scores)
             group_pass_at.append(compute_pass_at_k(trial_scores, k=k))
@@ -290,23 +300,15 @@ class ClawEvalAdapter(AgentAdapter):
         num_samples = len(sample_scores)
         return [
             AggScore(
-                score=sum(group_avg_scores) / num_groups,
-                metric_name='avg_score',
-                aggregation_name='mean',
-                num=num_groups
+                score=sum(group_avg_scores) / num_groups, metric_name='judge_score', aggregation='mean', num=num_groups
             ),
             AggScore(
-                score=sum(group_pass_at) / num_groups, metric_name='pass_at_k', aggregation_name='mean', num=num_groups
+                score=sum(group_pass_at) / num_groups, metric_name='pass_at_k', aggregation='mean', num=num_groups
             ),
             AggScore(
-                score=sum(group_pass_hat) / num_groups,
-                metric_name='pass_hat_k',
-                aggregation_name='mean',
-                num=num_groups
+                score=sum(group_pass_hat) / num_groups, metric_name='pass_hat_k', aggregation='mean', num=num_groups
             ),
-            AggScore(
-                score=sample_errors / num_samples, metric_name='error_rate', aggregation_name='mean', num=num_samples
-            ),
+            AggScore(score=sample_errors / num_samples, metric_name='error_rate', aggregation='mean', num=num_samples),
         ]
 
     def _build_official_config(
@@ -393,7 +395,8 @@ class ClawEvalAdapter(AgentAdapter):
             if self._assets is None:
                 self._assets = prepare_claw_eval_assets(
                     dataset_id=self.dataset_id,
-                    data_source=self.dataset_hub or HubType.MODELSCOPE,
+                    data_source=self.dataset_hub,
+                    revision=self.dataset_revision,
                     cache_dir=self._cache_dir(),
                     force_redownload=self.force_redownload,
                     official_repo_path=self._official_repo_path(),

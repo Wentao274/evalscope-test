@@ -33,21 +33,23 @@ The CoNLL++ dataset is a corrected and cleaner version of the test set from the 
 
 @register_benchmark(
     BenchmarkMeta(
+        evaluation_version='v1.1',
         name='conllpp',
         pretty_name='CoNLL++',
         dataset_id='extraordinarylab/conllpp',
+        hf_dataset_id='extraordinarylab/conllpp',
         tags=[Tags.KNOWLEDGE, Tags.NER],
         description=DESCRIPTION,
         few_shot_num=5,
         train_split='train',
         eval_split='test',
         metric_list=['precision', 'recall', 'f1_score', 'accuracy'],
+        primary_metric='f1',
         prompt_template=PROMPT_TEMPLATE,
         few_shot_prompt_template=FEWSHOT_TEMPLATE,
     )
 )
 class CoNLLPPAdapter(NERAdapter):
-
     def __init__(self, **kwargs):
         # Initialize the parent class first
         super().__init__(**kwargs)
@@ -60,7 +62,7 @@ class CoNLLPPAdapter(NERAdapter):
             'PER': 'Names of people, including first and last names',
             'ORG': 'Names of companies, institutions, organizations, etc.',
             'LOC': 'Names of locations, cities, states, countries, etc.',
-            'MISC': 'Miscellaneous entities not in the above categories'
+            'MISC': 'Miscellaneous entities not in the above categories',
         }
 
         # Setup entity mappings based on the defined entity types

@@ -1,19 +1,41 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Literal, Tuple, Union
+
+from pydantic import BaseModel
 
 from evalscope.api.benchmark import BenchmarkMeta, DefaultDataAdapter
 from evalscope.api.dataset import DatasetDict, DatasetHub, MemoryDataset, Sample, build_dataset_from_records
 from evalscope.api.evaluator import TaskState
+from evalscope.api.judge import (
+    CaseVerdict,
+    JudgeCase,
+    JudgeContext,
+    JudgeDefinition,
+    JudgeRequest,
+    OutputContract,
+    ReducedVerdict,
+)
 from evalscope.api.messages import ChatMessageUser
 from evalscope.api.metric import AggScore, SampleScore, Score
+from evalscope.api.metric.semantics import MetricSelector
 from evalscope.api.registry import register_benchmark
-from evalscope.constants import Tags
+from evalscope.constants import ScoringPolicy, Tags
 from evalscope.utils.logger import get_logger
+
 from .utils import QUESTION_TYPES, SUBSET_TO_FILE, build_generation_prompt, get_anscheck_prompt
 
 logger = get_logger()
+
+
+# The official grader prompt ends with "Answer yes or no only."
+class AnswerCheck(BaseModel):
+    reasoning: str = ''
+    verdict: Literal['yes', 'no']
+
+
+ANSCHECK_CONTRACT = OutputContract(schema_model=AnswerCheck)
 
 
 @register_benchmark(
@@ -48,7 +70,9 @@ LongMemEval evaluates long-term interactive memory in chat assistants. Each ques
 - `retrieval_log` mode consumes official LongMemEval retrieval logs; it does not run embedding retrieval itself
 """,
         dataset_id='evalscope/longmemeval-cleaned',
-        metric_list=['acc'],
+        hf_dataset_id='xiaowu0162/longmemeval-cleaned',
+        metric_list=['accuracy'],
+        primary_metric=MetricSelector(name='accuracy', aggregation='mean', dimensions={'scope': 'overall'}),
         few_shot_num=0,
         train_split=None,
         eval_split='test',
@@ -99,7 +123,8 @@ LongMemEval evaluates long-term interactive memory in chat assistants. Each ques
 )
 class LongMemEvalAdapter(DefaultDataAdapter):
     """Adapter for LongMemEval."""
-    llm_judge_default = True
+
+    scoring_policy = ScoringPolicy.JUDGE_ONLY
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -173,6 +198,7 @@ class LongMemEvalAdapter(DefaultDataAdapter):
         return DatasetHub(
             data_id_or_path=self.dataset_id,
             data_source=self.dataset_hub,
+            revision=self.dataset_revision,
             force_redownload=self.force_redownload,
             cache_dir=self.dataset_dir,
         ).download_file(file_name)
@@ -234,44 +260,47 @@ class LongMemEvalAdapter(DefaultDataAdapter):
         }
         return Sample(input=[ChatMessageUser(content=prompt)], target=str(record['answer']), metadata=metadata)
 
-    def llm_match_score(
-        self,
-        original_prediction: str,
-        filtered_prediction: str,
-        reference: str,
-        task_state: TaskState,
-    ) -> Score:
-        if not self.llm_judge:
-            raise ValueError('LongMemEval requires an initialized LLM judge.')
-        score = Score(extracted_prediction=filtered_prediction, prediction=original_prediction)
-        judge_prompt = get_anscheck_prompt(
-            task=task_state.metadata['question_type'],
-            question=task_state.metadata['question'],
-            answer=reference,
-            response=filtered_prediction,
-            abstention=task_state.metadata.get('is_abstention', False),
+    def judge_definition(self, context: JudgeContext) -> JudgeDefinition:
+
+        def request(case, placement, completed_cases, judge_context) -> JudgeRequest:
+            metadata = judge_context.task_state.metadata
+            prompt = (
+                get_anscheck_prompt(
+                    task=metadata['question_type'],
+                    question=metadata['question'],
+                    answer=judge_context.reference,
+                    response=judge_context.filtered_prediction,
+                    abstention=metadata.get('is_abstention', False),
+                )
+                + case.output_contract.instruction()
+            )
+            return JudgeRequest(messages=[ChatMessageUser(content=prompt)])
+
+        def reduce(case_verdicts, judge_context) -> ReducedVerdict:
+            return ReducedVerdict(value={'accuracy': 1.0 if case_verdicts[0].value.verdict == 'yes' else 0.0})
+
+        def finalize(score, review, judge_context) -> Score:
+            metadata = judge_context.task_state.metadata
+            score.metadata.update(
+                {'question_type': metadata['question_type'], 'is_abstention': metadata.get('is_abstention', False)}
+            )
+            return score
+
+        return JudgeDefinition.workflow(
+            cases=[JudgeCase(case_id='anscheck', output_contract=ANSCHECK_CONTRACT)],
+            request=request,
+            reduce=reduce,
+            main_score_name='accuracy',
+            finalize=finalize,
         )
-        judge_response = self.llm_judge.judge(prompt=judge_prompt)
-        is_correct = 'yes' in judge_response.lower()
-        score.value = {'acc': 1.0 if is_correct else 0.0}
-        score.explanation = f'LLM judge: {judge_response}'
-        score.metadata = {
-            'source': 'llm_judge',
-            'judge_strategy': self.judge_strategy,
-            'model': self.llm_judge.model_id,
-            'question_type': task_state.metadata['question_type'],
-            'is_abstention': task_state.metadata.get('is_abstention', False),
-        }
-        score.main_score_name = 'acc'
-        return score
 
     def aggregate_scores(self, sample_scores: List[SampleScore]) -> List[AggScore]:
-        valid_scores = [s for s in sample_scores if s.score and 'acc' in s.score.value]
+        valid_scores = [s for s in sample_scores if s.score and 'accuracy' in s.score.value]
         if not valid_scores:
             return []
 
         agg_scores = [
-            self._make_agg_score(metric_name='acc', aggregation_name='overall', scores=valid_scores),
+            self._make_agg_score(metric_name='accuracy', dimensions={'scope': 'overall'}, scores=valid_scores),
         ]
 
         task_means = []
@@ -279,15 +308,18 @@ class LongMemEvalAdapter(DefaultDataAdapter):
             type_scores = [s for s in valid_scores if (s.sample_metadata or {}).get('question_type') == question_type]
             if not type_scores:
                 continue
-            agg = self._make_agg_score(metric_name='acc', aggregation_name=question_type, scores=type_scores)
+            agg = self._make_agg_score(
+                metric_name='accuracy', dimensions={'question_type': question_type}, scores=type_scores
+            )
             agg_scores.append(agg)
             task_means.append(agg.score)
 
         if task_means:
             agg_scores.append(
                 AggScore(
-                    metric_name='acc',
-                    aggregation_name='task_averaged',
+                    metric_name='accuracy',
+                    aggregation='macro_mean',
+                    dimensions={'scope': 'question_types'},
                     score=sum(task_means) / len(task_means),
                     num=len(task_means),
                 )
@@ -296,18 +328,21 @@ class LongMemEvalAdapter(DefaultDataAdapter):
         abstention_scores = [s for s in valid_scores if (s.sample_metadata or {}).get('is_abstention')]
         if abstention_scores:
             agg_scores.append(
-                self._make_agg_score(metric_name='acc', aggregation_name='abstention', scores=abstention_scores)
+                self._make_agg_score(
+                    metric_name='accuracy', dimensions={'question_type': 'abstention'}, scores=abstention_scores
+                )
             )
 
         return agg_scores
 
     @staticmethod
-    def _make_agg_score(metric_name: str, aggregation_name: str, scores: List[SampleScore]) -> AggScore:
-        values = [float(s.score.value[metric_name]) for s in scores]
+    def _make_agg_score(metric_name: str, dimensions: Dict[str, Any], scores: List[SampleScore]) -> AggScore:
+        values = [float(s.score.value['accuracy']) for s in scores]
         ids = [s.sample_id for s in scores]
         return AggScore(
             metric_name=metric_name,
-            aggregation_name=aggregation_name,
+            aggregation='mean',
+            dimensions=dimensions,
             score=sum(values) / len(values),
             num=len(values),
             ids=ids,

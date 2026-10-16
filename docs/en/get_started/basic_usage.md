@@ -93,15 +93,15 @@ run_task(task_cfg="config.json")
 After evaluation is complete, the terminal will print a score report in the following format:
 
 ```text
-+-----------------------+----------------+-----------------+-----------------+---------------+-------+---------+
-| Model Name            | Dataset Name   | Metric Name     | Category Name   | Subset Name   |   Num |   Score |
-+=======================+================+=================+=================+===============+=======+=========+
-| Qwen2.5-0.5B-Instruct | gsm8k          | AverageAccuracy | default         | main          |     5 |     0.4 |
-+-----------------------+----------------+-----------------+-----------------+---------------+-------+---------+
-| Qwen2.5-0.5B-Instruct | ai2_arc        | AverageAccuracy | default         | ARC-Easy      |     5 |     0.8 |
-+-----------------------+----------------+-----------------+-----------------+---------------+-------+---------+
-| Qwen2.5-0.5B-Instruct | ai2_arc        | AverageAccuracy | default         | ARC-Challenge |     5 |     0.4 |
-+-----------------------+----------------+-----------------+-----------------+---------------+-------+---------+
+┌───────────────────────┬───────────┬────────────┬───────────────┬───────┬─────────┐
+│ Model                 │ Dataset   │ Metric     │ Subset        │   Num │ Score   │
+├───────────────────────┼───────────┼────────────┼───────────────┼───────┼─────────┤
+│ Qwen2.5-0.5B-Instruct │ gsm8k     │ Accuracy ↑ │ main          │     5 │ 40%     │
+├───────────────────────┼───────────┼────────────┼───────────────┼───────┼─────────┤
+│ Qwen2.5-0.5B-Instruct │ arc       │ Accuracy ↑ │ ARC-Easy      │     5 │ 80%     │
+├───────────────────────┼───────────┼────────────┼───────────────┼───────┼─────────┤
+│ Qwen2.5-0.5B-Instruct │ arc       │ Accuracy ↑ │ ARC-Challenge │     5 │ 40%     │
+└───────────────────────┴───────────┴────────────┴───────────────┴───────┴─────────┘
 ```
 
 ```{seealso}
@@ -154,6 +154,8 @@ To view all configurable options, please refer to: [Complete Parameter Descripti
 
 EvalScope supports evaluating model services compatible with OpenAI API format. Simply specify the service address, API Key, and set `eval-type` to `openai_api`.
 
+For System One decision models, use `--eval-type systemone_api`. See [System One Evaluation](../user_guides/systemone.md).
+
 **1. Start Model Service**
 
 Using vLLM as an example, start a model service:
@@ -199,7 +201,6 @@ For certain subjective or open-ended tasks (such as `simple_qa`), you can specif
 ```python
 import os
 from evalscope import TaskConfig, run_task
-from evalscope.constants import JudgeStrategy
 
 task_cfg = TaskConfig(
     model='qwen2.5-7b-instruct',
@@ -208,11 +209,13 @@ task_cfg = TaskConfig(
     eval_type='openai_api',
     datasets=['chinese_simpleqa'],
     limit=5,
-    judge_strategy=JudgeStrategy.AUTO,
-    judge_model_args={
-        'model_id': 'qwen2.5-72b-instruct',
-        'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        'api_key': os.getenv('DASHSCOPE_API_KEY'),
+    judge={
+        'strategy': 'auto',
+        'models': {
+            'model_id': 'qwen2.5-72b-instruct',
+            'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            'api_key': os.getenv('DASHSCOPE_API_KEY'),
+        },
     }
 )
 
@@ -305,16 +308,36 @@ evalscope eval \
 
 ### Continue Evaluation from Existing/Interrupted Results
 
-If a previous evaluation task was interrupted, or you want to continue evaluating based on existing results, you can use the `--use-cache` parameter to specify the previous output directory. This will skip completed samples and only evaluate the remaining ones. Additionally, you can use the `--rerun-review` parameter to force re-execution of the scoring step for all samples.
+For Native evaluations, resume an interrupted run by repeating the original command with `--use-cache` set to its output directory. Use the directory containing `predictions/`, `reviews/`, `reports/`, and `configs/`, such as `outputs/20261009_120000`, rather than one of those subdirectories. You can find this path in the original run's logs.
+
+For example, if the following evaluation was interrupted:
+
+```shell
+evalscope eval \
+ --model Qwen/Qwen2.5-0.5B-Instruct \
+ --datasets gsm8k \
+ --limit 10
+```
+
+Resume it using the actual output directory from that run:
 
 ```shell
 evalscope eval \
  --model Qwen/Qwen2.5-0.5B-Instruct \
  --datasets gsm8k \
  --limit 10 \
- --use-cache outputs/20230101_123456 \
- --rerun-review
+ --use-cache outputs/20261009_120000
 ```
+
+EvalScope matches cached results by sample ID:
+
+- Samples with both a cached prediction and review reuse their scores.
+- Samples with a cached prediction but no review run only the scoring step.
+- Samples without a valid cached prediction run inference and scoring.
+
+The run writes remaining results and regenerates reports in the same output directory. Keep the original model, dataset selection, prompts, generation settings, and scoring configuration when continuing the same evaluation. Native evaluations validate the cached evaluation identity before reusing results; incompatible settings are rejected.
+
+To deliberately re-score existing predictions, add `--rerun-review` to the resume command. This recomputes reviews instead of reusing cached scores and atomically replaces the review cache after success. Samples without cached predictions still require inference. `--rerun-review` also explicitly allows an evaluation identity mismatch, so use it only when those cached predictions are appropriate for the new scoring configuration.
 
 ### Skip Samples with Evaluation Errors
 

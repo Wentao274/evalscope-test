@@ -7,9 +7,11 @@ from evalscope.api.benchmark import BenchmarkMeta, DefaultDataAdapter
 from evalscope.api.dataset import Sample
 from evalscope.api.evaluator import TaskState
 from evalscope.api.metric import Score
+from evalscope.api.metric.semantics import MetricSelector
 from evalscope.api.registry import register_benchmark
 from evalscope.constants import Tags
 from evalscope.utils.logger import get_logger
+
 from .utils import build_task_prompt, parse_grid_from_response
 
 logger = get_logger()
@@ -56,11 +58,13 @@ PROMPT_TEMPLATE = '{question}'
         name='arc_agi_2',
         pretty_name='ARC-AGI-2',
         dataset_id='evalscope/arc-agi-2',
+        hf_dataset_id='arc-agi-community/arc-agi-2',
         tags=[Tags.REASONING],
         description=DESCRIPTION,
         subset_list=['default'],
         metric_list=['acc'],
         aggregation='mean_and_pass_hat_k',
+        primary_metric=MetricSelector(name='accuracy', aggregation='pass_hat_k', dimensions={'k': 1}),
         few_shot_num=0,
         eval_split='test',
         prompt_template=PROMPT_TEMPLATE,
@@ -68,7 +72,6 @@ PROMPT_TEMPLATE = '{question}'
     )
 )
 class ArcAgi2Adapter(DefaultDataAdapter):
-
     def record_to_sample(self, record: Dict[str, Any]) -> Sample:
         task_prompt = build_task_prompt(record)
         target_grid = record['question'][0]['output']

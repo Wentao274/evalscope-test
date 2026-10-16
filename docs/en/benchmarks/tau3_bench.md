@@ -44,7 +44,7 @@
 | **Dataset ID** | [evalscope/tau3-bench-data](https://modelscope.cn/datasets/evalscope/tau3-bench-data/summary) |
 | **Paper** | N/A |
 | **Tags** | `Agent`, `FunctionCalling`, `Reasoning` |
-| **Metrics** | N/A |
+| **Metrics** | `accuracy` |
 | **Default Shots** | 0-shot |
 | **Evaluation Split** | `test` |
 | **Aggregation** | `mean_and_pass_hat_k` |
@@ -131,6 +131,7 @@
 | `generation_config` | `dict` | `{'temperature': 0.0}` | Default generation config for user model simulation. |
 | `retrieval_config` | `str` | `bm25` | Retrieval config name for the banking_knowledge domain. Common values: no_knowledge, full_kb, golden_retrieval, bm25, openai_embeddings, qwen_embeddings, *_reranker, *_grep, terminal_use, alltools. Ignored for non-knowledge domains. |
 | `retrieval_config_kwargs` | `dict` | `{}` | Optional kwargs forwarded to the retrieval pipeline. |
+| `max_steps` | `int` | `100` | Maximum number of steps for agent to solve the task. |
 
 ## Usage
 

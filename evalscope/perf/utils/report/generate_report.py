@@ -12,19 +12,20 @@ Public API
 from __future__ import annotations
 
 import os
-from collections import OrderedDict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from evalscope.constants import DEFAULT_LANGUAGE, PLOTLY_CDN_URL
 from evalscope.utils.io_utils import current_time
 from evalscope.utils.logger import get_logger
 from evalscope.version import __version__ as _evalscope_version
+
 from .summary import (
     build_basic_info,
     build_best_config,
     build_recommendations,
     build_summary_items,
     build_summary_table,
+    format_summary_rows,
     is_embedding,
 )
 
@@ -116,22 +117,14 @@ def gen_perf_html_report(
         latency_tabs.append({'label': 'TPOT', 'chart': charts.build_tpot_chart(runs)})
 
     throughput_tabs = [
-        {
-            'label': 'Request Throughput',
-            'chart': charts.build_rps_chart(runs)
-        },
-        {
-            'label': 'Token Throughput',
-            'chart': charts.build_throughput_chart(runs, is_emb)
-        },
-        {
-            'label': 'Success Rate',
-            'chart': charts.build_success_chart(runs)
-        },
+        {'label': 'Request Throughput', 'chart': charts.build_rps_chart(runs)},
+        {'label': 'Token Throughput', 'chart': charts.build_throughput_chart(runs, is_emb)},
+        {'label': 'Success Rate', 'chart': charts.build_success_chart(runs)},
     ]
 
     # ── Summary table ───────────────────────────────────────────────────────
     summary_columns, summary_rows = build_summary_table(runs, is_emb)
+    summary_rows = format_summary_rows(summary_columns, summary_rows)
 
     # ── Template rendering ──────────────────────────────────────────────────
     env = Environment(loader=FileSystemLoader(_TEMPLATE_DIR), autoescape=False)
@@ -144,7 +137,7 @@ def gen_perf_html_report(
         generated_at=current_time().strftime('%Y-%m-%d %H:%M:%S'),
         evalscope_version=_evalscope_version,
         basic_info=build_basic_info(first_args, runs, is_emb),
-        summary_columns=summary_columns,
+        summary_columns=[column['label'] for column in summary_columns],
         summary_rows=summary_rows,
         best_config=build_best_config(runs),
         recommendations=build_recommendations(runs),

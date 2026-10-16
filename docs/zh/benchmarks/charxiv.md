@@ -14,14 +14,14 @@ CharXiv 是 NeurIPS 2024 提出的一个全面的图表理解基准测试，用�
 
 ## 主要特点
 
-- 包含来自 8 个学科 arXiv 论文的 2,323 张真实科学图表
+- 包含来自 8 个学科的 arXiv 论文中提取的 2,323 张真实科学图表
 - 两种问题类型：
   - **描述性**（每张图表 4 个）：基础元素识别（标题、坐标轴、图例、趋势等）
-  - **推理型**（每张图表 1 个）：需要综合数据进行高阶推理
-- 19 种描述性问题模板，涵盖信息提取、枚举、模式识别、计数和组合性任务
+  - **推理型**（每张图表 1 个）：需要数据综合的高阶推理
+- 19 种描述性问题模板，涵盖信息抽取、枚举、模式识别、计数和组合性任务
 - 4 种推理答案类型：图表内文本、通用文本、图表内数值、通用数值
 - 验证集（1,000 张图表）和测试集（1,323 张图表）
-- 依据官方 CharXiv 评分协议，通过 LLM 作为评判者进行评估
+- 依据官方 CharXiv 评分协议，通过 LLM 作为评判器进行评估
 
 ## 评估说明
 
@@ -29,7 +29,7 @@ CharXiv 是 NeurIPS 2024 提出的一个全面的图表理解基准测试，用�
 - 每张图表生成 5 个样本：4 个描述性 + 1 个推理型
 - 主要指标：通过 LLM-as-judge 计算的 **准确率（Accuracy）**
 - 子集划分：`descriptive` 和 `reasoning`（也可按类别细分）
-- 需配置 `judge_model_args` 以指定 LLM 评判模型
+- 需通过 `judge.models` 配置 LLM 评判器
 - [论文](https://arxiv.org/abs/2406.18521) | [GitHub](https://github.com/princeton-nlp/CharXiv)
 
 
@@ -41,35 +41,14 @@ CharXiv 是 NeurIPS 2024 提出的一个全面的图表理解基准测试，用�
 | **数据集ID** | [princeton-nlp/CharXiv](https://modelscope.cn/datasets/princeton-nlp/CharXiv/summary) |
 | **论文** | [Paper](https://arxiv.org/abs/2406.18521) |
 | **标签** | `MultiModal`, `QA`, `Reasoning` |
-| **指标** | `acc` |
-| **默认示例数量** | 0-shot |
+| **指标** | `accuracy` |
+| **默认示例数** | 0-shot |
 | **评估划分** | `validation` |
 
 
 ## 数据统计
 
-| 指标 | 值 |
-|--------|-------|
-| 总样本数 | 5,000 |
-| 提示词长度（平均） | 276.24 字符 |
-| 提示词长度（最小/最大） | 80 / 687 字符 |
-
-**各子集统计数据：**
-
-| 子集 | 样本数 | 提示词平均长度 | 提示词最小长度 | 提示词最大长度 |
-|--------|---------|-------------|------------|------------|
-| `descriptive` | 4,000 | 261.51 | 156 | 432 |
-| `reasoning` | 1,000 | 335.14 | 80 | 687 |
-
-**图像统计数据：**
-
-| 指标 | 值 |
-|--------|-------|
-| 图像总数 | 5,000 |
-| 每样本图像数 | 最小: 1, 最大: 1, 平均: 1 |
-| 分辨率范围 | 1023x139 - 1024x1024 |
-| 格式 | jpeg |
-
+*统计数据暂不可用。*
 
 ## 样例示例
 
@@ -79,7 +58,7 @@ CharXiv 是 NeurIPS 2024 提出的一个全面的图表理解基准测试，用�
 {
   "input": [
     {
-      "id": "44ff5b8a",
+      "id": "dd588b4d",
       "content": [
         {
           "image": "[BASE64_IMAGE: jpeg, ~70.0KB]"
@@ -117,6 +96,7 @@ evalscope eval \
     --api-url OPENAI_API_COMPAT_URL \
     --api-key EMPTY_TOKEN \
     --datasets charxiv \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # 正式评估时请删除此行
 ```
 
@@ -131,11 +111,7 @@ task_cfg = TaskConfig(
     api_url='OPENAI_API_COMPAT_URL',
     api_key='EMPTY_TOKEN',
     datasets=['charxiv'],
-    dataset_args={
-        'charxiv': {
-            # subset_list: ['descriptive', 'reasoning']  # 可选，用于评估特定子集
-        }
-    },
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     limit=10,  # 正式评估时请删除此行
 )
 

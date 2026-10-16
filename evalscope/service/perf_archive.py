@@ -18,7 +18,7 @@ import re
 import shutil
 from datetime import datetime
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import Dict, List, Optional
 from urllib.parse import urlsplit
 
 from evalscope.constants import PLOTLY_CDN_URL
@@ -171,6 +171,7 @@ def _load_runs(run_dir: str, *, with_requests: bool = False):
     *with_requests* is set.
     """
     from evalscope.perf.utils.report.perf_data import RunLoader
+
     return RunLoader.load_all(run_dir, with_requests=with_requests)
 
 
@@ -230,9 +231,7 @@ def _weighted_avg_tokens(run_dir: str, runs) -> tuple[Optional[float], Optional[
             continue
         if not isinstance(raw, dict):
             continue
-        if (
-            Metrics.AVERAGE_INPUT_TOKENS_PER_REQUEST not in raw or Metrics.AVERAGE_OUTPUT_TOKENS_PER_REQUEST not in raw
-        ):
+        if Metrics.AVERAGE_INPUT_TOKENS_PER_REQUEST not in raw or Metrics.AVERAGE_OUTPUT_TOKENS_PER_REQUEST not in raw:
             continue
         token_runs.append(run)
 
@@ -295,9 +294,7 @@ def build_run_summary(rel_path: str, abs_path: str) -> Optional[dict]:
         'is_embedding': is_embedding(api_type),
         'has_html': has_html,
         'timestamp': extract_timestamp(rel_path, abs_path),
-        'concurrency': sorted({r.parallel
-                               for r in runs
-                               if r.parallel > 0}),
+        'concurrency': sorted({r.parallel for r in runs if r.parallel > 0}),
         **identity,
     }
     if avg_input_tokens is not None and avg_output_tokens is not None:
@@ -324,6 +321,8 @@ def list_run_summaries(root: str) -> List[dict]:
 
 def build_run_detail(root: str, rel_path: str) -> dict:
     """Build native-render metadata for a single perf-run directory."""
+    from evalscope.perf.utils.report.perf_data import RunLoader
+
     run_dir = resolve_run_dir(root, rel_path)
     if run_dir is None:
         raise PerfArchiveError('Invalid path', 400)
@@ -336,7 +335,8 @@ def build_run_detail(root: str, rel_path: str) -> dict:
     identity = _build_identity_metadata(first_args)
     api_type = first_args.get('api', '')
     is_emb = is_embedding(api_type)
-    summary_columns, summary_rows = build_summary_table(runs, is_emb)
+    request_counts = [RunLoader.count_request_samples(os.path.join(run_dir, run.dir_name)) for run in runs]
+    summary_columns, summary_rows = build_summary_table(runs, is_emb, request_counts)
 
     basic_info = dict(build_basic_info(first_args, runs, is_emb))
     if identity.get('provider'):
@@ -355,6 +355,7 @@ def build_run_detail(root: str, rel_path: str) -> dict:
         'basic_info': basic_info,
         'summary_columns': summary_columns,
         'summary_rows': summary_rows,
+        'total_requests': sum(run.summary.total_requests for run in runs),
         'best_config': dict(build_best_config(runs)),
         'recommendations': build_recommendations(runs),
         'num_runs': len(runs),
@@ -380,20 +381,22 @@ def list_run_items(root: str, rel_path: str) -> List[dict]:
     for r in runs:
         pct = r.percentiles.to_list()
         num_requests = RunLoader.count_requests(os.path.join(run_dir, r.dir_name))
-        items.append({
-            'dir_name': r.dir_name,
-            'name': r.name,
-            'parallel': r.parallel,
-            'number': r.number,
-            'rate': r.rate,
-            'total_requests': r.summary.total_requests,
-            'succeed_requests': r.summary.succeed_requests,
-            'success_rate': r.success_rate,
-            'num_requests': num_requests,
-            'has_requests': num_requests > 0,
-            'percentile_columns': list(pct[0].keys()) if pct else [],
-            'percentile_rows': [list(p.values()) for p in pct],
-        })
+        items.append(
+            {
+                'dir_name': r.dir_name,
+                'name': r.name,
+                'parallel': r.parallel,
+                'number': r.number,
+                'rate': r.rate,
+                'total_requests': r.summary.total_requests,
+                'succeed_requests': r.summary.succeed_requests,
+                'success_rate': r.success_rate,
+                'num_requests': num_requests,
+                'has_requests': num_requests > 0,
+                'percentile_columns': list(pct[0].keys()) if pct else [],
+                'percentile_rows': [list(p.values()) for p in pct],
+            }
+        )
     return items
 
 
@@ -428,15 +431,17 @@ def query_request_page(
 
     rows = []
     for i, r in enumerate(records):
-        rows.append({
-            '#': offset + i + 1,
-            'Latency(s)': round(r.latency, 3),
-            'TTFT(ms)': round(r.first_chunk_latency, 1) if r.first_chunk_latency is not None else None,
-            'TPOT(ms)': round(r.time_per_output_token, 1) if r.time_per_output_token is not None else None,
-            'Prompt': r.prompt_tokens,
-            'Completion': r.completion_tokens,
-            'Success': 'OK' if r.success else 'FAIL',
-        })
+        rows.append(
+            {
+                '#': offset + i + 1,
+                'Latency(s)': round(r.latency, 3),
+                'TTFT(ms)': round(r.first_chunk_latency, 1) if r.first_chunk_latency is not None else None,
+                'TPOT(ms)': round(r.time_per_output_token, 1) if r.time_per_output_token is not None else None,
+                'Prompt': r.prompt_tokens,
+                'Completion': r.completion_tokens,
+                'Success': 'OK' if r.success else 'FAIL',
+            }
+        )
 
     return {
         'columns': ['#', 'Latency(s)', 'TTFT(ms)', 'TPOT(ms)', 'Prompt', 'Completion', 'Success'],

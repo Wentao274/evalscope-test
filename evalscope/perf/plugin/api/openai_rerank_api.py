@@ -1,9 +1,10 @@
 """OpenAI/Cohere-style Rerank API plugin for evalscope perf."""
+
 import json
 import sys
 import time
 import traceback
-from typing import Any, Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 from evalscope.perf.arguments import Arguments
 from evalscope.perf.plugin.api.base import ApiPluginBase
@@ -131,14 +132,7 @@ class OpenaiRerankPlugin(ApiPluginBase):
                 prompt_tokens = usage.get('prompt_tokens', 0) or usage.get('total_tokens', 0)
                 return prompt_tokens, 0
 
-            # Some rerank APIs include token info in meta
-            if 'meta' in last_response:
-                meta = last_response['meta']
-                if 'billed_units' in meta:
-                    tokens = meta['billed_units'].get('search_units', 0)
-                    return tokens, 0
-
-            # Fallback: estimate tokens from request
+            # Cohere's meta.billed_units.search_units counts searches, not tokens.
             if self.tokenizer and request:
                 try:
                     req_data = json.loads(request)
@@ -188,11 +182,6 @@ class OpenaiRerankPlugin(ApiPluginBase):
 
         try:
             async with client_session.post(url=url, data=data, headers=headers) as response:
-                timestamp = time.perf_counter()
-                output.completed_time = timestamp
-                output.query_latency = timestamp - st
-                output.first_chunk_latency = output.query_latency
-
                 if response.status == 200:
                     try:
                         payload = await response.json()
@@ -203,10 +192,12 @@ class OpenaiRerankPlugin(ApiPluginBase):
                         # Extract rerank results info
                         results = payload.get('results', [])
                         if results:
-                            # Log the top result info
+                            # Log the top result info. The score is server-controlled and may be
+                            # null/non-numeric; guard the format so this line never fails the request.
                             top_result = results[0]
                             score = top_result.get('relevance_score', top_result.get('score', 0))
-                            output.generated_text = f'top_score={score:.4f}, num_results={len(results)}'
+                            score_text = f'{score:.4f}' if isinstance(score, (int, float)) else str(score)
+                            output.generated_text = f'top_score={score_text}, num_results={len(results)}'
 
                         if usage := payload.get('usage'):
                             output.prompt_tokens = usage.get('prompt_tokens') or usage.get('total_tokens', 0)
@@ -228,6 +219,11 @@ class OpenaiRerankPlugin(ApiPluginBase):
                         except Exception:
                             output.error = response.reason or ''
                     output.success = False
+
+                timestamp = time.perf_counter()
+                output.completed_time = timestamp
+                output.query_latency = timestamp - st
+                output.first_chunk_latency = output.query_latency
 
         except Exception:
             output.success = False

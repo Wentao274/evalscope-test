@@ -33,21 +33,23 @@ The BC5CDR corpus is a manually annotated resource of 1,500 PubMed articles deve
 
 @register_benchmark(
     BenchmarkMeta(
+        evaluation_version='v1.1',
         name='bc5cdr',
         pretty_name='BC5CDR',
         dataset_id='extraordinarylab/bc5cdr',
+        hf_dataset_id='extraordinarylab/bc5cdr',
         tags=[Tags.KNOWLEDGE, Tags.NER],
         description=DESCRIPTION,
         few_shot_num=5,
         train_split='train',
         eval_split='test',
         metric_list=['precision', 'recall', 'f1_score', 'accuracy'],
+        primary_metric='f1',
         prompt_template=PROMPT_TEMPLATE,
         few_shot_prompt_template=FEWSHOT_TEMPLATE,
     )
 )
 class BC5CDRAdapter(NERAdapter):
-
     def __init__(self, **kwargs):
         # Initialize the parent class first
         super().__init__(**kwargs)
@@ -58,7 +60,7 @@ class BC5CDRAdapter(NERAdapter):
         # Add descriptions for each entity type
         self.entity_descriptions = {
             'CHEMICAL': 'Names of chemicals and drugs',
-            'DISEASE': 'Names of diseases, disorders, syndromes, and related pathological conditions'
+            'DISEASE': 'Names of diseases, disorders, syndromes, and related pathological conditions',
         }
 
         # Setup entity mappings based on the defined entity types

@@ -38,7 +38,7 @@ to read values from measuring instruments. It covers both **real-world photograp
 ## Evaluation Notes
 
 - Default splits: **real_world** and **synthetic_test** (treated as separate subsets)
-- Primary metric: **Accuracy** (acc) — ``all_correct``: number *and* unit both correct
+- Primary metric: **Accuracy** (`accuracy`) — ``all_correct``: number *and* unit both correct
 - Secondary metrics: **number_acc** (numeric only), **unit_acc** (unit only)
 - Two evaluators: ``interval_matching`` (single valid range) and ``multi_interval_matching`` (e.g. clock AM/PM)
 - Model output is expected in the format ``Answer: <value> <unit>`` on the last line
@@ -48,21 +48,23 @@ to read values from measuring instruments. It covers both **real-world photograp
 """
 
 ANSWER_FORMAT_SUFFIX = (
-    '\nProvide your final answer on the last line in the format: Answer: <value> <unit>. '
-    'For example: Answer: 42.5 A'
+    '\nProvide your final answer on the last line in the format: Answer: <value> <unit>. For example: Answer: 42.5 A'
 )
 
 
 @register_benchmark(
     BenchmarkMeta(
+        evaluation_version='v1.1',
         name='measure_bench',
         pretty_name='MeasureBench',
         dataset_id='evalscope/MeasureBench',
+        hf_dataset_id='FlagEval/MeasureBench',
         tags=[Tags.MULTI_MODAL, Tags.REASONING, Tags.QA],
         description=DESCRIPTION,
         paper_url='https://arxiv.org/abs/2510.26865',
         subset_list=['real_world', 'synthetic_test'],
         metric_list=['acc', 'number_acc', 'unit_acc'],
+        primary_metric='accuracy',
         eval_split='real_world',
     )
 )
@@ -102,6 +104,7 @@ class MeasureBenchAdapter(VisionLanguageAdapter):
             image_b64 = self._image_bytes_to_base64(image_field['bytes'], default_format='jpeg')
         elif hasattr(image_field, 'save'):  # PIL Image fallback
             from evalscope.utils.io_utils import PIL_to_base64
+
             image_b64 = PIL_to_base64(image_field.convert('RGB'), format='JPEG', add_header=True)
         else:
             logger.warning(

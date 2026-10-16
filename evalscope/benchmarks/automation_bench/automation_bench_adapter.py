@@ -10,6 +10,7 @@ from evalscope.api.model import Model, ModelOutput, ModelUsage
 from evalscope.api.registry import register_benchmark
 from evalscope.constants import EvalType, Tags
 from evalscope.utils.argument_utils import get_secret_value
+
 from .utils import (
     DEFAULT_AUTOMATION_BENCH_PACKAGE,
     DEFAULT_AUTOMATION_BENCH_VERIFIERS,
@@ -69,6 +70,7 @@ Zapier's official Python package.
         description=_DESCRIPTION,
         paper_url='https://arxiv.org/abs/2604.18934',
         metric_list=['pass_rate', 'partial_credit', 'error_rate'],
+        primary_metric='pass_rate',
         aggregation='mean',
         eval_split='test',
         subset_list=PUBLIC_DOMAINS,
@@ -95,14 +97,16 @@ class AutomationBenchAdapter(AgentAdapter):
             for index, record in enumerate(official_records[domain]):
                 record_key = f'{domain}:{index}'
                 self._task_records[record_key] = dict(record)
-                records_by_domain[domain].append({
-                    'record_key': record_key,
-                    'domain': domain,
-                    'example_id': record.get('example_id'),
-                    'task': record.get('task', record_key),
-                    'prompt': record.get('prompt') or [],
-                    'answer': record.get('answer') or '',
-                })
+                records_by_domain[domain].append(
+                    {
+                        'record_key': record_key,
+                        'domain': domain,
+                        'example_id': record.get('example_id'),
+                        'task': record.get('task', record_key),
+                        'prompt': record.get('prompt') or [],
+                        'answer': record.get('answer') or '',
+                    }
+                )
 
         return build_dataset_dict_from_record_map(
             record_map=records_by_domain,
@@ -218,7 +222,5 @@ class AutomationBenchAdapter(AgentAdapter):
     def _build_sampling_args(model: Model) -> Dict[str, Any]:
         fields = ('temperature', 'top_p', 'max_tokens', 'reasoning_effort', 'extra_body')
         return {
-            field: getattr(model.config, field)
-            for field in fields
-            if getattr(model.config, field, None) is not None
+            field: getattr(model.config, field) for field in fields if getattr(model.config, field, None) is not None
         }

@@ -51,6 +51,7 @@ DocVQA (Document Visual Question Answering) is a benchmark designed to evaluate 
 - Multiple valid answers may be accepted for each question
 """,  # noqa: E501
         dataset_id='lmms-lab/DocVQA',
+        hf_dataset_id='lmms-lab/DocVQA',
         subset_list=['DocVQA'],
         metric_list=['anls'],
         eval_split='validation',
@@ -58,10 +59,8 @@ DocVQA (Document Visual Question Answering) is a benchmark designed to evaluate 
     )
 )
 class DocVQAAdapter(VisionLanguageAdapter):
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.add_aggregation_name = False
 
     def record_to_sample(self, record: Dict[str, Any]) -> Sample:
 
@@ -80,7 +79,7 @@ class DocVQAAdapter(VisionLanguageAdapter):
                 'docId': record.get('docId'),
                 'ucsf_document_id': record.get('ucsf_document_id'),
                 'ucsf_document_page_no': record.get('ucsf_document_page_no'),
-            }
+            },
         )
 
     def extract_answer(self, prediction: str, task_state: TaskState) -> str:

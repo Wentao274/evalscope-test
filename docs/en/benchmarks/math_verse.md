@@ -41,7 +41,7 @@ MathVerse is an all-around visual math benchmark designed for equitable and in-d
 | **Dataset ID** | [evalscope/MathVerse](https://modelscope.cn/datasets/evalscope/MathVerse/summary) |
 | **Paper** | N/A |
 | **Tags** | `MCQ`, `Math`, `MultiModal`, `Reasoning` |
-| **Metrics** | `acc` |
+| **Metrics** | `accuracy` |
 | **Default Shots** | 0-shot |
 | **Evaluation Split** | `testmini` |
 
@@ -127,6 +127,7 @@ evalscope eval \
     --api-url OPENAI_API_COMPAT_URL \
     --api-key EMPTY_TOKEN \
     --datasets math_verse \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # Remove this line for formal evaluation
 ```
 
@@ -141,6 +142,7 @@ task_cfg = TaskConfig(
     api_url='OPENAI_API_COMPAT_URL',
     api_key='EMPTY_TOKEN',
     datasets=['math_verse'],
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     dataset_args={
         'math_verse': {
             # subset_list: ['Text Dominant', 'Text Lite', 'Vision Intensive']  # optional, evaluate specific subsets

@@ -23,7 +23,7 @@ atomic facts and return one structured Markdown table. EvalScope uses the ModelS
 ## Evaluation Notes
 
 - Uses the official Markdown table alignment and hybrid rule/LLM scoring semantics.
-- Requires ``judge_strategy='auto'`` or ``'llm'`` with explicit ``judge_model_args``; rule-only scoring is unsupported.
+- Requires ``judge.strategy='auto'`` or ``'llm'`` with at least one ``judge.models`` entry; rule-only scoring is unsupported.
 - See the [WideSearch usage guide](https://evalscope.readthedocs.io/en/latest/third_party/wide_search.html) for runtime
   examples and paper-style repeat settings.
 
@@ -197,6 +197,7 @@ evalscope eval \
     --api-key EMPTY_TOKEN \
     --datasets wide_search \
     --agent-config '{"mode":"native","strategy":"function_calling","max_steps":50}' \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # Remove this line for formal evaluation
 ```
 
@@ -215,6 +216,7 @@ task_cfg = TaskConfig(
         strategy='function_calling',
         max_steps=50,
     ),
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     limit=10,  # Remove this line for formal evaluation
 )
 

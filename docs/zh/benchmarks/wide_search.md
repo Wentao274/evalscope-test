@@ -3,7 +3,7 @@
 
 ## 概述
 
-WideSearch 用于评估搜索智能体在广泛网络信息检索任务上的表现。每个任务要求智能体收集大量原子事实，并返回一个结构化的 Markdown 表格。EvalScope 使用 ModelScope 上的 `bytedance-community/WideSearch` 数据集。
+WideSearch 用于评估搜索智能体在广泛的网络信息检索任务上的表现。每个任务要求智能体收集多个原子事实，并返回一个结构化的 Markdown 表格。EvalScope 使用 ModelScope 上的 `bytedance-community/WideSearch` 数据集。
 
 ## 任务描述
 
@@ -14,14 +14,14 @@ WideSearch 用于评估搜索智能体在广泛网络信息检索任务上的表
 
 ## 核心特性
 
-- 官方单智能体协议：支持语言特定的系统提示词、``function_calling``，以及默认 50 步的最大执行步数。
-- 默认为每个样本提供临时本地目录中的 Bash 环境；Docker 沙箱和 MCP 服务器为可选项。
+- 官方单智能体协议：支持语言特定的系统提示词、``function_calling``，以及默认最多 50 步。
+- 默认在每个样本的临时本地目录中提供 Bash 环境；Docker 沙箱和 MCP 服务器为可选项。
 - 单次完整运行即可生成 ``all``、``en`` 和 ``zh`` 三份报告，无需重复推理。
 
 ## 评估说明
 
-- 采用官方的 Markdown 表格对齐方式及混合规则/LLM 评分语义。
-- 必须设置 ``judge_strategy='auto'`` 或 ``'llm'`` 并显式指定 ``judge_model_args``；不支持仅使用规则评分。
+- 使用官方的 Markdown 表格对齐方式及混合规则/LLM 评分语义。
+- 要求设置 ``judge.strategy='auto'`` 或 ``'llm'``，并至少指定一个 ``judge.models`` 条目；不支持仅使用规则评分。
 - 运行示例及论文风格的重复实验设置，请参阅 [WideSearch 使用指南](https://evalscope.readthedocs.io/zh-cn/latest/third_party/wide_search.html)。
 
 ## 属性
@@ -193,6 +193,7 @@ evalscope eval \
     --api-key EMPTY_TOKEN \
     --datasets wide_search \
     --agent-config '{"mode":"native","strategy":"function_calling","max_steps":50}' \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # 正式评估时请删除此行
 ```
 
@@ -211,6 +212,7 @@ task_cfg = TaskConfig(
         strategy='function_calling',
         max_steps=50,
     ),
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     limit=10,  # 正式评估时请删除此行
 )
 

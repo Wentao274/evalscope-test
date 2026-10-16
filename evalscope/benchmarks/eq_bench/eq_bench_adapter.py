@@ -67,6 +67,7 @@ EQ-Bench is a benchmark for evaluating language models on emotional intelligence
 - Official algorithm from [Paper](https://arxiv.org/abs/2312.06281) | [Homepage](https://eqbench.com/)
 """,
         dataset_id='evalscope/EQ-Bench',  # ModelScope dataset ID, falls back to local if not found
+        hf_dataset_id='pbevan11/EQ-Bench',
         metric_list=['eq_bench_score'],  # Official v2 full-scale scoring
         few_shot_num=0,
         train_split=None,
@@ -75,7 +76,6 @@ EQ-Bench is a benchmark for evaluating language models on emotional intelligence
     )
 )
 class EQBenchAdapter(DefaultDataAdapter):
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
@@ -138,7 +138,7 @@ class EQBenchAdapter(DefaultDataAdapter):
             metadata={
                 'reference_answer': ref_answer_dict,
                 'reference_answer_fullscale': ref_fullscale_dict,
-            }
+            },
         )
 
     def match_score(
@@ -234,6 +234,7 @@ class EQBenchAdapter(DefaultDataAdapter):
         except Exception as e:
             logger.error(f'Error calculating EQ-Bench score: {e}')
             import traceback
+
             logger.debug(traceback.format_exc())
             score.value = {'eq_bench_score': 0.0}
             score.main_score_name = 'eq_bench_score'

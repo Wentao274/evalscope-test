@@ -16,17 +16,17 @@ PerceptionBench 是由 Moonshot AI 提出的一项基准测试，用于评估多
 
 - 包含 3,000 个经过验证的问题，覆盖十种原子级感知能力
 - 其中 1,800 个问题（60%）是从源基准中归因失败案例分解出的原子子问题；1,200 个问题（40%）是在补充图像上全新编写的问题
-- 子集对应十种 `error_category` 标签：视觉关系、计数、属性、深度与 3D 感知、定位、比较、细粒度识别、上下文整合、OCR 和感知相关幻觉
-- 支持多图像问题：图像通过 `<|image_N|>` 占位符嵌入到问题中
-- 对于带有 `hint`（坐标约定或图像尺寸）的样本，会以系统消息形式传递，与官方消息构建器保持一致
+- 子集遵循十种 `error_category` 标签：视觉关系、计数、属性、深度与 3D 感知、定位、比较、细粒度识别、上下文整合、OCR 和感知相关幻觉
+- 支持多图像问题：图像通过 `<|image_N|>` 占位符交错插入问题中
+- 对于包含 `hint`（坐标约定或图像尺寸）的样本，会通过系统消息传递该提示，与官方消息构建器保持一致
 
 ## 评估说明
 
-- 默认评估使用 **train** 切分（3,000 个样本，单切分数据集）
+- 默认评估使用 **train** 划分（3,000 个样本，单划分数据集）
 - 主要指标：**准确率（Accuracy）**，报告整体及各能力维度的结果
-- 评分遵循官方协议：使用 LLM 评判器，根据教师评分提示（teacher-grading prompt）将自由格式答案与参考答案对比，并对每个样本返回严格的 0/1 判定（`[reason]` / `[judge] True|False`）；论文中使用的 GPT-oss-120B 模型在 300 个样本的人工审核中与人类判断的一致性达 99.7%
-- 空输出或生成失败的样本直接记为 0 分，不调用评判器
-- 需要配置 `judge_model_args` 以指定 LLM 评判器
+- 评分遵循官方协议：使用 LLM 评判器根据教师评分提示（teacher-grading prompt）将自由格式答案与参考答案对比，并对每个样本返回严格的 0/1 判定（`[reason]` / `[judge] True|False`）；论文中使用 GPT-oss-120B 作为评判器，在 300 个样本的审计中与人类判断的一致性达 99.7%
+- 空输出或生成失败的答案直接记为 0 分，不调用评判器
+- 需通过 `judge.models` 配置 LLM 评判器
 - 数据集中图像以 base64 data URI 形式嵌入（首次使用时下载约 1.6 GB）
 
 ## 属性
@@ -37,9 +37,9 @@ PerceptionBench 是由 Moonshot AI 提出的一项基准测试，用于评估多
 | **数据集ID** | [moonshotai/PerceptionBench](https://modelscope.cn/datasets/moonshotai/PerceptionBench/summary) |
 | **论文** | [Paper](https://arxiv.org/abs/2607.24957) |
 | **标签** | `MultiModal`, `QA` |
-| **指标** | `acc` |
+| **指标** | `accuracy` |
 | **默认示例数** | 0-shot |
-| **评估切分** | `train` |
+| **评估划分** | `train` |
 
 
 ## 数据统计
@@ -122,6 +122,7 @@ evalscope eval \
     --api-url OPENAI_API_COMPAT_URL \
     --api-key EMPTY_TOKEN \
     --datasets perception_bench \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # 正式评估时请删除此行
 ```
 
@@ -136,6 +137,7 @@ task_cfg = TaskConfig(
     api_url='OPENAI_API_COMPAT_URL',
     api_key='EMPTY_TOKEN',
     datasets=['perception_bench'],
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     dataset_args={
         'perception_bench': {
             # subset_list: ['visual_relation_error', 'visual_counting_error', 'visual_attribute_error']  # 可选，用于评估特定子集

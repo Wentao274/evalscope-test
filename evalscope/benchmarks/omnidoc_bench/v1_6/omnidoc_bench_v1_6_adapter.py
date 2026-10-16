@@ -6,19 +6,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Type
 
 from evalscope.api.benchmark import BenchmarkMeta, VisionLanguageAdapter
-from evalscope.api.dataset import DataLoader, Dataset, DictDataLoader, Sample, download_dataset_file
+from evalscope.api.dataset import DataLoader, Dataset, DictDataLoader, Sample, resolve_snapshot_or_local_path
 from evalscope.api.evaluator import TaskState
 from evalscope.api.messages import ChatMessageUser, Content, ContentImage, ContentText
 from evalscope.api.metric import AggScore, SampleScore, Score
 from evalscope.api.mixin import CodeExecutionSandboxMixin
 from evalscope.api.registry import register_benchmark
-from evalscope.constants import Tags
+from evalscope.constants import ScoreStatus, Tags
+
 from ..legacy.omnidoc_bench_adapter import PROMPT_TEMPLATE
 from .sandbox_scorer import PAGE_METRICS, build_scoring_program, parse_scoring_result
 
 OFFICIAL_IMAGE = (
-    'ghcr.io/zeng-weijun/omnidocbench-eval'
-    '@sha256:6116ad72172e763b5c43e963d5efebf2093f2362b975f58156ce4f6c9142e617'
+    'ghcr.io/zeng-weijun/omnidocbench-eval@sha256:6116ad72172e763b5c43e963d5efebf2093f2362b975f58156ce4f6c9142e617'
 )
 REVIEW_TIMEOUT = 900
 DEFAULT_SANDBOX_CONFIG = {
@@ -28,9 +28,7 @@ DEFAULT_SANDBOX_CONFIG = {
     'platform': 'linux/amd64',
     'working_dir': '/workspace',
     'network_enabled': False,
-    'tools_config': {
-        'python_executor': {}
-    },
+    'tools_config': {'python_executor': {}},
 }
 
 DESCRIPTION = """
@@ -73,9 +71,12 @@ OmniDocBench v1.6 evaluates end-to-end document parsing for text, formulas, tabl
         tags=[Tags.MULTI_MODAL, Tags.KNOWLEDGE, Tags.QA],
         description=DESCRIPTION,
         dataset_id='OpenDataLab/OmniDocBench',
+        hf_dataset_id='OpenDataLab/OmniDocBench',
         paper_url='https://github.com/opendatalab/OmniDocBench',
-        metric_list=[*PAGE_METRICS, 'overall'],
+        metric_list=[*PAGE_METRICS, 'normalized_score'],
+        primary_metric='normalized_score',
         eval_split='test',
+        evaluation_version='v1.1',
         prompt_template=PROMPT_TEMPLATE,
         review_timeout=REVIEW_TIMEOUT,
         sandbox_config=DEFAULT_SANDBOX_CONFIG,
@@ -86,20 +87,13 @@ class OmniDocBenchV16Adapter(CodeExecutionSandboxMixin, VisionLanguageAdapter):
 
     def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
-        self.add_aggregation_name = False
         self.add_overall_metric = False
+        self._snapshot_dir: Path | None = None
 
     def load_subset(self, subset: str, data_loader: Type[DataLoader]) -> Dataset:
-        """Load the v1.6 annotation and delegate selection to the standard loader."""
-        annotation_path = Path(
-            download_dataset_file(
-                data_id_or_path=self.dataset_id,
-                file_path='OmniDocBench.json',
-                data_source=self.dataset_hub,
-                force_redownload=self.force_redownload,
-                cache_dir=self.dataset_dir,
-            )
-        )
+        """Load the v1.6 snapshot and delegate selection to the standard loader."""
+        self._snapshot_dir = Path(resolve_snapshot_or_local_path(self)).resolve()
+        annotation_path = self._snapshot_dir / 'OmniDocBench.json'
         records = json.loads(annotation_path.read_text(encoding='utf-8'))
         return DictDataLoader(
             dict_list=records,
@@ -113,16 +107,13 @@ class OmniDocBenchV16Adapter(CodeExecutionSandboxMixin, VisionLanguageAdapter):
         ).load()
 
     def record_to_sample(self, record: Dict[str, Any]) -> Sample:
+        if self._snapshot_dir is None:
+            raise RuntimeError('OmniDocBench v1.6 snapshot must be loaded before converting records.')
         image_name = record['page_info']['image_path']
-        image_path = Path(
-            download_dataset_file(
-                data_id_or_path=self.dataset_id,
-                file_path=f'images/{image_name}',
-                data_source=self.dataset_hub,
-                force_redownload=self.force_redownload,
-                cache_dir=self.dataset_dir,
-            )
-        )
+        image_dir = (self._snapshot_dir / 'images').resolve()
+        image_path = (image_dir / image_name).resolve()
+        if not image_path.is_relative_to(image_dir):
+            raise ValueError(f'Invalid OmniDocBench v1.6 image path: {image_name}')
         image_format = image_path.suffix.lower().lstrip('.') or 'png'
         image_uri = self._image_bytes_to_base64(image_path.read_bytes(), default_format=image_format)
         content: List[Content] = [
@@ -159,18 +150,28 @@ class OmniDocBenchV16Adapter(CodeExecutionSandboxMixin, VisionLanguageAdapter):
         program = build_scoring_program(annotation, image_name, original_prediction)
         result = self.execute_code_in_sandbox(program, timeout=int(self.review_timeout), language='python')
         metrics = parse_scoring_result(result)
-        return Score(
+        score = Score(
             value=metrics,
             prediction=original_prediction,
             extracted_prediction=filtered_prediction,
-            main_score_name=next(name for name in PAGE_METRICS if name in metrics),
         )
+        if not metrics:
+            score.status = ScoreStatus.EXCLUDED
+            score.metadata = {'scoring_excluded_reason': 'no_page_metrics'}
+            return score
+        score.main_score_name = next(name for name in PAGE_METRICS if name in metrics)
+        return score
 
     def aggregate_scores(self, sample_scores: List[SampleScore]) -> List[AggScore]:
         """Average official page metrics and compute Overall from the aggregated components."""
         metric_values = defaultdict(list)
         metric_ids = defaultdict(list)
-        for sample_score in sample_scores:
+        scored_sample_scores = [
+            sample_score
+            for sample_score in sample_scores
+            if sample_score.score.status.is_usable and sample_score.score.value
+        ]
+        for sample_score in scored_sample_scores:
             for metric_name, value in sample_score.score.value.items():
                 metric_values[metric_name].append(float(value))
                 metric_ids[metric_name].append(sample_score.sample_id)
@@ -186,7 +187,7 @@ class OmniDocBenchV16Adapter(CodeExecutionSandboxMixin, VisionLanguageAdapter):
                 AggScore(
                     score=means[metric_name],
                     metric_name=metric_name,
-                    aggregation_name='mean',
+                    aggregation='mean',
                     num=len(values),
                     ids=metric_ids[metric_name],
                     metadata={'page_denominator': len(values)},
@@ -195,18 +196,22 @@ class OmniDocBenchV16Adapter(CodeExecutionSandboxMixin, VisionLanguageAdapter):
 
         overall_components = ('text_block_Edit_dist', 'display_formula_CDM', 'table_TEDS')
         if all(component in means for component in overall_components):
+            overall_sample_scores = [
+                sample_score
+                for sample_score in scored_sample_scores
+                if any(component in sample_score.score.value for component in overall_components)
+            ]
             overall = ((1.0 - means['text_block_Edit_dist']) + means['display_formula_CDM'] + means['table_TEDS']) / 3.0
             aggregated.append(
                 AggScore(
                     score=overall,
-                    metric_name='overall',
-                    aggregation_name='official',
-                    num=len(sample_scores),
-                    ids=[sample_score.sample_id for sample_score in sample_scores],
+                    metric_name='normalized_score',
+                    aggregation='official',
+                    num=len(overall_sample_scores),
+                    ids=[sample_score.sample_id for sample_score in overall_sample_scores],
                     metadata={
                         'component_page_denominators': {
-                            component: len(metric_values[component])
-                            for component in overall_components
+                            component: len(metric_values[component]) for component in overall_components
                         }
                     },
                 )

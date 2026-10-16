@@ -11,11 +11,13 @@ from evalscope.api.filter import FilterEnsemble, build_filter_ensemble
 from evalscope.api.metric import AggScore, SampleScore
 from evalscope.api.mixin import LLMJudgeMixin
 from evalscope.api.model import Model
+from evalscope.constants import HubType
 from evalscope.report import Report
 from evalscope.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from evalscope.api.benchmark import BenchmarkMeta
+    from evalscope.api.metric.semantics import MetricSelector
     from evalscope.config import TaskConfig
 
 logger = get_logger()
@@ -38,17 +40,11 @@ class DataAdapter(LLMJudgeMixin, ABC):
         self.split_as_subset = False
         """Whether to use the split name as the dataset subsets"""
 
-        self.shuffle_choices = False
-        """Whether to shuffle the choices in the dataset"""
-
         self.use_batch_scoring = False
         """Whether to use batch scoring for metrics that support it, need to be enabled in the benchmark as well"""
 
         self.save_metadata = True
         """Whether to save metadata in the review result"""
-
-        self.add_aggregation_name = True
-        """Whether to add aggregation name in the report"""
 
         self.add_overall_metric = True
         """Whether to add overall metric in the report"""
@@ -69,9 +65,33 @@ class DataAdapter(LLMJudgeMixin, ABC):
         # filters
         self._filter_ensemble: Optional[OrderedDict] = None
 
+        self._validate_few_shot_config()
+
+    def _validate_few_shot_config(self) -> None:
+        """Reject unsupported few-shot requests before any dataset I/O."""
+        if self.few_shot_num == 0:
+            return
+        if self.few_shot_mode == 'disabled' or (self.few_shot_mode == 'auto' and self.train_split is None):
+            raise ValueError(f'Benchmark {self.name!r} does not support few-shot evaluation; set few_shot_num=0.')
+        allowed_counts = self.allowed_few_shot_nums
+        if allowed_counts is not None and self.few_shot_num not in allowed_counts:
+            allowed = ', '.join(str(count) for count in allowed_counts)
+            raise ValueError(
+                f'Benchmark {self.name!r} supports few_shot_num values: {allowed}; got {self.few_shot_num}.'
+            )
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert the benchmark metadata to a dictionary."""
         return self._benchmark_meta.to_string_dict()
+
+    def validate_choice_config(self) -> None:
+        """Reject Choice evaluation unless an adapter implements its conversion."""
+        raise ValueError(f'Benchmark {self.name!r} has no audited text Choice conversion.')
+
+    @property
+    def benchmark_meta(self) -> 'BenchmarkMeta':
+        """Return the resolved benchmark metadata used by this adapter."""
+        return self._benchmark_meta
 
     @abstractmethod
     def load_dataset(self) -> DatasetDict:
@@ -86,8 +106,9 @@ class DataAdapter(LLMJudgeMixin, ABC):
         pass
 
     @abstractmethod
-    def batch_calculate_metrics(self, task_states: List[TaskState],
-                                sample_scores: List[SampleScore]) -> List[SampleScore]:
+    def batch_calculate_metrics(
+        self, task_states: List[TaskState], sample_scores: List[SampleScore]
+    ) -> List[SampleScore]:
         """Batch calculate metrics for a list of task states. Need to update sample_scores in place."""
         pass
 
@@ -117,9 +138,19 @@ class DataAdapter(LLMJudgeMixin, ABC):
     @property
     def dataset_id(self) -> str:
         """
-        Return the dataset ID or path to the benchmark.
+        Return the dataset ID or path to the benchmark, resolved against the
+        configured dataset hub. When the hub is Hugging Face and the benchmark
+        declares an ``hf_dataset_id``, that ID is used instead of the
+        ModelScope dataset ID.
         """
-        return self._benchmark_meta.dataset_id
+        meta = self._benchmark_meta
+        source = meta.dataset_source
+        if self.dataset_hub == HubType.HUGGINGFACE and not meta.hf_dataset_id and not source.is_local:
+            logger.warning(
+                f'Benchmark {meta.name} has no hf_dataset_id mapping; '
+                f'falling back to the ModelScope dataset id {meta.dataset_id!r} on the Hugging Face hub.'
+            )
+        return source.resolve_dataset_id(self.dataset_hub)
 
     @property
     def output_types(self) -> Optional[List[str]]:
@@ -147,6 +178,8 @@ class DataAdapter(LLMJudgeMixin, ABC):
         """
         Return the dataset hub type for the benchmark.
         """
+        if self._task_config is None:
+            return HubType.MODELSCOPE
         return self._task_config.dataset_hub
 
     @dataset_hub.setter
@@ -155,6 +188,11 @@ class DataAdapter(LLMJudgeMixin, ABC):
         Set the dataset hub type for the benchmark.
         """
         self._task_config.dataset_hub = value
+
+    @property
+    def dataset_revision(self) -> Optional[str]:
+        """Return the resolved revision of the remote dataset source."""
+        return self._benchmark_meta.dataset_source.resolve_revision(self.dataset_hub)
 
     @property
     def eval_type(self) -> str:
@@ -185,6 +223,15 @@ class DataAdapter(LLMJudgeMixin, ABC):
         return self._benchmark_meta.metric_list
 
     @property
+    def primary_metric(self) -> Optional['MetricSelector']:
+        """
+        Return the structured selector declared as this benchmark's primary metric.
+
+        ``None`` for single-metric benchmarks, whose only metric is implicitly primary.
+        """
+        return self._benchmark_meta.primary_metric
+
+    @property
     def default_subset(self) -> str:
         """
         Return the default subset of the benchmark.
@@ -211,6 +258,16 @@ class DataAdapter(LLMJudgeMixin, ABC):
         Set the few shot number of the benchmark.
         """
         self._benchmark_meta.few_shot_num = value
+
+    @property
+    def few_shot_mode(self) -> str:
+        """Return the benchmark's few-shot capability mode."""
+        return self._benchmark_meta.few_shot_mode
+
+    @property
+    def allowed_few_shot_nums(self) -> Optional[tuple[int, ...]]:
+        """Return the explicitly allowed few-shot counts, if bounded."""
+        return self._benchmark_meta.allowed_few_shot_nums
 
     @property
     def few_shot_random(self) -> bool:

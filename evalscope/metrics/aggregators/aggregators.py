@@ -1,15 +1,58 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 from collections import defaultdict
-from typing import Any, Dict, List
+from math import isfinite
+from typing import Any, Dict, List, Optional, Tuple
 
 from evalscope.api.metric import Aggregator, AggScore, SampleScore
 from evalscope.api.registry import register_aggregation
 from evalscope.metrics.utils.functions import calculate_pass_at_k, calculate_pass_hat_k, mean
 
 
+def collect_metric_names(scores: List[SampleScore]) -> List[str]:
+    """Collect metric names across all samples, in first-seen order.
+
+    A sample may carry no value for a metric, so the name set cannot be read off ``scores[0]``.
+    """
+    metric_names: Dict[str, None] = {}
+    for sample_score in scores:
+        for metric_name in sample_score.score.value:
+            metric_names.setdefault(metric_name, None)
+    return list(metric_names)
+
+
+def collect_planned_attempts(
+    scores: List[SampleScore], metric_name: str
+) -> Dict[Any, Dict[int, Optional[SampleScore]]]:
+    """Keep every planned position so unavailable attempts cannot shift later trials forward."""
+    grouped: Dict[Any, Dict[int, Optional[SampleScore]]] = defaultdict(dict)
+    for score in scores:
+        group_id = score.group_id if score.group_id is not None else score.sample_id
+        position = score.generation_index
+        if position is None:
+            # Legacy caches lack an explicit position. Their existing row order is the only safe
+            # information available; new scores always carry generation_index.
+            position = len(grouped[group_id])
+        grouped[group_id][position] = score if metric_name in score.score.value else None
+    return grouped
+
+
+def eligible_prefixes(
+    grouped: Dict[Any, Dict[int, Optional[SampleScore]]],
+) -> Dict[int, List[Tuple[Any, Dict[int, Optional[SampleScore]]]]]:
+    """Return eligible groups for each k without extending beyond the shortest planned group."""
+    max_k = min((max(attempts, default=-1) + 1 for attempts in grouped.values()), default=0)
+    result: Dict[int, List[Tuple[Any, Dict[int, Optional[SampleScore]]]]] = defaultdict(list)
+    for group_id, attempts in grouped.items():
+        for k in range(1, max_k + 1):
+            if all(attempts.get(index) is not None for index in range(k)):
+                result[k].append((group_id, attempts))
+            else:
+                break
+    return result
+
+
 @register_aggregation(name='mean')
 class Mean(Aggregator):
-
     name = 'mean'
 
     def agg_func(self, values: List[float]) -> float:
@@ -32,7 +75,6 @@ class Mean(Aggregator):
         metric_sample_ids = defaultdict(list)
 
         for score in scores:
-
             for metric_name, value in score.score.value.items():
                 metric_values[metric_name].append(value)
                 metric_sample_ids[metric_name].append(score.sample_id)
@@ -45,17 +87,97 @@ class Mean(Aggregator):
                     AggScore(
                         score=self.agg_func(values),
                         metric_name=metric_name,
-                        aggregation_name=self.name,
+                        aggregation=self.name,
                         num=len(values),
-                        ids=metric_sample_ids[metric_name]
+                        ids=metric_sample_ids[metric_name],
                     )
                 )
 
         return aggregated_scores
 
 
-class ClippedMean(Mean):
+METRIC_WEIGHTS_KEY = 'metric_weights'
+"""``Score.metadata`` key holding ``{metric_name: weight}`` for :class:`WeightedMean`.
 
+A weight is the number of underlying units the metric value was already averaged over inside one
+sample -- instructions for IFEval-style ``inst_level_*``, for instance. Only metrics that need it
+carry one, so a benchmark can mix weighted and unweighted metrics in the same ``Score``.
+"""
+
+
+def collect_metric_weights(score: SampleScore) -> Dict[str, int]:
+    """Read valid non-negative unit counts from one sample's metadata."""
+    metadata = score.score.metadata or {}
+    declared = metadata.get(METRIC_WEIGHTS_KEY) or {}
+    if not isinstance(declared, dict):
+        return {}
+
+    weights: Dict[str, int] = {}
+    for metric_name, weight in declared.items():
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+            continue
+        numeric_weight = float(weight)
+        if not isfinite(numeric_weight) or numeric_weight < 0 or not numeric_weight.is_integer():
+            continue
+        weights[metric_name] = int(numeric_weight)
+    return weights
+
+
+@register_aggregation(name='weighted_mean')
+class WeightedMean(Aggregator):
+    """Mean using per-sample unit counts declared in ``Score.metadata``."""
+
+    name = 'weighted_mean'
+
+    def __call__(self, scores: List[SampleScore]) -> List[AggScore]:
+        if not scores:
+            return []
+
+        metric_values: Dict[str, List[float]] = defaultdict(list)
+        metric_weights: Dict[str, List[Optional[int]]] = defaultdict(list)
+        metric_sample_ids: Dict[str, List[Any]] = defaultdict(list)
+
+        for score in scores:
+            weights = collect_metric_weights(score)
+            for metric_name, value in score.score.value.items():
+                metric_values[metric_name].append(value)
+                metric_weights[metric_name].append(weights.get(metric_name))
+                metric_sample_ids[metric_name].append(score.sample_id)
+
+        aggregated_scores = []
+        for metric_name, values in metric_values.items():
+            weights = metric_weights[metric_name]
+            weighted = all(weight is not None for weight in weights) and any(weight is not None for weight in weights)
+            if weighted:
+                declared_weights = [weight for weight in weights if weight is not None]
+                total_weight = sum(declared_weights)
+                if total_weight == 0:
+                    continue
+                aggregated = sum(value * weight for value, weight in zip(values, declared_weights)) / total_weight
+                aggregation = self.name
+                num = total_weight
+            else:
+                aggregated = mean(values)
+                aggregation = 'mean'
+                num = len(values)
+                total_weight = float(num)
+
+            aggregated_scores.append(
+                AggScore(
+                    score=aggregated,
+                    metric_name=metric_name,
+                    aggregation=aggregation,
+                    num=num,
+                    ids=metric_sample_ids[metric_name],
+                    metadata={'weighted': weighted, 'samples': len(values), 'total_weight': total_weight},
+                )
+            )
+
+        return aggregated_scores
+
+
+@register_aggregation(name='clipped_mean')
+class ClippedMean(Mean):
     name = 'clipped_mean'
 
     def __init__(self, clip_min: float = 0.0, clip_max: float = 1.0):
@@ -69,72 +191,61 @@ class ClippedMean(Mean):
 
 @register_aggregation(name='mean_and_pass_at_k')
 class MeanPassAtK(Aggregator):
-
     def __init__(self):
         self.name = 'mean_and_pass_at_k'
 
     def __call__(self, scores: List[SampleScore]) -> List[AggScore]:
-        """Add per-metric pass@n for all n <= k to each sample, then mean-aggregate.
+        """Return the mean plus structured pass@n aggregates for all n <= k.
 
         For each metric:
         - Group scores by group_id
         - Collect binary correctness values
-        - Infer k as (total samples / number of groups) assuming uniform repetitions
+        - Limit k to the number of attempts available in every group
         - Compute per-group pass@n for all n from 1 to k via calculate_pass_at_k
-        - Annotate each sample with metric_pass@n for its group (for all n)
-        Finally run Mean() over the augmented metric set.
+        - Emit ``aggregation=pass_at_k`` and ``dimensions.k=n`` directly
         """
         if not scores:
             return []
 
-        # Extract metric names present in score values
-        metrics = list(scores[0].score.value.keys())
+        aggregated_scores = Mean()(scores)
+        metrics = collect_metric_names(scores)
 
         for metric_name in metrics:
-            # group_id -> list[float] (0/1 correctness values)
-            group_values: Dict[str, List[float]] = defaultdict(list)
-            for s in scores:
-                group_id = getattr(s, 'group_id', s.sample_id)
-                value = float(s.score.value[metric_name])
-                group_values[group_id].append(value)
-
-            if not group_values:
+            group_attempts = collect_planned_attempts(scores, metric_name)
+            prefixes = eligible_prefixes(group_attempts)
+            if not prefixes:
                 continue
+            for n, eligible in prefixes.items():
+                group_order = [group_id for group_id, _ in eligible]
+                values_by_group = [
+                    [float(attempt.score.value[metric_name]) for attempt in attempts.values() if attempt is not None]
+                    for _, attempts in eligible
+                ]
+                values = calculate_pass_at_k(
+                    [len(items) for items in values_by_group], [int(sum(items)) for items in values_by_group], n
+                )
+                aggregated_scores.append(
+                    AggScore(
+                        score=mean(values.tolist()),
+                        metric_name=metric_name,
+                        aggregation='pass_at_k',
+                        dimensions={'k': n},
+                        num=len(values),
+                        ids=group_order,
+                        metadata={
+                            'eligible': len(values),
+                            'total': len(group_attempts),
+                            'coverage': len(values) / len(group_attempts),
+                            'excluded': len(group_attempts) - len(values),
+                        },
+                    )
+                )
 
-            # Infer k (assumes roughly uniform repeats)
-            k = int(len(scores) / len(group_values)) if len(group_values) > 0 else 1
-            if k <= 0:
-                k = 1
-
-            # Prepare inputs for calculate_pass_at_k
-            num_samples: List[int] = []
-            num_correct: List[int] = []
-            group_order: List[str] = []
-            for gid, vals in group_values.items():
-                group_order.append(gid)
-                num_samples.append(len(vals))
-                num_correct.append(int(sum(vals)))
-
-            # Compute per-group pass@n for all n from 1 to k
-            pass_at_n_maps = {}
-            for n in range(1, k + 1):
-                pass_at_n_list = calculate_pass_at_k(num_samples, num_correct, n)
-                pass_at_n_maps[n] = {gid: float(v) for gid, v in zip(group_order, pass_at_n_list)}
-
-            # Annotate each sample with its group's pass@n for all n
-            for s in scores:
-                group_id = getattr(s, 'group_id', s.sample_id)
-                for n in range(1, k + 1):
-                    s.score.value[f'{metric_name}_pass@{n}'] = pass_at_n_maps[n][group_id]
-
-        # Delegate mean aggregation over original + injected pass@n metrics
-        m = Mean()
-        return m(scores)
+        return aggregated_scores
 
 
 @register_aggregation(name='mean_and_vote_at_k')
 class MeanVoteAtK(Aggregator):
-
     def __init__(self):
         self.name = 'mean_and_vote_at_k'
 
@@ -163,39 +274,32 @@ class MeanVoteAtK(Aggregator):
         if not scores:
             return []
 
-        # Freeze metric names before augmenting values
-        metrics = list(scores[0].score.value.keys())
+        aggregated_scores = Mean()(scores)
+        metrics = collect_metric_names(scores)
 
         for metric_name in metrics:
-            # Group samples by group_id, preserving order
-            # Store: (prediction, correctness_score)
-            group_samples: Dict[str, List[tuple]] = defaultdict(list)
-            for score in scores:
-                group_id = getattr(score, 'group_id', score.sample_id)
-                prediction = getattr(score.score, 'extracted_prediction', None)
-                correctness = score.score.value[metric_name]
-                group_samples[group_id].append((prediction, correctness))
-
-            if not group_samples:
+            group_attempts = collect_planned_attempts(scores, metric_name)
+            prefixes = eligible_prefixes(group_attempts)
+            if not prefixes:
                 continue
+            for n, eligible in prefixes.items():
+                vote_at_n_map: Dict[Any, float] = {}
+                for group_id, attempts in eligible:
+                    n_samples = [
+                        (attempts[index].score.extracted_prediction, attempts[index].score.value[metric_name])
+                        for index in range(n)
+                    ]
 
-            # Calculate k as the repetition count
-            k = int(len(scores) / len(group_samples)) if len(group_samples) > 0 else 1
-            if k <= 0:
-                k = 1
-
-            # Compute vote@n for all n from 1 to k for each group
-            vote_at_n_maps: Dict[int, Dict[str, float]] = {}
-            for n in range(1, k + 1):
-                vote_at_n_maps[n] = {}
-                for group_id, samples in group_samples.items():
-                    # Consider only first n samples for this group
-                    n_samples = samples[:n]
-
-                    # Count prediction frequencies
+                    # Count prediction frequencies, ignoring failed extractions (None or blank)
                     prediction_counts = defaultdict(int)
                     for prediction, _ in n_samples:
+                        if prediction is None or (isinstance(prediction, str) and not prediction.strip()):
+                            continue
                         prediction_counts[prediction] += 1
+
+                    if not prediction_counts:
+                        vote_at_n_map[group_id] = 0.0
+                        continue
 
                     # Select most frequent prediction (ties broken by first occurrence)
                     most_frequent_pred = max(prediction_counts, key=prediction_counts.get)
@@ -205,73 +309,79 @@ class MeanVoteAtK(Aggregator):
                         pred == most_frequent_pred and correctness == 1.0 for pred, correctness in n_samples
                     )
 
-                    vote_at_n_maps[n][group_id] = 1.0 if is_correct else 0.0
+                    vote_at_n_map[group_id] = 1.0 if is_correct else 0.0
 
-            # Annotate each sample with its group's vote@n for all n
-            for score in scores:
-                group_id = getattr(score, 'group_id', score.sample_id)
-                for n in range(1, k + 1):
-                    score.score.value[f'{metric_name}_vote@{n}'] = vote_at_n_maps[n][group_id]
+                values = list(vote_at_n_map.values())
+                aggregated_scores.append(
+                    AggScore(
+                        score=mean(values),
+                        metric_name=metric_name,
+                        aggregation='vote_at_k',
+                        dimensions={'k': n},
+                        num=len(values),
+                        ids=list(vote_at_n_map),
+                        metadata={
+                            'eligible': len(values),
+                            'total': len(group_attempts),
+                            'coverage': len(values) / len(group_attempts),
+                            'excluded': len(group_attempts) - len(values),
+                        },
+                    )
+                )
 
-        # Calculate the mean value for all metrics and their corresponding vote@n
-        m = Mean()
-        return m(scores)
+        return aggregated_scores
 
 
 @register_aggregation(name='mean_and_pass_hat_k')
 class MeanPassHatK(Aggregator):
-
     def __init__(self):
         self.name = 'mean_and_pass_hat_k'
 
     def __call__(self, scores: List[SampleScore]) -> List[AggScore]:
-        """Add per-metric pass^n for all n <= k using calculate_pass_hat_k, then mean-aggregate.
+        """Return the mean plus structured pass^n aggregates for all n <= k.
 
         For each metric:
         - Group scores by group_id
         - Collect binary correctness values
-        - Infer k as approximate repeats and clamp to min attempts across groups
+        - Limit k to the number of attempts available in every group
         - Compute per-group pass^n for all n from 1 to k via calculate_pass_hat_k
-        - Annotate each sample with metric_pass^{n} for its group (for all n)
-        Finally run Mean() over the augmented metric set.
+        - Emit ``aggregation=pass_hat_k`` and ``dimensions.k=n`` directly
         """
         if not scores:
             return []
 
-        # Freeze metric names before augmenting values to avoid iterating injected keys
-        metrics = list(scores[0].score.value.keys())
+        aggregated_scores = Mean()(scores)
+        metrics = collect_metric_names(scores)
 
         for metric_name in metrics:
-            # group_id -> list[float] (0/1 correctness values)
-            group_values: Dict[str, List[float]] = defaultdict(list)
-            for s in scores:
-                group_id = getattr(s, 'group_id', s.sample_id)
-                value = float(s.score.value[metric_name])
-                group_values[group_id].append(value)
-
-            if not group_values:
+            group_attempts = collect_planned_attempts(scores, metric_name)
+            prefixes = eligible_prefixes(group_attempts)
+            if not prefixes:
                 continue
+            for n, eligible in prefixes.items():
+                values = []
+                ids = []
+                for group_id, attempts in eligible:
+                    attempt_values = [
+                        float(attempt.score.value[metric_name]) for attempt in attempts.values() if attempt is not None
+                    ]
+                    values.append(float(calculate_pass_hat_k(len(attempt_values), int(sum(attempt_values)), n)))
+                    ids.append(group_id)
+                aggregated_scores.append(
+                    AggScore(
+                        score=mean(values),
+                        metric_name=metric_name,
+                        aggregation='pass_hat_k',
+                        dimensions={'k': n},
+                        num=len(values),
+                        ids=ids,
+                        metadata={
+                            'eligible': len(values),
+                            'total': len(group_attempts),
+                            'coverage': len(values) / len(group_attempts),
+                            'excluded': len(group_attempts) - len(values),
+                        },
+                    )
+                )
 
-            # Infer repeats and clamp to the smallest group size to satisfy n <= min_n
-            approx_k = int(len(scores) / len(group_values)) if len(group_values) > 0 else 1
-            min_n = min(len(vals) for vals in group_values.values())
-            k = max(1, min(approx_k, min_n))
-
-            # Compute per-group pass^n for all n from 1 to k
-            pass_hat_n_maps: Dict[int, Dict[str, float]] = {}
-            for n in range(1, k + 1):
-                pass_hat_n_maps[n] = {}
-                for gid, vals in group_values.items():
-                    total = len(vals)
-                    correct = int(sum(vals))
-                    pass_hat_n_maps[n][gid] = float(calculate_pass_hat_k(total, correct, n))
-
-            # Annotate each sample with its group's pass^n for all n
-            for s in scores:
-                group_id = getattr(s, 'group_id', s.sample_id)
-                for n in range(1, k + 1):
-                    s.score.value[f'{metric_name}_pass^{n}'] = pass_hat_n_maps[n][group_id]
-
-        # Mean aggregate over original + injected pass^n metrics
-        m = Mean()
-        return m(scores)
+        return aggregated_scores

@@ -4,7 +4,10 @@ from typing import Any, ClassVar, List, Optional
 from evalscope.api.benchmark import BenchmarkMeta, DefaultDataAdapter
 from evalscope.api.benchmark.statistics import SampleExample
 from evalscope.api.dataset import DataLoader, DatasetDict, MemoryDataset, Sample
+from evalscope.api.evaluator import TaskState
 from evalscope.api.messages import ChatMessageSystem, ChatMessageUser
+from evalscope.api.metric import Score
+from evalscope.api.model import ModelOutput
 from evalscope.config import TaskConfig
 from evalscope.constants import JudgeStrategy
 
@@ -13,10 +16,14 @@ class CapturingDataLoader(DataLoader):
 
     latest_limit: ClassVar[Optional[int]] = None
     latest_repeats: ClassVar[Optional[int]] = None
+    latest_version: ClassVar[Optional[str]] = None
+    latest_seed: ClassVar[Optional[int]] = None
 
     def load(self) -> MemoryDataset:
         self.__class__.latest_limit = self.limit
         self.__class__.latest_repeats = self.repeats
+        self.__class__.latest_version = self.version
+        self.__class__.latest_seed = self.seed
 
         samples: List[Sample] = [
             Sample(input='question-1', target='answer-1', subset_key='subset-a'),
@@ -51,7 +58,10 @@ class DummyLLMJudgeAdapter(DefaultDataAdapter):
 
 
 def make_adapter(
-    repeats: int = 3, limit: Optional[int] = None, system_prompt: Optional[str] = None
+    repeats: int = 3,
+    limit: Optional[int] = None,
+    system_prompt: Optional[str] = None,
+    dataset_revision: Optional[str] = None,
 ) -> DummyReformatAdapter:
     task_config = TaskConfig(datasets=['dummy'], repeats=repeats, limit=limit)
     benchmark_meta = BenchmarkMeta(
@@ -62,6 +72,7 @@ def make_adapter(
         eval_split='test',
         prompt_template='{question}',
         system_prompt=system_prompt,
+        dataset_revision=dataset_revision,
     )
     return DummyReformatAdapter(benchmark_meta=benchmark_meta, task_config=task_config)
 
@@ -82,20 +93,88 @@ def test_reformat_subset_repeats_are_applied_once_after_grouping() -> None:
     assert [sample.group_id for sample in dataset_dict['subset-a']] == [0, 0, 0, 1, 1, 1]
 
 
+def test_load_subset_passes_the_resolved_dataset_revision() -> None:
+    adapter = make_adapter(dataset_revision='2026-08-21')
+
+    adapter.load_subset(subset='subset-a', data_loader=CapturingDataLoader)
+
+    assert CapturingDataLoader.latest_version == '2026-08-21'
+    assert CapturingDataLoader.latest_seed == 42
+
+
+def test_shuffle_choices_configuration_survives_adapter_initialization() -> None:
+    meta = BenchmarkMeta(
+        name='choice_shuffle',
+        dataset_id='dummy',
+        eval_split='test',
+        shuffle_choices=True,
+    )
+
+    adapter = DummyReformatAdapter(benchmark_meta=meta, task_config=TaskConfig(datasets=['choice_shuffle']))
+
+    assert adapter.shuffle_choices is True
+
+    user_configured_meta = BenchmarkMeta(name='user_choice_shuffle', dataset_id='dummy', eval_split='test')
+    user_configured_meta._update({'shuffle_choices': True})
+    user_configured_adapter = DummyReformatAdapter(
+        benchmark_meta=user_configured_meta,
+        task_config=TaskConfig(datasets=['user_choice_shuffle']),
+    )
+
+    assert user_configured_adapter.shuffle_choices is True
+
+
 def test_auto_judge_strategy_uses_adapter_class_default() -> None:
     benchmark_meta = BenchmarkMeta(name='dummy_judge', dataset_id='dummy', eval_split='test')
     adapter = DummyLLMJudgeAdapter(
         benchmark_meta=benchmark_meta,
-        task_config=TaskConfig(datasets=['dummy_judge'], judge_strategy=JudgeStrategy.AUTO),
+        task_config=TaskConfig(datasets=['dummy_judge'], judge={'strategy': JudgeStrategy.AUTO}),
     )
 
     assert adapter.use_llm_judge is True
 
-    adapter._task_config.judge_strategy = JudgeStrategy.RULE
+    adapter._task_config.judge.strategy = JudgeStrategy.RULE
     assert adapter.use_llm_judge is False
 
-    adapter._task_config.judge_strategy = JudgeStrategy.LLM
+    adapter._task_config.judge.strategy = JudgeStrategy.LLM
     assert adapter.use_llm_judge is True
+
+
+def test_llm_recall_skips_judge_when_rule_score_is_perfect(monkeypatch) -> None:
+    benchmark_meta = BenchmarkMeta(name='dummy_judge', dataset_id='dummy', eval_split='test')
+    adapter = DummyLLMJudgeAdapter(
+        benchmark_meta=benchmark_meta,
+        task_config=TaskConfig(
+            datasets=['dummy_judge'],
+            judge={'strategy': 'llm_recall', 'models': {'model_id': 'judge'}},
+        ),
+    )
+    state = TaskState(
+        model='m',
+        sample=Sample(input='question', target='answer'),
+        output=ModelOutput(model='m', completion='answer'),
+        completed=True,
+    )
+    monkeypatch.setattr(adapter, 'match_score', lambda **_: Score(value={'acc': 1.0}, main_score_name='acc'))
+    monkeypatch.setattr(adapter, 'score_with_judge_contracts', lambda **_: (_ for _ in ()).throw(AssertionError()))
+
+    score = adapter.calculate_metrics(state).score
+
+    assert score.value == {'acc': 1.0}
+
+
+def test_sample_score_preserves_repeat_position() -> None:
+    adapter = make_adapter(repeats=3)
+    state = TaskState(
+        model='m',
+        sample=Sample(id=4, group_id=1, input='question', target='answer'),
+        output=ModelOutput(model='m', completion='answer'),
+        completed=True,
+    )
+
+    sample_score = adapter.calculate_metrics(state)
+
+    assert sample_score.generation_index == 1
 
 
 def test_sample_example_detects_parameterized_truncation_marker() -> None:

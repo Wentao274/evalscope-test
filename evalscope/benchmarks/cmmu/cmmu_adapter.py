@@ -1,19 +1,31 @@
-import ast
-import re
 from typing import Any, Dict, List
+
+from pydantic import BaseModel, Field
 
 from evalscope.api.benchmark import BenchmarkMeta, VisionLanguageAdapter
 from evalscope.api.dataset import Sample
 from evalscope.api.evaluator import TaskState
-from evalscope.api.messages import ChatMessageUser, Content, ContentImage, ContentText
+from evalscope.api.judge import JudgeCase, JudgeContext, JudgeDefinition, JudgeRequest, OutputContract, ReducedVerdict
+from evalscope.api.messages import ChatMessageSystem, ChatMessageUser, Content, ContentImage, ContentText
 from evalscope.api.metric import Score
 from evalscope.api.registry import register_benchmark
-from evalscope.constants import Tags
+from evalscope.constants import ScoringPolicy, Tags
 from evalscope.utils.io_utils import bytes_to_base64
 from evalscope.utils.logger import get_logger
 from evalscope.utils.multi_choices import MultipleChoiceTemplate, answer_character, parse_answers_zh, prompt
 
 logger = get_logger()
+
+
+class CmmuGrade(BaseModel):
+    """The judge's required reply: a proportion of correctly answered blanks, plus its reasoning."""
+
+    correct: float = Field(ge=0.0, le=1.0)
+    analysis: str = ''
+
+
+# The judge prompt requires exactly this JSON object as the whole reply.
+GRADE_CONTRACT = OutputContract(schema_model=CmmuGrade)
 
 SUBSET_LIST = ['biology', 'chemistry', 'geography', 'history', 'math', 'physics', 'politics']
 
@@ -34,9 +46,11 @@ FILL_IN_BLANK_TYPE = 'fill-in-the-blank'
 
 @register_benchmark(
     BenchmarkMeta(
+        evaluation_version='v1.1',
         name='cmmu',
         pretty_name='CMMU',
         dataset_id='evalscope/CMMU',
+        hf_dataset_id='BAAI/CMMU',
         tags=[Tags.KNOWLEDGE, Tags.QA, Tags.MULTIPLE_CHOICE, Tags.MULTI_MODAL],
         description="""
 ## Overview
@@ -66,19 +80,14 @@ CMMU is a novel Chinese multi-modal benchmark designed to evaluate domain-specif
 - Chain-of-thought prompting for reasoning
 """,
         subset_list=SUBSET_LIST,
-        metric_list=[{
-            'acc': {
-                'numeric': True
-            }
-        }],
+        metric_list=[{'acc': {'numeric': True}}],
         default_subset='default',
         eval_split='val',
         prompt_template=MULT_CHOICE_PROMPT,
     )
 )
 class CMMUAdapter(VisionLanguageAdapter):
-
-    llm_judge_default = True
+    scoring_policy = ScoringPolicy.JUDGE_DEFAULT
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -100,7 +109,7 @@ class CMMUAdapter(VisionLanguageAdapter):
 
         question_type = record.get('type')
         if question_type == FILL_IN_BLANK_TYPE:
-            target_str = '\n'.join(f'答案 ({i+1}): {ans}' for i, ans in enumerate(record['answer']))
+            target_str = '\n'.join(f'答案 ({i + 1}): {ans}' for i, ans in enumerate(record['answer']))
             return Sample(
                 input=[ChatMessageUser(content=content_list)],
                 target=target_str,
@@ -128,52 +137,62 @@ class CMMUAdapter(VisionLanguageAdapter):
             multi_answer = ''.join(sorted(list(answers)))
             return multi_answer
         else:
-            return prediction.strip()
+            from evalscope.metrics.math.parser import extract_answer
 
-    def llm_match_score(
-        self,
-        original_prediction: str,
-        filtered_prediction: str,
-        reference: str,
-        task_state: TaskState,
+            return extract_answer(prediction)
+
+    def match_score(
+        self, original_prediction: str, filtered_prediction: str, reference: str, task_state: TaskState
     ) -> Score:
-        score = Score(
-            extracted_prediction=filtered_prediction,
-            prediction=original_prediction,
-        )
+        """Preserve exact categorical scoring on the rule path as well as the judge path."""
+        if task_state.metadata['type'] in (MULTI_CHOICE_TYPE, MULTIPLE_RESPONSE_TYPE):
+            return Score(
+                prediction=original_prediction,
+                extracted_prediction=filtered_prediction,
+                value={'accuracy': float(bool(filtered_prediction) and filtered_prediction == reference)},
+            )
+        return super().match_score(original_prediction, filtered_prediction, reference, task_state)
 
-        question = task_state.input_text
-        question_type = task_state.metadata['type']
-        if question_type in [MULTI_CHOICE_TYPE, MULTIPLE_RESPONSE_TYPE]:
-            score.value = {'acc': 1 if filtered_prediction == reference else 0}
-        else:
+    def judge_definition(self, context: JudgeContext) -> JudgeDefinition:
+        if context.task_state.metadata['type'] in (MULTI_CHOICE_TYPE, MULTIPLE_RESPONSE_TYPE):
+            return JudgeDefinition.skip(
+                Score(
+                    extracted_prediction=context.filtered_prediction,
+                    prediction=context.original_prediction,
+                    value={'acc': 1.0 if context.filtered_prediction == context.reference else 0.0},
+                    main_score_name='acc',
+                ),
+                reason='deterministic_choice_scoring',
+            )
+
+        def request(case, placement, completed_cases, judge_context) -> JudgeRequest:
             from .prompt import EVALUATION_SYSTEM_PROMPT, EVALUATION_USER_TEMPLATE
 
-            prompt = EVALUATION_USER_TEMPLATE.format(
-                question=question, target=reference, predicted_answer=original_prediction
+            prompt_text = EVALUATION_USER_TEMPLATE.format(
+                question=judge_context.task_state.input_text,
+                target=judge_context.reference,
+                predicted_answer=judge_context.original_prediction,
             )
-            judge_response = self.llm_judge.judge(prompt, system_prompt=EVALUATION_SYSTEM_PROMPT)
-            try:
-                ans_parsed = ast.literal_eval(judge_response)
-                correctness = ans_parsed.get('correct', 0)
-                analysis = ans_parsed.get('analysis', '')
-            except Exception:
-                pattern = re.compile(r'"correct"\s*:\s*1')
-                match = re.search(pattern, judge_response)
-                correctness = 1 if match else 0
+            return JudgeRequest(
+                messages=[ChatMessageSystem(content=EVALUATION_SYSTEM_PROMPT), ChatMessageUser(content=prompt_text)]
+            )
 
-            score.value = {
-                'acc': correctness,
-            }
-            score.explanation = f'LLM judge: {judge_response}'
-            score.metadata = {
-                'source': 'llm_judge',
-                'judge_strategy': self.judge_strategy,
-                'analysis': analysis,
-                'model': self.llm_judge.model_id
-            }
-        score.main_score_name = 'acc'
-        return score
+        def reduce(case_verdicts, judge_context) -> ReducedVerdict:
+            grade = case_verdicts[0].value
+            return ReducedVerdict(value={'acc': grade.correct}, metadata={'analysis': grade.analysis})
+
+        def finalize(score, review, judge_context) -> Score:
+            for observation in review.valid_observations:
+                score.metadata.update(observation.reduced.metadata)
+            return score
+
+        return JudgeDefinition.workflow(
+            cases=[JudgeCase(case_id='grade', output_contract=GRADE_CONTRACT)],
+            request=request,
+            reduce=reduce,
+            main_score_name='acc',
+            finalize=finalize,
+        )
 
     @staticmethod
     def create_content_and_answers_list(record: Dict[str, Any]) -> tuple[List[Content], List[str]]:
@@ -203,7 +222,7 @@ class CMMUAdapter(VisionLanguageAdapter):
             content_list: List[Content] = [ContentText(text=input_text)]
         else:
             answers_list: List[str] = []
-            sub_questions_str = '\n'.join(f'问题 ({i+1}): {q}' for i, q in enumerate(record['sub_questions']))
+            sub_questions_str = '\n'.join(f'问题 ({i + 1}): {q}' for i, q in enumerate(record['sub_questions']))
             open_question = record['question_info'] + sub_questions_str
             content_list: List[Content] = [ContentText(text=FILL_IN_BLANK_PROMPT.format(question=open_question))]
 

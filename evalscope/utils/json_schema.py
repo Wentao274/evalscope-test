@@ -4,7 +4,6 @@ from copy import deepcopy
 from dataclasses import is_dataclass
 from datetime import date, datetime, time
 from enum import EnumMeta
-from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import (
     Any,
     Dict,
@@ -21,6 +20,8 @@ from typing import (
     get_type_hints,
     is_typeddict,
 )
+
+from pydantic import BaseModel, Field, model_validator
 
 JSONType = Literal['string', 'integer', 'number', 'boolean', 'array', 'object', 'null']
 """Valid types within JSON schema."""
@@ -60,26 +61,18 @@ class JSONSchema(BaseModel):
     """Required fields for object parameters."""
 
     @model_validator(mode='before')
-    def convert_type_before_validation(cls, values):
+    def convert_type_before_validation(cls, values: Any) -> Any:
         values = deepcopy(values)
 
-        def recursive_convert_type(obj):
-            if isinstance(obj, dict):
-                # Convert 'type' field if it's a string
-                if 'type' in obj and isinstance(obj['type'], str):
-                    try:
-                        obj['type'] = python_type_to_json_type(obj['type'])
-                    except ValueError:
-                        # If conversion fails, leave it as is
-                        pass
-                # Recursively process nested structures
-                for k, v in obj.items():
-                    obj[k] = recursive_convert_type(v)
-            elif isinstance(obj, list):
-                return [recursive_convert_type(item) for item in obj]
-            return obj
-
-        return recursive_convert_type(values)
+        # Nested schema fields are validated as JSONSchema instances themselves.
+        # Recursing through arbitrary dictionaries would also rewrite literal
+        # values in defaults and enums that happen to contain a 'type' key.
+        if isinstance(values, dict) and isinstance(values.get('type'), str):
+            try:
+                values['type'] = python_type_to_json_type(values['type'])
+            except ValueError:
+                pass
+        return values
 
 
 def json_schema(t: Type[Any]) -> JSONSchema:
@@ -117,7 +110,7 @@ def json_schema(t: Type[Any]) -> JSONSchema:
             return JSONSchema(type='array', items=JSONSchema())
         elif t is dict:
             return JSONSchema(type='object', additionalProperties=JSONSchema())
-        elif (is_dataclass(t) or is_typeddict(t) or (isinstance(t, type) and issubclass(t, BaseModel))):
+        elif is_dataclass(t) or is_typeddict(t) or (isinstance(t, type) and issubclass(t, BaseModel)):
             return cls_json_schema(t)
         elif isinstance(t, EnumMeta):
             return JSONSchema(enum=[item.value for item in t])
@@ -125,7 +118,7 @@ def json_schema(t: Type[Any]) -> JSONSchema:
             return JSONSchema(type='null')
         else:
             return JSONSchema()
-    elif (origin is list or origin is List or origin is tuple or origin is Tuple or origin is set or origin is Set):
+    elif origin is list or origin is List or origin is tuple or origin is Tuple or origin is set or origin is Set:
         return JSONSchema(type='array', items=json_schema(args[0]) if args else JSONSchema())
     elif origin is dict or origin is Dict:
         return JSONSchema(

@@ -36,7 +36,7 @@ perspective: **close**, **far**, **above**, **under**, **left**, and **right**.
 ## Evaluation Notes
 
 - Default evaluation uses the **embspatial_bench.json** file (3,640 samples)
-- Primary metric: **Accuracy** (acc)
+- Primary metric: **Accuracy** (`accuracy`)
 - Answer indices are 0-based in the dataset (0 → A, 1 → B, 2 → C, 3 → D)
 - Images are stored as JPEG base64 strings in the JSON file
 - Subsets are organized by the `relation` field (6 spatial categories)
@@ -49,6 +49,7 @@ perspective: **close**, **far**, **above**, **under**, **left**, and **right**.
         name='emb_spatial_bench',
         pretty_name='EmbSpatial-Bench',
         dataset_id='evalscope/EmbSpatial-Bench',
+        hf_dataset_id='Phineas476/EmbSpatial-Bench',
         tags=[Tags.MULTI_MODAL, Tags.REASONING, Tags.MULTIPLE_CHOICE],
         description=DESCRIPTION,
         paper_url='https://aclanthology.org/2024.acl-short.33/',
@@ -79,6 +80,7 @@ class EmbSpatialBenchAdapter(VisionLanguageAdapter, MultiChoiceAdapter):
         bench_json = DatasetHub(
             data_id_or_path=self.dataset_id,
             data_source=self.dataset_hub,
+            revision=self.dataset_revision,
             force_redownload=self.force_redownload,
             cache_dir=self.dataset_dir,
         ).download_file('embspatial_bench.json')

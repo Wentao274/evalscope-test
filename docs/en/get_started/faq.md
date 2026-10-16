@@ -69,15 +69,15 @@ Note: most thinking models (Qwen3, DeepSeek series, etc.) prefill `<think>` into
     --dataset-args '{"ifeval": {"filters": {"remove_until": "</think>"}}}'
     ```
     If your model uses different thinking tags like `<|end_of_thinking|>`, simply replace it accordingly.
-3.  **Fall back to a judge model**: set `judge_strategy=JudgeStrategy.LLM_RECALL` so samples that fail rule-based extraction are re-judged by the judge model. See "Abnormal Results & Troubleshooting" below.
+3.  **Fall back to a judge model**: set `judge={'strategy': 'llm_recall', 'models': {...}}` so rule-based misses are re-judged. See "Abnormal Results & Troubleshooting" below.
 
 **Q: How to use a local model as a Judge Model?**
 
-**A:** You can deploy the local model as an API service using frameworks like vLLM, then specify its service address in `--judge-model-args`.
+**A:** You can deploy the local model as an API service using frameworks like vLLM, then set its service address in `--judge` under `models`.
 
 **Q: How to set timeout for judge models?**
 
-**A:** Set the `timeout` parameter in the `generation_config` of `--judge-model-args`.
+**A:** Set `generation_config.timeout` for the relevant entry in `judge.models`.
 
 **Q: How to add custom request headers when evaluating API services?**
 
@@ -101,6 +101,10 @@ task_config = TaskConfig(
 **A:** `--stream` is a switch parameter, use it directly without appending `True`. Correct usage: `--stream`.
 
 ### Result Anomalies & Troubleshooting
+
+**Q: Why does an OpenAI-compatible response have `stop_reason="unknown"`?**
+
+**A:** Providers can return finish reasons outside OpenAI's standard values, such as MiMo's `repetition_truncation`. EvalScope retains the answer and maps unrecognized reasons to `unknown`, rather than treating them as a normal stop or token limit. Prediction JSONL files preserve these raw strings in `model_output.metadata.finish_reasons`, keyed by the original choice index (for example, `{"0": "repetition_truncation"}`). This applies to both streaming and non-streaming responses.
 
 **Q: How to troubleshoot obviously abnormal evaluation results (like extremely low accuracy)?**
 
@@ -127,11 +131,9 @@ task_config = TaskConfig(
 **A:** Math problem answer formats are complex, and rule-based parsing can't cover all cases. We recommend using LLM as an auxiliary judge to improve accuracy:
 ```python
 # Set in TaskConfig or DataAdapter
-judge_strategy=JudgeStrategy.LLM_RECALL,
-judge_model_args={
-    'model_id': 'qwen2.5-72b-instruct',
-    'api_url': '...',
-    'api_key': '...'
+judge={
+    'strategy': 'llm_recall',
+    'models': {'model_id': 'qwen2.5-72b-instruct', 'api_url': '...', 'api_key': '...'},
 }
 ```
 Reference documentation: [Judge Model Parameters](https://evalscope.readthedocs.io/zh-cn/latest/get_started/parameters.html#judge).
@@ -143,14 +145,13 @@ Reference documentation: [Judge Model Parameters](https://evalscope.readthedocs.
 2.  Then add a judge model as a fallback so failed rule-based extractions are recalled:
     ```python
     # Set in TaskConfig
-    judge_strategy=JudgeStrategy.LLM_RECALL,
-    judge_model_args={'model_id': '...', 'api_url': '...', 'api_key': '...'}
+    judge={'strategy': 'llm_recall', 'models': {'model_id': '...', 'api_url': '...', 'api_key': '...'}}
     ```
     `llm_recall` only calls the judge model when the rule-based score is not perfect, so it adds no across-the-board overhead.
 
 **Q: `Connection error` when evaluating `alpaca_eval`?**
 
-**A:** `alpaca_eval` requires specifying a Judge Model for scoring. It uses OpenAI API by default, and connection will fail if related keys aren't configured. Please specify an available judge model through `--judge-model-args`.
+**A:** `alpaca_eval` requires a Judge Model for scoring. It uses OpenAI API by default, and connection will fail if related keys are not configured. Specify one through `--judge`.
 
 **Q: How to continue from checkpoint after evaluation interruption?**
 
@@ -271,7 +272,7 @@ You can also use `--data-source` to specify the data source (defaults to `models
 
 **Q: How to visualize stress test results?**
 
-**A:** Results from the `perf` subcommand are not suitable for `evalscope service`. However, visualization through `wandb` or `swanlab` is supported. Please refer to [Stress Test Result Visualization Guide](https://evalscope.readthedocs.io/zh-cn/latest/user_guides/stress_test/quick_start.html#id6).
+**A:** Start `evalscope service` with the output root containing the `perf` results (default: `outputs/`), then open the **Performance** page in the Web Dashboard. You can also send results to `wandb`, `swanlab`, or `clearml`. See the [Stress Test Result Visualization Guide](../user_guides/stress_test/quick_start.md#visualizing-test-results).
 
 ## Citing Us
 

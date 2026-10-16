@@ -37,7 +37,7 @@ ZeroBench is a challenging visual reasoning benchmark for Large Multimodal Model
 | **Dataset ID** | [evalscope/zerobench](https://modelscope.cn/datasets/evalscope/zerobench/summary) |
 | **Paper** | N/A |
 | **Tags** | `Knowledge`, `MultiModal`, `QA` |
-| **Metrics** | `acc` |
+| **Metrics** | `accuracy` |
 | **Default Shots** | 0-shot |
 | **Evaluation Split** | `zerobench` |
 | **Train Split** | `zerobench_subquestions` |
@@ -116,6 +116,7 @@ evalscope eval \
     --api-url OPENAI_API_COMPAT_URL \
     --api-key EMPTY_TOKEN \
     --datasets zerobench \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # Remove this line for formal evaluation
 ```
 
@@ -130,6 +131,7 @@ task_cfg = TaskConfig(
     api_url='OPENAI_API_COMPAT_URL',
     api_key='EMPTY_TOKEN',
     datasets=['zerobench'],
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     limit=10,  # Remove this line for formal evaluation
 )
 

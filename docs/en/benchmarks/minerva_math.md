@@ -37,7 +37,7 @@ Minerva-Math is a benchmark designed to evaluate advanced mathematical and quant
 | **Dataset ID** | [knoveleng/Minerva-Math](https://modelscope.cn/datasets/knoveleng/Minerva-Math/summary) |
 | **Paper** | N/A |
 | **Tags** | `Math`, `Reasoning` |
-| **Metrics** | `acc` |
+| **Metrics** | `accuracy` |
 | **Default Shots** | 0-shot |
 | **Evaluation Split** | `train` |
 
@@ -90,6 +90,7 @@ evalscope eval \
     --api-url OPENAI_API_COMPAT_URL \
     --api-key EMPTY_TOKEN \
     --datasets minerva_math \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # Remove this line for formal evaluation
 ```
 
@@ -104,6 +105,7 @@ task_cfg = TaskConfig(
     api_url='OPENAI_API_COMPAT_URL',
     api_key='EMPTY_TOKEN',
     datasets=['minerva_math'],
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     limit=10,  # Remove this line for formal evaluation
 )
 

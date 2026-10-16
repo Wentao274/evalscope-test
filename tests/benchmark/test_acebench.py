@@ -6,10 +6,11 @@ and the agent rollouts are driven by scripted models against the vendored scenar
 import copy
 import json
 import os
-import pytest
 import re
 import sys
 from typing import Any, Dict, List
+
+import pytest
 
 from evalscope.api.messages import ChatMessage
 from evalscope.api.metric import SampleScore, Score
@@ -636,8 +637,8 @@ def test_multi_turn_subsets_aggregate_per_dialogue(adapter):
     ]
 
     scores = {agg.metric_name: agg for agg in adapter.aggregate_scores(sample_scores)}
-    assert scores['acc'].score == pytest.approx(0.5)
-    assert scores['acc'].num == 2
+    assert scores['accuracy'].score == pytest.approx(0.5)
+    assert scores['accuracy'].num == 2
     assert scores['process_acc'].score == pytest.approx(0.75)
 
 

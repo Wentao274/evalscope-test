@@ -30,6 +30,7 @@ MMAU_PROMPT = r"""Answer the following multiple choice question based on the aud
         name='mmau',
         pretty_name='MMAU',
         dataset_id='lmms-lab/mmau',
+        hf_dataset_id='lmms-lab/mmau',
         tags=[Tags.AUDIO, Tags.MULTIPLE_CHOICE],
         description="""
 ## Overview
@@ -65,7 +66,6 @@ MMAU (Massive Multitask Audio Understanding) is a comprehensive benchmark for ev
     )
 )
 class MMAUAdapter(AudioLanguageAdapter, MultiChoiceAdapter):
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.split_as_subset = True
@@ -83,7 +83,7 @@ class MMAUAdapter(AudioLanguageAdapter, MultiChoiceAdapter):
                 break
 
         # Format choices string
-        letters_str = ', '.join(LETTERS[:len(choices)])
+        letters_str = ', '.join(LETTERS[: len(choices)])
         choices_str = '\n'.join([f'{LETTERS[i]}. {c}' for i, c in enumerate(choices)])
         input_text = MMAU_PROMPT.format(
             letters=letters_str,
@@ -105,7 +105,7 @@ class MMAUAdapter(AudioLanguageAdapter, MultiChoiceAdapter):
                 'task': record.get('task', ''),
                 'answer': answer_text,
                 'audio_id': record.get('audio_id', ''),
-            }
+            },
         )
 
     def match_score(
@@ -161,12 +161,12 @@ class MMAUAdapter(AudioLanguageAdapter, MultiChoiceAdapter):
         """Aggregate scores with overall and per-task category accuracy."""
         total = len(sample_scores)
         if total == 0:
-            return [AggScore(metric_name='acc', score=0.0, num=0)]
+            return [AggScore(metric_name='accuracy', score=0.0, num=0)]
 
         total_correct = sum(ss.score.main_value for ss in sample_scores)
         overall_acc = total_correct / total
 
-        agg_scores: List[AggScore] = [AggScore(metric_name='acc', score=overall_acc, num=total)]
+        agg_scores: List[AggScore] = [AggScore(metric_name='accuracy', score=overall_acc, num=total)]
 
         # Per-task category accuracy
         group_totals: Dict[str, int] = defaultdict(int)
@@ -178,7 +178,14 @@ class MMAUAdapter(AudioLanguageAdapter, MultiChoiceAdapter):
 
         for task_name in sorted(group_totals.keys()):
             task_acc = group_correct[task_name] / group_totals[task_name]
-            agg_scores.append(AggScore(metric_name=f'acc_{task_name}', score=task_acc, num=group_totals[task_name]))
+            agg_scores.append(
+                AggScore(
+                    metric_name='accuracy',
+                    dimensions={'task': task_name},
+                    score=task_acc,
+                    num=group_totals[task_name],
+                )
+            )
             logger.info(f'MMAU {task_name} accuracy: {task_acc:.2%}')
 
         logger.info(f'MMAU overall accuracy: {overall_acc:.2%}')

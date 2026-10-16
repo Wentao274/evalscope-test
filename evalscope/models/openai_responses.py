@@ -1,8 +1,9 @@
 import os
 import time
-from openai import APIStatusError, BadRequestError, PermissionDeniedError, UnprocessableEntityError
-from openai._types import NOT_GIVEN
 from typing import Any, Dict, List, Optional, Tuple, Union
+
+from openai import APIStatusError
+from openai._types import NOT_GIVEN
 
 from evalscope.api.messages import ChatMessage
 from evalscope.api.messages.perf_metrics import PerformanceMetrics
@@ -11,7 +12,8 @@ from evalscope.api.tool import ToolChoice, ToolInfo
 from evalscope.utils import get_logger
 from evalscope.utils.argument_utils import get_supported_params
 from evalscope.utils.function_utils import async_retry_call, retry_call
-from .openai_compatible import OpenAICompatibleAPI
+
+from .openai_compatible import NON_RETRYABLE_OPENAI_ERRORS, OpenAICompatibleAPI
 from .utils.openai import openai_handle_bad_request
 from .utils.openai_responses import (
     async_collect_response_stream,
@@ -72,25 +74,30 @@ class OpenAIResponsesAPI(OpenAICompatibleAPI):
         tool_choice: ToolChoice,
         config: GenerateConfig,
     ) -> ModelOutput:
+        """Generate a response, retrying the entire request if its stream is interrupted."""
         request, tools, config = self._build_request(input, tools, tool_choice, config)
 
         try:
             t_start = time.monotonic()
             ttft: Optional[float] = None
 
-            response = retry_call(
-                self.client.responses.create,
+            def _create_and_collect() -> Tuple[Response, Optional[float]]:
+                raw_response = self.client.responses.create(**request)
+                if self._is_response_object(raw_response):
+                    return raw_response, None
+                return collect_response_stream(raw_response, request_start=t_start)
+
+            response, ttft = retry_call(
+                _create_and_collect,
                 retries=config.retries,
                 sleep_interval=config.retry_interval,
-                **request,
+                no_retry_exceptions=NON_RETRYABLE_OPENAI_ERRORS,
             )
-            if not self._is_response_object(response):
-                response, ttft = collect_response_stream(response, request_start=t_start)
 
             total_time = time.monotonic() - t_start
             return self._build_output(response, tools, total_time, ttft)
 
-        except (BadRequestError, UnprocessableEntityError, PermissionDeniedError) as ex:
+        except NON_RETRYABLE_OPENAI_ERRORS as ex:
             return self.handle_bad_request(ex)
         except ValueError as ex:
             logger.error(f'Model [{self.model_name}] returned an invalid response: {ex}')
@@ -103,25 +110,30 @@ class OpenAIResponsesAPI(OpenAICompatibleAPI):
         tool_choice: ToolChoice,
         config: GenerateConfig,
     ) -> ModelOutput:
+        """Generate asynchronously with stream consumption inside the retry boundary."""
         request, tools, config = self._build_request(input, tools, tool_choice, config)
 
         try:
             t_start = time.monotonic()
             ttft: Optional[float] = None
 
-            response = await async_retry_call(
-                self.async_client.responses.create,
+            async def _create_and_collect() -> Tuple[Response, Optional[float]]:
+                raw_response = await self.async_client.responses.create(**request)
+                if self._is_response_object(raw_response):
+                    return raw_response, None
+                return await async_collect_response_stream(raw_response, request_start=t_start)
+
+            response, ttft = await async_retry_call(
+                _create_and_collect,
                 retries=config.retries,
                 sleep_interval=config.retry_interval,
-                **request,
+                no_retry_exceptions=NON_RETRYABLE_OPENAI_ERRORS,
             )
-            if not self._is_response_object(response):
-                response, ttft = await async_collect_response_stream(response, request_start=t_start)
 
             total_time = time.monotonic() - t_start
             return self._build_output(response, tools, total_time, ttft)
 
-        except (BadRequestError, UnprocessableEntityError, PermissionDeniedError) as ex:
+        except NON_RETRYABLE_OPENAI_ERRORS as ex:
             return self.handle_bad_request(ex)
         except ValueError as ex:
             logger.error(f'Model [{self.model_name}] returned an invalid response: {ex}')

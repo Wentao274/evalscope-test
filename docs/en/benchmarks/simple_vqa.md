@@ -37,7 +37,7 @@ SimpleVQA is the first comprehensive multimodal benchmark to evaluate the factua
 | **Dataset ID** | [m-a-p/SimpleVQA](https://modelscope.cn/datasets/m-a-p/SimpleVQA/summary) |
 | **Paper** | N/A |
 | **Tags** | `MultiModal`, `QA`, `Reasoning` |
-| **Metrics** | `acc` |
+| **Metrics** | `accuracy` |
 | **Default Shots** | 0-shot |
 | **Evaluation Split** | `test` |
 
@@ -115,6 +115,7 @@ evalscope eval \
     --api-url OPENAI_API_COMPAT_URL \
     --api-key EMPTY_TOKEN \
     --datasets simple_vqa \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # Remove this line for formal evaluation
 ```
 
@@ -129,6 +130,7 @@ task_cfg = TaskConfig(
     api_url='OPENAI_API_COMPAT_URL',
     api_key='EMPTY_TOKEN',
     datasets=['simple_vqa'],
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     limit=10,  # Remove this line for formal evaluation
 )
 

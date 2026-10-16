@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import { ArrowUpDown, ChevronDown } from 'lucide-react'
+import { ArrowUpDown, ChevronDown, Layers } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useLocale } from '@/contexts/LocaleContext'
 import SearchInput from '@/components/ui/SearchInput'
@@ -10,10 +10,14 @@ export interface ReportFilters {
   search: string
   models: string[]
   datasets: string[]
-  scoreMin: number
-  scoreMax: number
-  sortBy: 'score' | 'model' | 'dataset' | 'time'
+  sortBy: 'model' | 'dataset' | 'time'
   sortOrder: 'asc' | 'desc'
+  /**
+   * Roll same-model reports into one expandable row each. Display-only - no
+   * report is read, written, or merged; every child report keeps its own
+   * identity and its own honestly-attributed score underneath.
+   */
+  groupByModel: boolean
 }
 
 interface ReportFiltersProps {
@@ -107,7 +111,6 @@ export default function ReportFiltersBar({
 
   const sortOptions: { value: ReportFilters['sortBy']; label: string }[] = [
     { value: 'time', label: t('reports.filters.time') },
-    { value: 'score', label: t('reports.filters.score') },
     { value: 'model', label: t('reports.filters.model') },
     { value: 'dataset', label: t('reports.filters.dataset') },
   ]
@@ -127,19 +130,6 @@ export default function ReportFiltersBar({
       onRemove: () => update({ datasets: filters.datasets.filter((x) => x !== d) }),
     }),
   )
-  if (filters.scoreMin > 0)
-    activeFilters.push({
-      key: 'scoreMin',
-      label: `score≥${filters.scoreMin}`,
-      onRemove: () => update({ scoreMin: 0 }),
-    })
-  if (filters.scoreMax < 1)
-    activeFilters.push({
-      key: 'scoreMax',
-      label: `score≤${filters.scoreMax}`,
-      onRemove: () => update({ scoreMax: 1 }),
-    })
-
   return (
     <div className="flex flex-col gap-2">
       {/* Filter row */}
@@ -165,30 +155,17 @@ export default function ReportFiltersBar({
           onChange={(datasets) => update({ datasets })}
         />
 
-        {/* Score range */}
-        <div className="flex items-center gap-1 text-sm">
-          <span className="text-[var(--text-muted)] text-xs">{t('reports.filters.score')}:</span>
-          <input
-            type="number"
-            min={0}
-            max={1}
-            step={0.01}
-            value={filters.scoreMin}
-            onChange={(e) => update({ scoreMin: parseFloat(e.target.value) || 0 })}
-            className="w-[60px] px-2 py-1.5 text-xs rounded-[var(--radius-sm)] bg-[var(--bg-deep)] border border-[var(--border)] text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
-          />
-          {/* text-dim allowed: decorative em-dash range separator (DESIGN.md §Text) */}
-          <span className="text-[var(--text-dim)]">—</span>
-          <input
-            type="number"
-            min={0}
-            max={1}
-            step={0.01}
-            value={filters.scoreMax}
-            onChange={(e) => update({ scoreMax: parseFloat(e.target.value) || 1 })}
-            className="w-[60px] px-2 py-1.5 text-xs rounded-[var(--radius-sm)] bg-[var(--bg-deep)] border border-[var(--border)] text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
-          />
-        </div>
+        <Button
+          variant={filters.groupByModel ? 'outline' : 'ghost'}
+          size="sm"
+          onClick={() => update({ groupByModel: !filters.groupByModel })}
+          className={cn('gap-1.5', filters.groupByModel && 'border-[var(--accent-dim)]')}
+          title={t('reports.filters.groupByModelHint')}
+          aria-pressed={filters.groupByModel}
+        >
+          <Layers size={14} />
+          {t('reports.filters.groupByModel')}
+        </Button>
 
         {/* Sort */}
         <div className="flex items-center gap-1 ml-auto">

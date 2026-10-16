@@ -38,7 +38,7 @@ single capability, so difficulty stems from perception rather than reasoning or 
   (`[reason]` / `[judge] True|False`); the paper uses GPT-oss-120B, whose agreement with human
   judgment is 99.7% on a 300-sample audit
 - Empty or failed generations are scored 0 without invoking the judge
-- Requires `judge_model_args` configuration for the LLM judge
+- Requires an LLM judge configured through `judge.models`
 - The dataset embeds images as base64 data URIs (~1.6 GB download on first use)
 
 
@@ -50,7 +50,7 @@ single capability, so difficulty stems from perception rather than reasoning or 
 | **Dataset ID** | [moonshotai/PerceptionBench](https://modelscope.cn/datasets/moonshotai/PerceptionBench/summary) |
 | **Paper** | [Paper](https://arxiv.org/abs/2607.24957) |
 | **Tags** | `MultiModal`, `QA` |
-| **Metrics** | `acc` |
+| **Metrics** | `accuracy` |
 | **Default Shots** | 0-shot |
 | **Evaluation Split** | `train` |
 
@@ -135,6 +135,7 @@ evalscope eval \
     --api-url OPENAI_API_COMPAT_URL \
     --api-key EMPTY_TOKEN \
     --datasets perception_bench \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # Remove this line for formal evaluation
 ```
 
@@ -149,6 +150,7 @@ task_cfg = TaskConfig(
     api_url='OPENAI_API_COMPAT_URL',
     api_key='EMPTY_TOKEN',
     datasets=['perception_bench'],
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     dataset_args={
         'perception_bench': {
             # subset_list: ['visual_relation_error', 'visual_counting_error', 'visual_attribute_error']  # optional, evaluate specific subsets

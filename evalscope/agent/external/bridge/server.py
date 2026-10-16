@@ -12,15 +12,17 @@ import json
 import threading
 import time
 import uuid
-from aiohttp import web
 from contextlib import asynccontextmanager
 from enum import Enum
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+from aiohttp import web
+
 from evalscope.api.model import GenerateConfig, Model
 from evalscope.utils.asyncio_runtime import AsyncioLoopRunner, cancel_and_wait
 from evalscope.utils.logger import get_logger
+
 from ..runners.base import BridgeEndpoint
 from .sse_anthropic import stream_anthropic_response
 from .sse_gemini import stream_gemini_response
@@ -277,8 +279,8 @@ class ModelProxyServer:
                     'type': 'error',
                     'error': {
                         'type': 'not_found',
-                        'message': f'no handler for {request.path}'
-                    }
+                        'message': f'no handler for {request.path}',
+                    },
                 },
                 status=404,
             )
@@ -427,8 +429,8 @@ class ModelProxyServer:
                     'type': 'error',
                     'error': {
                         'type': 'authentication_error',
-                        'message': str(exc)
-                    }
+                        'message': str(exc),
+                    },
                 },
                 status=401,
             )
@@ -484,12 +486,14 @@ class ModelProxyServer:
                 config=gen_config,
             )
         except Exception as exc:  # pragma: no cover - upstream-dependent
-            _log_upstream_failure(session, exc, mode='json')
+            _handle_upstream_failure(session, exc, mode='json', latency_ms=(time.monotonic() - started) * 1000)
             return web.json_response(
-                {'error': {
-                    'type': 'api_error',
-                    'message': repr(exc)
-                }},
+                {
+                    'error': {
+                        'type': 'api_error',
+                        'message': repr(exc),
+                    },
+                },
                 status=502,
             )
 
@@ -521,31 +525,41 @@ class ModelProxyServer:
             )
         )
         failure_handled = False
+        client_disconnected = False
         try:
             async for chunk in stream_openai_response(
                 generate_task,
                 request_model=body.get('model'),
                 include_usage=include_usage,
             ):
-                await response.write(chunk)
-            output = await generate_task
-            latency_ms = (time.monotonic() - started) * 1000
-            session.recorder.record_openai_turn(body, output, latency_ms=latency_ms)
-            _log_turn(session, output, latency_ms, mode='stream')
+                try:
+                    await response.write(chunk)
+                except ConnectionResetError:
+                    client_disconnected = True
+                    break
+            if not client_disconnected:
+                output = await generate_task
+                latency_ms = (time.monotonic() - started) * 1000
+                session.recorder.record_openai_turn(body, output, latency_ms=latency_ms)
+                _log_turn(session, output, latency_ms, mode='stream')
         except Exception as exc:  # pragma: no cover - upstream-dependent
             failure_handled = True
-            _log_upstream_failure(session, exc, mode='stream')
-            error_event = (
-                f'data: {json.dumps({"error": {"type": "api_error", "message": repr(exc)}})}\n\n'
-                f'data: [DONE]\n\n'
-            ).encode('utf-8')
+            _handle_upstream_failure(session, exc, mode='stream', latency_ms=(time.monotonic() - started) * 1000)
+            error_payload = {
+                'error': {
+                    'type': 'api_error',
+                    'message': repr(exc),
+                },
+            }
+            error_event = f'data: {json.dumps(error_payload)}\n\ndata: [DONE]\n\n'.encode('utf-8')
             try:
                 await response.write(error_event)
             except ConnectionResetError:
                 pass
         finally:
-            await _finish_generation_task(generate_task, failure_handled=failure_handled)
-        await response.write_eof()
+            await _finish_generation_task(generate_task, failure_handled=failure_handled or client_disconnected)
+        if not client_disconnected:
+            await response.write_eof()
         return response
 
     async def _handle_openai_responses(self, request: web.Request) -> web.StreamResponse:
@@ -588,12 +602,14 @@ class ModelProxyServer:
                 config=gen_config,
             )
         except Exception as exc:  # pragma: no cover - upstream-dependent
-            _log_upstream_failure(session, exc, mode='json')
+            _handle_upstream_failure(session, exc, mode='json', latency_ms=(time.monotonic() - started) * 1000)
             return web.json_response(
-                {'error': {
-                    'type': 'api_error',
-                    'message': repr(exc)
-                }},
+                {
+                    'error': {
+                        'type': 'api_error',
+                        'message': repr(exc),
+                    },
+                },
                 status=502,
             )
 
@@ -623,6 +639,7 @@ class ModelProxyServer:
         response = await self._prepare_sse_response(request)
 
         started = time.monotonic()
+        client_disconnected = False
         try:
             output = await session.model.generate_async(
                 input=chat_messages,
@@ -635,9 +652,13 @@ class ModelProxyServer:
             _log_turn(session, output, latency_ms, mode='stream')
             payload = model_output_to_responses_payload(output, request_model=body.get('model'))
             async for chunk in stream_responses_payload(payload):
-                await response.write(chunk)
+                try:
+                    await response.write(chunk)
+                except ConnectionResetError:
+                    client_disconnected = True
+                    break
         except Exception as exc:  # pragma: no cover - upstream-dependent
-            _log_upstream_failure(session, exc, mode='stream')
+            _handle_upstream_failure(session, exc, mode='stream', latency_ms=(time.monotonic() - started) * 1000)
             # Responses error frame shape per OpenAI SDK ``ResponseErrorEvent``:
             # event name ``error`` (NOT ``response.failed`` — that one requires
             # a fully-constructed ``Response`` object with id/created_at/output/usage,
@@ -657,7 +678,8 @@ class ModelProxyServer:
                 await response.write(error_event)
             except ConnectionResetError:
                 pass
-        await response.write_eof()
+        if not client_disconnected:
+            await response.write_eof()
         return response
 
     # ---- Gemini routes ----------------------------------------------------
@@ -715,13 +737,15 @@ class ModelProxyServer:
                 config=gen_config,
             )
         except Exception as exc:
-            _log_upstream_failure(session, exc, mode='json')
+            _handle_upstream_failure(session, exc, mode='json', latency_ms=(time.monotonic() - started) * 1000)
             return web.json_response(
-                {'error': {
-                    'code': 502,
-                    'message': repr(exc),
-                    'status': 'UNAVAILABLE',
-                }},
+                {
+                    'error': {
+                        'code': 502,
+                        'message': repr(exc),
+                        'status': 'UNAVAILABLE',
+                    },
+                },
                 status=502,
             )
 
@@ -753,24 +777,31 @@ class ModelProxyServer:
             )
         )
         failure_handled = False
+        client_disconnected = False
         try:
             async for chunk in stream_gemini_response(generate_task, request_model=body.get('model')):
-                await response.write(chunk)
-            output = await generate_task
-            latency_ms = (time.monotonic() - started) * 1000
-            session.recorder.record_gemini_turn(body, output, latency_ms=latency_ms)
-            _log_turn(session, output, latency_ms, mode='stream')
+                try:
+                    await response.write(chunk)
+                except ConnectionResetError:
+                    client_disconnected = True
+                    break
+            if not client_disconnected:
+                output = await generate_task
+                latency_ms = (time.monotonic() - started) * 1000
+                session.recorder.record_gemini_turn(body, output, latency_ms=latency_ms)
+                _log_turn(session, output, latency_ms, mode='stream')
         except Exception as exc:
             failure_handled = True
-            _log_upstream_failure(session, exc, mode='stream')
+            _handle_upstream_failure(session, exc, mode='stream', latency_ms=(time.monotonic() - started) * 1000)
             error_data = json.dumps({'error': {'code': 502, 'message': repr(exc), 'status': 'UNAVAILABLE'}})
             try:
                 await response.write(f'data: {error_data}\n\n'.encode('utf-8'))
             except ConnectionResetError:
                 pass
         finally:
-            await _finish_generation_task(generate_task, failure_handled=failure_handled)
-        await response.write_eof()
+            await _finish_generation_task(generate_task, failure_handled=failure_handled or client_disconnected)
+        if not client_disconnected:
+            await response.write_eof()
         return response
 
     async def _respond_json(
@@ -789,14 +820,14 @@ class ModelProxyServer:
                 config=gen_config,
             )
         except Exception as exc:  # pragma: no cover - upstream-dependent
-            _log_upstream_failure(session, exc, mode='json')
+            _handle_upstream_failure(session, exc, mode='json', latency_ms=(time.monotonic() - started) * 1000)
             return web.json_response(
                 {
                     'type': 'error',
                     'error': {
                         'type': 'api_error',
-                        'message': repr(exc)
-                    }
+                        'message': repr(exc),
+                    },
                 },
                 status=502,
             )
@@ -832,30 +863,40 @@ class ModelProxyServer:
             )
         )
         failure_handled = False
+        client_disconnected = False
         try:
             async for chunk in stream_anthropic_response(generate_task, request_model=body.get('model')):
-                await response.write(chunk)
-            # Recorder needs the resolved output; awaiting the task is a no-op
-            # because the streamer already drained it.
-            output = await generate_task
-            latency_ms = (time.monotonic() - started) * 1000
-            session.recorder.record_anthropic_turn(body, output, latency_ms=latency_ms)
-            _log_turn(session, output, latency_ms, mode='stream')
+                try:
+                    await response.write(chunk)
+                except ConnectionResetError:
+                    client_disconnected = True
+                    break
+            if not client_disconnected:
+                # Recorder needs the resolved output; awaiting the task is a no-op
+                # because the streamer already drained it.
+                output = await generate_task
+                latency_ms = (time.monotonic() - started) * 1000
+                session.recorder.record_anthropic_turn(body, output, latency_ms=latency_ms)
+                _log_turn(session, output, latency_ms, mode='stream')
         except Exception as exc:  # pragma: no cover - upstream-dependent
             failure_handled = True
-            _log_upstream_failure(session, exc, mode='stream')
-            error_event = (
-                f'event: error\ndata: '
-                f'{json.dumps({"type": "error", "error": {"type": "api_error", "message": repr(exc)}})}'
-                f'\n\n'
-            ).encode('utf-8')
+            _handle_upstream_failure(session, exc, mode='stream', latency_ms=(time.monotonic() - started) * 1000)
+            error_payload = {
+                'type': 'error',
+                'error': {
+                    'type': 'api_error',
+                    'message': repr(exc),
+                },
+            }
+            error_event = f'event: error\ndata: {json.dumps(error_payload)}\n\n'.encode('utf-8')
             try:
                 await response.write(error_event)
             except ConnectionResetError:
                 pass
         finally:
-            await _finish_generation_task(generate_task, failure_handled=failure_handled)
-        await response.write_eof()
+            await _finish_generation_task(generate_task, failure_handled=failure_handled or client_disconnected)
+        if not client_disconnected:
+            await response.write_eof()
         return response
 
     async def _auth_check_openai(self, request: web.Request) -> 'TrialSession | web.Response':
@@ -873,11 +914,13 @@ class ModelProxyServer:
         except _BridgeAuthError as exc:
             logger.debug(f'bridge: auth failed — {exc}')
             return web.json_response(
-                {'error': {
-                    'type': 'invalid_request_error',
-                    'code': 'invalid_api_key',
-                    'message': str(exc),
-                }},
+                {
+                    'error': {
+                        'type': 'invalid_request_error',
+                        'code': 'invalid_api_key',
+                        'message': str(exc),
+                    },
+                },
                 status=401,
             )
 
@@ -900,7 +943,7 @@ class ModelProxyServer:
         token = _extract_bearer_token(request)
         if not token or not token.startswith(_TRIAL_TOKEN_PREFIX):
             raise _BridgeAuthError(f'missing or malformed bridge token (expected {_TRIAL_TOKEN_PREFIX}<id>)')
-        trial_id = token[len(_TRIAL_TOKEN_PREFIX):]
+        trial_id = token[len(_TRIAL_TOKEN_PREFIX) :]
         async with self._sessions_lock:
             session = self._sessions.get(trial_id)
         if session is None:
@@ -915,19 +958,21 @@ class _BridgeAuthError(Exception):
 #: Exception class names treated as "upstream business error" (rate
 #: limit, auth, model-side failure). Matched by class name so we don't
 #: take a hard dependency on the ``anthropic`` package at import time.
-_UPSTREAM_BUSINESS_ERRORS = frozenset({
-    'APIError',
-    'APIStatusError',
-    'APIConnectionError',
-    'APITimeoutError',
-    'RateLimitError',
-    'AuthenticationError',
-    'PermissionDeniedError',
-    'NotFoundError',
-    'BadRequestError',
-    'UnprocessableEntityError',
-    'InternalServerError',
-})
+_UPSTREAM_BUSINESS_ERRORS = frozenset(
+    {
+        'APIError',
+        'APIStatusError',
+        'APIConnectionError',
+        'APITimeoutError',
+        'RateLimitError',
+        'AuthenticationError',
+        'PermissionDeniedError',
+        'NotFoundError',
+        'BadRequestError',
+        'UnprocessableEntityError',
+        'InternalServerError',
+    }
+)
 
 
 def _log_upstream_failure(session: 'TrialSession', exc: BaseException, *, mode: str) -> None:
@@ -951,6 +996,26 @@ def _log_upstream_failure(session: 'TrialSession', exc: BaseException, *, mode: 
         logger.warning(f'{tag} upstream {mode} {cls_name}: {str(exc)[:200]}')
         return
     logger.exception(f'{tag} {mode} generate failed')
+
+
+def _handle_upstream_failure(
+    session: 'TrialSession',
+    exc: BaseException,
+    *,
+    mode: str,
+    latency_ms: float,
+) -> None:
+    """Log an upstream failure *and* record it on the trace.
+
+    Downgrading routine upstream errors to a one-line WARNING (see
+    :func:`_log_upstream_failure`) keeps the eval log readable, but the log is
+    not the artifact anyone analyses afterwards: ``AgentTrace`` is. Recording
+    only the turns that succeeded leaves every retried attempt invisible, which
+    is what the native :class:`AgentLoop` already avoids by emitting
+    ``EventType.ERROR`` for its own failure modes.
+    """
+    _log_upstream_failure(session, exc, mode=mode)
+    session.recorder.record_turn_failure(mode=mode, exc=exc, latency_ms=latency_ms)
 
 
 def _log_turn(session: 'TrialSession', output, latency_ms: float, *, mode: str) -> None:

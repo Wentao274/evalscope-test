@@ -1,13 +1,21 @@
 import copy
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, Type, Union
 
+from pydantic import BaseModel
+
+from evalscope.api.metric.semantics import MetricSelector
 from evalscope.constants import OutputType
+from evalscope.metrics.semantics.legacy_identity import canonical_metric_list_name, migrate_legacy_identity
+from evalscope.utils import get_logger
+
+logger = get_logger()
 
 if TYPE_CHECKING:
     from evalscope.api.benchmark import DataAdapter
     from evalscope.api.benchmark.statistics import DataStatistics, SampleExample
+    from evalscope.api.dataset import DatasetSource
 
 
 @dataclass
@@ -35,6 +43,12 @@ class BenchmarkMeta:
     few_shot_num: int = 0
     """ Number of few-shot examples to use."""
 
+    few_shot_mode: Literal['auto', 'disabled', 'fixed'] = 'auto'
+    """Supported few-shot strategy for this benchmark."""
+
+    allowed_few_shot_nums: Optional[Tuple[int, ...]] = None
+    """Allowed few-shot counts, or ``None`` when every non-negative count is valid."""
+
     few_shot_random: bool = False
     """ Whether to use random few-shot examples."""
 
@@ -52,6 +66,12 @@ class BenchmarkMeta:
 
     system_prompt: Optional[str] = None
     """ System prompt to use for the benchmark."""
+
+    supports_choice: bool = False
+    """Whether the adapter has an audited text single-choice conversion."""
+
+    choice_instructions: Optional[str] = None
+    """Task instructions for structured Choice evaluation."""
 
     query_template: Optional[str] = None
     """ Query template to use for the benchmark."""
@@ -85,6 +105,15 @@ class BenchmarkMeta:
     aggregation: str = 'mean'
     """ Aggregation function for the metrics. Default is 'mean'. Can be 'mean', 'pass@<k>' or a custom function name."""
 
+    primary_metric: Optional[Union[str, MetricSelector]] = None
+    """Structured selector for the benchmark's primary report metric.
+
+    This is the report-level authoritative declaration. Optional for single-metric benchmarks
+    (the only scored identity is implicitly primary). If a report contains several scored
+    identities, it must provide a selector that matches exactly one of them. Every other
+    non-diagnostic metric is resolved as ``auxiliary``.
+    """
+
     shuffle: bool = False
     """Whether to shuffle the dataset before evaluation."""
 
@@ -112,7 +141,7 @@ class BenchmarkMeta:
     """
 
     sandbox_config: Optional[Dict[str, Any]] = field(default_factory=dict)
-    """Configuration for sandboxed code execution environments. """
+    """Configuration for sandboxed code execution environments."""
 
     max_image_bytes: Optional[Union[int, str]] = None
     """Maximum image size for vision-language benchmarks.
@@ -122,10 +151,151 @@ class BenchmarkMeta:
     ``'1.5gb'`` (parsed by ``parse_size``).
     Useful for avoiding 413 errors when sending multi-image payloads to APIs."""
 
+    evaluation_version: str = 'v1.0'
+    """Published evaluation semantics version used for cache compatibility."""
+
+    dataset_revision: Optional[str] = None
+    """Optional immutable revision of the remote dataset source."""
+
+    hf_dataset_id: Optional[str] = None
+    """Optional Hugging Face dataset repo id when it differs from the ModelScope dataset id.
+    Used automatically when ``dataset_hub`` is set to ``huggingface``."""
+
+    hf_dataset_revision: Optional[str] = None
+    """Optional revision override used when loading the dataset from the Hugging Face hub."""
+
+    @property
+    def dataset_source(self) -> 'DatasetSource':
+        """Return the shared hub-aware dataset source declaration."""
+        from evalscope.api.dataset import DatasetSource
+
+        return DatasetSource(
+            dataset_id=self.dataset_id,
+            dataset_revision=self.dataset_revision,
+            hf_dataset_id=self.hf_dataset_id,
+            hf_dataset_revision=self.hf_dataset_revision,
+        )
+
     def __post_init__(self):
         """Validate fields after initialization."""
+        from evalscope.evaluation_versioning import validate_evaluation_version
+
+        validate_evaluation_version(self.evaluation_version)
+        self._validate_few_shot_metadata()
+        self._normalize_metric_list()
+        self._normalize_primary_metric()
+        self._validate_primary_metric()
+
+    def _validate_few_shot_metadata(self) -> None:
+        """Validate benchmark-declared few-shot capabilities."""
         if self.few_shot_num < 0:
             raise ValueError('few_shot_num must be >= 0')
+        if self.few_shot_mode not in {'auto', 'disabled', 'fixed'}:
+            raise ValueError(f'Unsupported few_shot_mode: {self.few_shot_mode}')
+        if self.few_shot_mode == 'disabled':
+            if self.allowed_few_shot_nums is not None:
+                raise ValueError('allowed_few_shot_nums requires few_shot_mode to be auto or fixed')
+            return
+        if self.few_shot_mode == 'fixed' and not self.allowed_few_shot_nums:
+            raise ValueError('fixed few_shot_mode requires allowed_few_shot_nums')
+        if self.allowed_few_shot_nums is not None:
+            if not self.allowed_few_shot_nums:
+                raise ValueError('allowed_few_shot_nums must not be empty')
+            if any(
+                not isinstance(count, int) or isinstance(count, bool) or count < 0
+                for count in self.allowed_few_shot_nums
+            ):
+                raise ValueError('allowed_few_shot_nums must contain non-negative integers')
+            if 0 not in self.allowed_few_shot_nums:
+                raise ValueError('allowed_few_shot_nums must include 0')
+
+    def _normalize_metric_list(self) -> None:
+        """Normalize unambiguous legacy scorer aliases at the adapter boundary.
+
+        Which spellings may be rewritten is alias knowledge, so it is asked for rather than
+        restated here: a rewritten name must still resolve through ``get_metric()``, the constraint
+        the ``bertscore`` / ``bert_score`` mismatch broke. Aliases that reassign meaning
+        (``total_score`` -> ``judge_score``) are out of that scope, so no rewrite here can hide the
+        reassignment warning a third-party adapter needs to see.
+        """
+        normalized = []
+        for entry in self.metric_list:
+            raw_name = entry if isinstance(entry, str) else next(iter(entry), '')
+            canonical_name = canonical_metric_list_name(raw_name, self.name)
+            if canonical_name is None:
+                normalized.append(entry)
+            elif isinstance(entry, str):
+                normalized.append(canonical_name)
+            else:
+                normalized.append({canonical_name: entry[raw_name]})
+        self.metric_list = normalized
+
+    def _normalize_primary_metric(self) -> None:
+        """Normalize the common string shorthand to a selector."""
+        if not isinstance(self.primary_metric, str):
+            return
+        identity = migrate_legacy_identity(self.primary_metric, self.aggregation, benchmark_name=self.name)
+        self.primary_metric = MetricSelector(name=identity.name)
+
+    def _metric_names(self) -> List[str]:
+        """Return the distinct raw metric names declared in ``metric_list``.
+
+        Mirrors how ``match_score()`` reads ``metric_list``: a plain string is the metric name,
+        a dict maps a single metric name to its options.
+
+        Returns:
+            Distinct raw metric names, in declaration order.
+        """
+        names: List[str] = []
+        for entry in self.metric_list or ():
+            if isinstance(entry, str):
+                name = entry
+            elif isinstance(entry, dict) and entry:
+                name = next(iter(entry))
+            else:
+                name = None
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    def _validate_primary_metric(self) -> None:
+        """Reject a primary metric that is not declared, and warn when one is missing.
+
+        A benchmark reporting several metrics should say which one carries the conclusion,
+        otherwise every consumer has to guess. Staying silent only warns here because this check
+        runs at import time (``@register_benchmark`` constructs the meta) and third-party adapters
+        may predate the selector. Report generation applies the strict rule: without a selector,
+        exactly one non-diagnostic identity must remain.
+
+        Naming a metric that is not in ``metric_list`` does raise: the field is new, so no
+        existing adapter can hit it, and the value can only be a typo.
+
+        Only the two own fields ``metric_list`` and ``primary_metric`` are read: no
+        ``task_config`` access and no dataset resolution, so instantiating an adapter without a
+        task config (as the docs pipeline does) stays unaffected.
+
+        Raises:
+            ValueError: If ``primary_metric`` is not part of ``metric_list``.
+        """
+        names = self._metric_names()
+
+        if self.primary_metric is not None:
+            canonical_names = {
+                migrate_legacy_identity(name, self.aggregation, benchmark_name=self.name).name for name in names
+            }
+            if self.primary_metric.name not in canonical_names:
+                raise ValueError(
+                    f"benchmark '{self.name}': primary_metric='{self.primary_metric.name}' is not in "
+                    f'metric_list {names}'
+                )
+            return
+
+        if len(names) >= 2:
+            logger.warning(
+                f"benchmark '{self.name}': metric_list declares multiple metrics {names} but no "
+                f'primary_metric; report generation will reject multiple scored identities. '
+                f'Declare primary_metric to make the choice explicit.'
+            )
 
     def _is_spec_entry(self, entry: Any) -> bool:
         """Return True if entry is a spec dict (new structured form)."""
@@ -149,24 +319,55 @@ class BenchmarkMeta:
 
     def to_dict(self) -> dict:
         """Convert to dictionary, maintaining backward compatibility."""
-        return asdict(self)
+        result = self._serialize_models(asdict(self))
+        result.pop('evaluation_version', None)
+        return result
 
     def to_string_dict(self) -> dict:
         """Convert to string dictionary, excluding data_adapter."""
-        cur_dict = copy.deepcopy(asdict(self))
+        cur_dict = copy.deepcopy(self._serialize_models(asdict(self)))
         if 'data_adapter' in cur_dict:
             del cur_dict['data_adapter']
+        cur_dict.pop('evaluation_version', None)
 
         cur_dict['extra_params'] = self.get_extra_params()
         return cur_dict
+
+    @classmethod
+    def _serialize_models(cls, value: Any) -> Any:
+        """Recursively serialize Pydantic values nested in this dataclass."""
+        if isinstance(value, BaseModel):
+            return value.model_dump(mode='json')
+        if isinstance(value, dict):
+            return {key: cls._serialize_models(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._serialize_models(item) for item in value]
+        return value
 
     def _update(self, args: dict):
         """Update instance with provided arguments, maintaining backward compatibility."""
         args = copy.deepcopy(args)
 
+        protected_fields = {'evaluation_version', 'few_shot_mode', 'allowed_few_shot_nums', 'supports_choice'}
+        overridden_fields = protected_fields & args.keys()
+        if overridden_fields:
+            fields = ', '.join(sorted(overridden_fields))
+            raise ValueError(f'{fields} must be declared by BenchmarkMeta, not overridden through dataset_args.')
+
         if args.get('local_path'):
             self.dataset_id = args['local_path']
+            # A local mirror fully replaces the remote source, including any hub-specific mapping.
+            self.dataset_revision = None
+            self.hf_dataset_id = None
+            self.hf_dataset_revision = None
             del args['local_path']
+
+        if args.get('dataset_id') and args['dataset_id'] != self.dataset_id:
+            # Revisions and alternate-hub mappings belong to the declared default dataset id.
+            # Clear inherited values before applying any explicit replacements from args below.
+            self.dataset_revision = None
+            self.hf_dataset_id = None
+            self.hf_dataset_revision = None
 
         if args.get('filters'):
             self._update_filters(args['filters'])
@@ -179,9 +380,12 @@ class BenchmarkMeta:
         # Update fields with validation
         for key, value in args.items():
             if hasattr(self, key):
-                setattr(self, key, value)  # Validate few_shot_num if it's being updated
-                if key == 'few_shot_num' and value < 0:
-                    raise ValueError('few_shot_num must be >= 0')
+                setattr(self, key, value)
+
+        self._validate_few_shot_metadata()
+        self._normalize_metric_list()
+        self._normalize_primary_metric()
+        self._validate_primary_metric()
 
     def _update_filters(self, new_filters: dict):
         if self.filters is None:

@@ -6,6 +6,7 @@ from evalscope.api.benchmark import BenchmarkMeta, DefaultDataAdapter
 from evalscope.api.dataset import Sample
 from evalscope.api.evaluator import TaskState
 from evalscope.api.metric import Score
+from evalscope.api.metric.semantics import MetricSelector
 from evalscope.api.mixin import CodeExecutionSandboxMixin
 from evalscope.api.registry import register_benchmark
 from evalscope.constants import Tags
@@ -54,19 +55,15 @@ MBPP Plus is a fortified version of the MBPP benchmark, created to improve evalu
         tags=[Tags.CODING],
         description=DESCRIPTION,
         dataset_id='evalscope/mbppplus',
+        hf_dataset_id='evalplus/mbppplus',
         subset_list=['default'],
         metric_list=['acc'],
         aggregation='mean_and_pass_at_k',
+        primary_metric=MetricSelector(name='accuracy', aggregation='pass_at_k', dimensions={'k': 1}),
         eval_split='test',
         prompt_template=PROMPT,
         review_timeout=20,
-        sandbox_config={
-            'image': 'python:3.11-slim',
-            'tools_config': {
-                'shell_executor': {},
-                'python_executor': {}
-            }
-        }
+        sandbox_config={'image': 'python:3.11-slim', 'tools_config': {'shell_executor': {}, 'python_executor': {}}},
     )
 )
 class MBPPplusAdapter(CodeExecutionSandboxMixin, DefaultDataAdapter):
@@ -89,7 +86,7 @@ class MBPPplusAdapter(CodeExecutionSandboxMixin, DefaultDataAdapter):
                 'test_imports': record['test_imports'],
                 'test_list': record['test_list'],
                 'test': record['test'],
-            }
+            },
         )
 
     def format_prompt_template(self, sample: Sample) -> str:
@@ -100,7 +97,7 @@ class MBPPplusAdapter(CodeExecutionSandboxMixin, DefaultDataAdapter):
         """Extract code from the prediction."""
         code = self.postprocess_completion(prediction)
         if 'if __name__ ==' in code:
-            code = code[:code.index('if __name__ ==')]
+            code = code[: code.index('if __name__ ==')]
         return code
 
     @classmethod
@@ -108,7 +105,7 @@ class MBPPplusAdapter(CodeExecutionSandboxMixin, DefaultDataAdapter):
         from evalscope.utils.code_utils import extract_code_from_freeform_completion
 
         if '[DONE]' in completion:
-            completion = completion[:completion.index('[DONE]')]
+            completion = completion[: completion.index('[DONE]')]
 
         code, _ = extract_code_from_freeform_completion(completion, 'python', first_block_only=True)
 

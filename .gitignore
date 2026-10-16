@@ -168,12 +168,20 @@ examples/api_test/
 .qoder
 .claude
 .kiro
+.pr-review/
+.scratch_wl/
+
+# Local math migration evidence (datasets, replays, logs and reports)
+/validation/math_verify/
 
 # Frontend (evalscope/web)
 node_modules/
 evalscope/web/dist/
 evalscope/web/.vite/
 ragas_mini_testset_score.json
+
+# Website build cache
+website/.astro/
 
 # Docker build artifacts (pre-cloned agent sources)
 evalscope/agent/external/dockerfiles/hermes-agent-src/

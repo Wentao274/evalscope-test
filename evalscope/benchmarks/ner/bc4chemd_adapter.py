@@ -33,21 +33,23 @@ The BC4CHEMD (BioCreative IV CHEMDNER) dataset is a corpus of 10,000 PubMed abst
 
 @register_benchmark(
     BenchmarkMeta(
+        evaluation_version='v1.1',
         name='bc4chemd',
         pretty_name='BC4CHEMD',
         dataset_id='extraordinarylab/bc4chemd',
+        hf_dataset_id='extraordinarylab/bc4chemd',
         tags=[Tags.KNOWLEDGE, Tags.NER],
         description=DESCRIPTION,
         few_shot_num=5,
         train_split='train',
         eval_split='test',
         metric_list=['precision', 'recall', 'f1_score', 'accuracy'],
+        primary_metric='f1',
         prompt_template=PROMPT_TEMPLATE,
         few_shot_prompt_template=FEWSHOT_TEMPLATE,
     )
 )
 class BC4CHEMDAdapter(NERAdapter):
-
     def __init__(self, **kwargs):
         # Initialize the parent class first
         super().__init__(**kwargs)

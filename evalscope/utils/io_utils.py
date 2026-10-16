@@ -3,19 +3,22 @@ import csv
 import hashlib
 import io
 import json
-import jsonlines as jsonl
-import numpy as np
 import os
 import re
 import string
 import unicodedata
-import yaml
 from datetime import datetime
 from io import BytesIO
-from PIL import Image
-from typing import IO, Any, Dict, List, Optional, Tuple, Union
+from typing import IO, Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
-from evalscope.constants import BEIJING_TZ, USE_OSS, DumpMode
+import filetype
+import jsonlines as jsonl
+import numpy as np
+import yaml
+from datasets import Dataset
+from PIL import Image
+
+from evalscope.constants import BEIJING_TZ, DATASET_TRANSFORM_BATCH_SIZE, USE_OSS, DumpMode
 from evalscope.utils.logger import get_logger
 
 logger = get_logger()
@@ -103,12 +106,15 @@ class OutputsStructure:
         Returns:
             str: Absolute path to the sub-directory.
         """
-        if self._dirs[attr_name] is None:
-            dir_path = os.path.join(self.outputs_dir, dir_name)
-            if self.is_make:
-                _ensure_dir(dir_path)
-            self._dirs[attr_name] = dir_path
-        return self._dirs[attr_name]  # type: ignore[return-value]
+        subdir = self._dirs.get(attr_name)
+        if subdir is not None:
+            return subdir
+
+        dir_path = os.path.join(self.outputs_dir, dir_name)
+        if self.is_make:
+            _ensure_dir(dir_path)
+        self._dirs[attr_name] = dir_path
+        return dir_path
 
     @property
     def logs_dir(self) -> str:
@@ -137,36 +143,99 @@ class OutputsStructure:
 
 
 # ---------------------------------------------------------------------------
+# Parquet/Arrow utilities
+# ---------------------------------------------------------------------------
+
+
+def undecode_media(
+    dataset: 'Dataset',
+    media_type: List[Literal['image', 'audio', 'video']],
+    batch_size: Optional[int] = None,
+    cache_file_name_factory: Optional[Callable[[], str]] = None,
+) -> 'Dataset':
+    """Disable media decoding, optionally using caller-owned temporary conversion storage."""
+    from datasets.features import Audio, Image, Sequence, Video
+
+    if not isinstance(dataset, Dataset):
+        raise TypeError(f'Expected a datasets.Dataset object, got {type(dataset)} instead.')
+
+    # we did not use cast_column here, because cast_column() does not support batch_size,
+    # the default batch_size=1000 may cause OOM for large datasets
+    # see https://github.com/huggingface/datasets/pull/7910
+    features = dataset.features
+    noupdate = True
+    for col, feat in dataset.features.items():
+        if 'image' in media_type and isinstance(feat, Image):
+            features[col] = Image(decode=False)
+        elif 'audio' in media_type and isinstance(feat, Audio):
+            features[col] = Audio(decode=False)
+        elif 'video' in media_type and isinstance(feat, Video):
+            features[col] = Video(decode=False)
+        elif 'image' in media_type and isinstance(feat, Sequence) and isinstance(feat.feature, Image):
+            features[col] = Sequence(Image(decode=False))
+        elif 'audio' in media_type and isinstance(feat, Sequence) and isinstance(feat.feature, Audio):
+            features[col] = Sequence(Audio(decode=False))
+        elif 'video' in media_type and isinstance(feat, Sequence) and isinstance(feat.feature, Video):
+            features[col] = Sequence(Video(decode=False))
+        else:
+            continue
+        noupdate = False
+
+    if noupdate:
+        return dataset
+
+    # if there are updates, do casting
+    dataset = dataset.cast(
+        features,
+        batch_size=batch_size or DATASET_TRANSFORM_BATCH_SIZE,
+        cache_file_name=cache_file_name_factory() if cache_file_name_factory is not None else None,
+    )
+    return dataset
+
+
+def parquet_to_list(parquet_file: str) -> List[Dict[str, Any]]:
+    from datasets import Dataset
+
+    dataset = Dataset.from_parquet(parquet_file)
+    dataset = undecode_media(dataset, media_type=['image', 'audio', 'video'])
+
+    return dataset.to_list()
+
+
+# ---------------------------------------------------------------------------
 # JSONL utilities
 # ---------------------------------------------------------------------------
 
 
-def jsonl_to_list(jsonl_file: str) -> List[Dict[str, Any]]:
+def jsonl_to_list(jsonl_file: str, skip_invalid: bool = False) -> List[Dict[str, Any]]:
     """Read a JSONL file into a list of dicts.
-
-    Attempts to use the ``jsonlines`` library first; falls back to
-    line-by-line ``json.loads`` parsing on any error.
 
     Args:
         jsonl_file (str): Path to the ``.jsonl`` file.
+        skip_invalid (bool): Whether malformed or non-object rows should be
+            logged and skipped. Defaults to ``False`` so dataset inputs do
+            not silently lose records.
 
     Returns:
         List[Dict[str, Any]]: Parsed records.  Returns an empty list and
         logs a warning when the file contains no valid records.
     """
     res_list: List[Dict[str, Any]] = []
-    try:
-        with jsonl.open(jsonl_file, mode='r') as reader:
-            for line in reader.iter(type=dict, allow_none=True, skip_invalid=False):
-                res_list.append(line)
-    except Exception:
-        # Fallback: parse line-by-line with the stdlib json module.
-        res_list = []
-        with open(jsonl_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                stripped = line.strip()
-                if stripped:
-                    res_list.append(json.loads(stripped))
+    with open(jsonl_file, 'r', encoding='utf-8') as f:
+        for line_number, line in enumerate(f, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                parsed = json.loads(stripped)
+                if not isinstance(parsed, dict):
+                    raise TypeError(f'Expected a JSON object, got {type(parsed).__name__}')
+            except (json.JSONDecodeError, TypeError) as e:
+                if not skip_invalid:
+                    raise
+                logger.warning(f'Skipping invalid JSONL row {line_number} in {jsonl_file}: {e}')
+                continue
+            res_list.append(parsed)
 
     if not res_list:
         logger.warning(f'No data found in {jsonl_file}.')
@@ -521,7 +590,7 @@ def safe_filename(s: str, max_length: int = 255) -> str:
         name, ext = os.path.splitext(s)
         ext_len = len(ext)
         if ext_len > 0:
-            s = name[:max_length - ext_len] + ext
+            s = name[: max_length - ext_len] + ext
         else:
             s = s[:max_length]
 
@@ -606,6 +675,7 @@ def bytes_to_base64(
     format: str = 'png',
     add_header: bool = False,
     content_type: str = 'image',
+    guess_mimetype: bool = False,
 ) -> str:
     """Encode raw bytes as a base64 string.
 
@@ -619,12 +689,17 @@ def bytes_to_base64(
         content_type (str): Top-level MIME type (e.g. ``'image'``,
             ``'audio'``).  Used only when *add_header* is ``True``.
             Defaults to ``'image'``.
+        guess_mimetype (bool): When ``True``, detect the MIME type from
+            ``bytes_data`` and use it in the data-URI header. Falls back to
+            ``content_type`` and ``format`` when detection fails.
 
     Returns:
         str: Base64-encoded string, optionally with a data-URI header.
     """
     base64_str = base64.b64encode(bytes_data).decode('utf-8')
     if add_header:
+        if guess_mimetype and (guessed_mime := filetype.guess_mime(bytes_data)):
+            content_type, format = guessed_mime.split('/')
         base64_str = f'data:{content_type}/{format};base64,{base64_str}'
     return base64_str
 
@@ -799,8 +874,7 @@ def compress_image_to_limit(
     try:
         img = Image.open(BytesIO(image_bytes))
     except Exception as exc:
-        logger.warning(f'Failed to open image bytes with PIL, sending original image; '
-                       f'may exceed API limit: {exc}')
+        logger.warning(f'Failed to open image bytes with PIL, sending original image; may exceed API limit: {exc}')
         return image_bytes, 'png'
 
     if img.mode not in ('RGB', 'L'):
@@ -830,8 +904,7 @@ def compress_image_to_limit(
         out = _encode_jpeg(img, quality)
 
     if len(out) > max_bytes:
-        logger.warning(f'Image remains above limit after compression: '
-                       f'size={len(out)} bytes (limit={max_bytes}).')
+        logger.warning(f'Image remains above limit after compression: size={len(out)} bytes (limit={max_bytes}).')
     else:
         logger.info(
             f'Compressed image from {len(image_bytes)} to {len(out)} bytes; '

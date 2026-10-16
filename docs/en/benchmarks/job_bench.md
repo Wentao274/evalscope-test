@@ -18,9 +18,9 @@ deliverables, and reconciling multi-source information. This adapter uses the Mo
 ## Evaluation Notes
 
 - The default evaluation split is `main`.
-- Configure `judge_model_args` for rubric scoring.
-- `normalized_score` is the primary weighted score (`total_score / max_score`); `pass_rate` is the unweighted
-  proportion of fully passed rubrics; `total_score` is the raw sum of passed rubric weights.
+- Configure `judge.models` for rubric scoring.
+- `normalized_score` is the primary weighted score (raw total / max score); `pass_rate` is the unweighted
+  proportion of fully passed rubrics; `judge_score` is the raw sum of passed rubric weights, reported as a diagnostic.
 - Docker runs use `python:3.11-slim-bookworm` by default. For formal evaluation, provide an image with the Office,
   PDF, and spreadsheet tools required by the tasks.
 
@@ -33,7 +33,7 @@ deliverables, and reconciling multi-source information. This adapter uses the Mo
 | **Dataset ID** | [evalscope/job-bench](https://modelscope.cn/datasets/evalscope/job-bench/summary) |
 | **Paper** | N/A |
 | **Tags** | `Agent`, `Knowledge`, `MultiTurn` |
-| **Metrics** | `normalized_score`, `pass_rate`, `total_score` |
+| **Metrics** | `normalized_score`, `pass_rate`, `judge_score` |
 | **Default Shots** | 0-shot |
 | **Evaluation Split** | `main` |
 
@@ -54,7 +54,7 @@ deliverables, and reconciling multi-source information. This adapter uses the Mo
 {
   "input": [
     {
-      "id": "203fd1aa",
+      "id": "9cdb8ee0",
       "content": "You are preparing the Statistical Analysis Plan for Phase III trial XR-2847 evaluating cardiovascular disease prevention. The sponsor requires validation of statistical assumptions against empirical data and regulatory alignment before protoc ... [TRUNCATED 2026 chars] ... erables.\n\nWrite every final deliverable file under `jobbench_output`. Do not put intermediate scratch files there.\nYour final message may summarize what you produced, but files requested by the task must be actual files in\n`jobbench_output`.\n"
     }
   ],
@@ -133,6 +133,7 @@ evalscope eval \
     --api-key EMPTY_TOKEN \
     --datasets job_bench \
     --agent-config '{"mode":"native","strategy":"function_calling","max_steps":250}' \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # Remove this line for formal evaluation
 ```
 
@@ -151,6 +152,7 @@ task_cfg = TaskConfig(
         strategy='function_calling',
         max_steps=250,
     ),
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     limit=10,  # Remove this line for formal evaluation
 )
 

@@ -33,15 +33,18 @@ The WNUT2017 dataset is a collection of user-generated text from various social 
 
 @register_benchmark(
     BenchmarkMeta(
+        evaluation_version='v1.1',
         name='wnut2017',
         pretty_name='WNUT2017',
         dataset_id='extraordinarylab/wnut2017',
+        hf_dataset_id='extraordinarylab/wnut2017',
         tags=[Tags.KNOWLEDGE, Tags.NER],
         description=DESCRIPTION.strip(),
         few_shot_num=5,
         train_split='train',
         eval_split='test',
         metric_list=['precision', 'recall', 'f1_score', 'accuracy'],
+        primary_metric='f1',
         prompt_template=PROMPT_TEMPLATE,
         few_shot_prompt_template=FEWSHOT_TEMPLATE,
     )
@@ -65,7 +68,7 @@ class WNUT2017Adapter(NERAdapter):
             'GROUP': 'group',
             'LOCATION': 'location',
             'PERSON': 'person',
-            'PRODUCT': 'product'
+            'PRODUCT': 'product',
         }
 
         # Add descriptions for each entity type
@@ -75,7 +78,7 @@ class WNUT2017Adapter(NERAdapter):
             'GROUP': 'Named groups of people, such as sports teams, bands, or political groups.',
             'LOCATION': 'Named geographical locations, such as cities, countries, and natural landmarks.',
             'PERSON': 'Named individuals, including both real and fictional people.',
-            'PRODUCT': 'Named commercial products, including vehicles, software, and other goods.'
+            'PRODUCT': 'Named commercial products, including vehicles, software, and other goods.',
         }
 
         # Setup entity mappings based on the defined entity types

@@ -34,7 +34,7 @@ Drivelology Narrative Writing evaluates models' ability to generate detailed des
 | **Dataset ID** | [extraordinarylab/drivel-hub](https://modelscope.cn/datasets/extraordinarylab/drivel-hub/summary) |
 | **Paper** | N/A |
 | **Tags** | `Knowledge`, `Reasoning` |
-| **Metrics** | `bert_score`, `gpt_score` |
+| **Metrics** | `bert_score`, `judge_score` |
 | **Default Shots** | 0-shot |
 | **Evaluation Split** | `test` |
 
@@ -94,6 +94,7 @@ evalscope eval \
     --api-url OPENAI_API_COMPAT_URL \
     --api-key EMPTY_TOKEN \
     --datasets drivel_writing \
+    --judge '{"strategy":"llm","models":[{"model_id":"YOUR_JUDGE_MODEL"}]}' \
     --limit 10  # Remove this line for formal evaluation
 ```
 
@@ -108,6 +109,7 @@ task_cfg = TaskConfig(
     api_url='OPENAI_API_COMPAT_URL',
     api_key='EMPTY_TOKEN',
     datasets=['drivel_writing'],
+    judge={'strategy': 'llm', 'models': [{'model_id': 'YOUR_JUDGE_MODEL'}]},
     limit=10,  # Remove this line for formal evaluation
 )
 

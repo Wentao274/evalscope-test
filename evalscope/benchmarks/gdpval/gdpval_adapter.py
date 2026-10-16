@@ -17,6 +17,7 @@ from evalscope.api.sandbox import merge_sandbox_config_dicts, prepare_docker_ima
 from evalscope.constants import HubType, Tags
 from evalscope.utils.import_utils import check_import, is_build_doc
 from evalscope.utils.logger import get_logger
+
 from .utils import (
     SANDBOX_DELIVERABLE_DIR,
     SANDBOX_REFERENCE_DIR,
@@ -140,14 +141,11 @@ class GDPvalAdapter(AgentLoopAdapter):
         self._submission_records: List[Dict[str, Any]] = []
 
     @property
-    def source_dataset_hub(self) -> str:
-        return self.dataset_hub or HubType.MODELSCOPE
-
-    @property
     def source_dataset(self) -> DatasetHub:
         return DatasetHub(
             data_id_or_path=self.dataset_id,
-            data_source=self.source_dataset_hub,
+            data_source=self.dataset_hub,
+            revision=self.dataset_revision,
             force_redownload=self.force_redownload,
         )
 
@@ -157,7 +155,7 @@ class GDPvalAdapter(AgentLoopAdapter):
         reference_file_hf_uris = as_list(record.get('reference_file_hf_uris'))
         sandbox_reference_paths = [sandbox_reference_path(path) for path in reference_files]
         reference_hint = format_reference_hint(sandbox_reference_paths)
-        prompt = f"{record['prompt'].strip()}\n{reference_hint}{_PROMPT_SUFFIX}"
+        prompt = f'{record["prompt"].strip()}\n{reference_hint}{_PROMPT_SUFFIX}'
 
         return Sample(
             input=prompt,
@@ -176,7 +174,7 @@ class GDPvalAdapter(AgentLoopAdapter):
                 'rubric_pretty': record.get('rubric_pretty'),
                 'rubric_json': record.get('rubric_json'),
                 'dataset_id': self.dataset_id,
-                'dataset_hub': self.source_dataset_hub,
+                'dataset_hub': self.dataset_hub,
             },
         )
 
@@ -247,7 +245,7 @@ class GDPvalAdapter(AgentLoopAdapter):
             'artifact_dir': task_state.metadata.get('artifact_dir'),
             'official_gdpval_score': None,
             'official_gdpval_score_note': (
-                'GDPval official grading is external. Use OpenAI\'s official GDPval judge on the exported submission.'
+                "GDPval official grading is external. Use OpenAI's official GDPval judge on the exported submission."
             ),
         }
         score = Score(
@@ -256,25 +254,6 @@ class GDPvalAdapter(AgentLoopAdapter):
             value=value,
             metadata=metadata,
             main_score_name='submission_ready',
-        )
-        return score
-
-    def llm_match_score(
-        self,
-        original_prediction: str,
-        filtered_prediction: str,
-        reference: str,
-        task_state: TaskState,
-    ) -> Score:
-        score = self.match_score(
-            original_prediction=original_prediction,
-            filtered_prediction=filtered_prediction,
-            reference=reference,
-            task_state=task_state,
-        )
-        score.metadata['judge_strategy_note'] = (
-            'GDPval does not use EvalScope local LLM judging. Use OpenAI\'s official GDPval judge on the exported '
-            'submission package.'
         )
         return score
 
@@ -315,5 +294,5 @@ class GDPvalAdapter(AgentLoopAdapter):
             subset_list=self.subset_list,
             benchmark_name=self.name,
             dataset_id=self.dataset_id,
-            dataset_hub=self.source_dataset_hub,
+            dataset_hub=self.dataset_hub,
         )

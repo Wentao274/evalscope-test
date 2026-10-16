@@ -13,6 +13,7 @@ from evalscope.constants import Tags
 from evalscope.utils.logger import get_logger
 from evalscope.utils.media_utils import guess_video_format
 from evalscope.utils.multi_choices import MultipleChoiceTemplate, answer_character, prompt
+
 from .utils import build_question, find_archive_member, optional_float
 
 logger = get_logger()
@@ -79,6 +80,7 @@ optimized video archives.
 """,
         tags=[Tags.MULTI_MODAL, Tags.VIDEO, Tags.MULTIPLE_CHOICE],
         dataset_id='PKU-Alignment/MVBench',
+        hf_dataset_id='PKU-Alignment/MVBench',
         paper_url='https://arxiv.org/abs/2311.17005',
         subset_list=DEFAULT_SUBSET_LIST,
         metric_list=['acc'],
@@ -104,6 +106,7 @@ class MVBenchAdapter(VisionLanguageAdapter, MultiChoiceAdapter):
         return DatasetHub(
             data_id_or_path=self.dataset_id,
             data_source=self.dataset_hub,
+            revision=self.dataset_revision,
             force_redownload=self.force_redownload,
         )
 

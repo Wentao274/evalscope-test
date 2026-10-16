@@ -3,17 +3,19 @@ import json
 import sys
 import tempfile
 import zipfile
-from dotenv import dotenv_values, load_dotenv
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import Mock, patch
+
+from dotenv import dotenv_values, load_dotenv
 
 load_dotenv('.env')
 
 env = dotenv_values('.env')
 
-import numpy as np
 import unittest
+
+import numpy as np
 
 from evalscope.api.agent import NativeAgentConfig
 from evalscope.api.agent.mcp import MCPServerConfigStdio
@@ -44,8 +46,8 @@ from evalscope.benchmarks.toolathlon.toolathlon_adapter import ToolathlonAdapter
 from evalscope.config import SandboxTaskConfig, TaskConfig
 from evalscope.constants import EvalType, JudgeStrategy, OutputType
 from evalscope.models.mockllm import MockLLM
+from evalscope.report.data_frames import get_model_prediction
 from evalscope.run import run_task
-from evalscope.utils.data_utils import get_model_prediction
 from evalscope.utils.logger import get_logger
 from tests.common import TestBenchmark
 
@@ -90,7 +92,7 @@ class TestAgentBenchmark(TestBenchmark):
     def setUp(self):
         """Setup common test configuration."""
         self.base_config = {
-            'model': 'qwen3-max',
+            'model': 'qwen3.8-flash',
             'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
             'api_key': env.get('DASHSCOPE_API_KEY'),
             'eval_type': EvalType.OPENAI_API,
@@ -105,9 +107,8 @@ class TestAgentBenchmark(TestBenchmark):
                 },
                 'stream': True
             },
-            'judge_strategy': JudgeStrategy.AUTO,
-            'judge_model_args': {
-                'model_id': 'qwen3-max',
+            'judge': {'strategy': JudgeStrategy.AUTO, 'models': {
+                'model_id': 'qwen3.8-flash',
                 'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
                 'api_key': env.get('DASHSCOPE_API_KEY'),
                 'generation_config': {
@@ -116,7 +117,7 @@ class TestAgentBenchmark(TestBenchmark):
                         'enable_thinking': False
                     }
                 }
-            },
+            }},
             'debug': True,
         }
 
@@ -131,7 +132,7 @@ class TestAgentBenchmark(TestBenchmark):
             'work_dir': 'outputs/test_agent_browsecomp',
         }
         if not env.get('DASHSCOPE_API_KEY'):
-            config_overrides['judge_strategy'] = JudgeStrategy.RULE
+            config_overrides['judge'] = {'strategy': JudgeStrategy.RULE}
 
         self._run_dataset_test('browsecomp', **config_overrides)
 
@@ -146,7 +147,7 @@ class TestAgentBenchmark(TestBenchmark):
             'collect_perf': False,
             'debug': False,
             'eval_batch_size': 1,
-            'judge_strategy': JudgeStrategy.RULE,
+            'judge': {'strategy': JudgeStrategy.RULE},
             'limit': 1,
             'no_timestamp': True,
             'work_dir': 'outputs/test_agent_deepsearchqa',
@@ -439,7 +440,7 @@ class TestAgentBenchmark(TestBenchmark):
             eval_batch_size=1,
             collect_perf=False,
             debug=False,
-            judge_model_args={
+            judge={'models': {
                 'model_id': 'qwen-plus',
                 'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
                 'api_key': env.get('DASHSCOPE_API_KEY'),
@@ -449,7 +450,7 @@ class TestAgentBenchmark(TestBenchmark):
                         'enable_thinking': False
                     }
                 }
-            },
+            }},
             agent_config=NativeAgentConfig(
                 mcp_servers=[
                     MCPServerConfigStdio(
@@ -566,8 +567,9 @@ class TestAgentBenchmark(TestBenchmark):
                 },
             }
 
-        def fake_manifest_loader(dataset_id, data_source, splits, force_redownload=False):
+        def fake_manifest_loader(dataset_id, data_source, splits, revision=None, force_redownload=False):
             self.assertEqual(dataset_id, 'claw-eval/Claw-Eval')
+            self.assertIsNone(revision)
             self.assertEqual(splits, ['general'])
             return [
                 {
@@ -638,7 +640,7 @@ class TestAgentBenchmark(TestBenchmark):
                 )
 
         self.assertEqual(len(run_calls), 3)
-        self.assertEqual(run_calls[0]['model_id'], 'qwen3-max')
+        self.assertEqual(run_calls[0]['model_id'], 'qwen3.8-flash')
         self.assertEqual(run_calls[0]['api_key'], 'local-key')
         self.assertEqual(run_calls[0]['base_url'], 'http://localhost:8000/v1')
         self.assertEqual([call['port_offset'] for call in run_calls], [0, 0, 0])
@@ -772,7 +774,7 @@ class TestAgentBenchmark(TestBenchmark):
             )
 
         self.assertEqual(len(run_calls), 2)
-        self.assertTrue(all(call['model_name'] == 'qwen3-max' for call in run_calls))
+        self.assertTrue(all(call['model_name'] == 'qwen3.8-flash' for call in run_calls))
         self.assertTrue(all(call['api'] == 'chat_completions' for call in run_calls))
         self.assertTrue(all(call['toolset'] == 'api' for call in run_calls))
         self.assertTrue(all(call['max_turns'] == 7 for call in run_calls))
@@ -976,7 +978,7 @@ class TestAgentBenchmark(TestBenchmark):
                     trace_root=trace_root,
                     config_path=config_path,
                     repo_root=root,
-                    model_id='qwen3-max',
+                    model_id='qwen3.8-flash',
                     api_key='local-key',
                     base_url='http://localhost:8000/v1',
                     port_offset=50,
@@ -1006,17 +1008,17 @@ class TestAgentBenchmark(TestBenchmark):
         """Test grouped Claw-Eval repeat aggregation."""
         adapter = object.__new__(ClawEvalAdapter)
         scores = [
-            SampleScore(score=Score(value={'avg_score': 1.0}, metadata={}), sample_id=0, group_id=0),
-            SampleScore(score=Score(value={'avg_score': 0.0}, metadata={}), sample_id=1, group_id=0),
-            SampleScore(score=Score(value={'avg_score': 0.5}, metadata={'error': 'failed'}), sample_id=2, group_id=1),
-            SampleScore(score=Score(value={'avg_score': 1.0}, metadata={}), sample_id=3, group_id=1),
+            SampleScore(score=Score(value={'judge_score': 1.0}, metadata={}), sample_id=0, group_id=0),
+            SampleScore(score=Score(value={'judge_score': 0.0}, metadata={}), sample_id=1, group_id=0),
+            SampleScore(score=Score(value={'judge_score': 0.5}, metadata={'error': 'failed'}), sample_id=2, group_id=1),
+            SampleScore(score=Score(value={'judge_score': 1.0}, metadata={}), sample_id=3, group_id=1),
         ]
 
         with patch.dict(sys.modules, _fake_claw_eval_scoring_modules()):
-            aggregated = {(score.metric_name, score.aggregation_name): score.score
+            aggregated = {(score.metric_name, score.aggregation): score.score
                           for score in adapter.aggregate_scores(scores)}
 
-        self.assertAlmostEqual(aggregated[('avg_score', 'mean')], 0.625)
+        self.assertAlmostEqual(aggregated[('judge_score', 'mean')], 0.625)
         self.assertAlmostEqual(aggregated[('pass_at_k', 'mean')], 1.0)
         self.assertAlmostEqual(aggregated[('pass_hat_k', 'mean')], 0.25)
         self.assertAlmostEqual(aggregated[('error_rate', 'mean')], 0.25)

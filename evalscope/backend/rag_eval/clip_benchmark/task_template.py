@@ -1,7 +1,8 @@
 import json
 import os
-import torch
 from itertools import product
+
+import torch
 
 from evalscope.backend.rag_eval.clip_benchmark.arguments import ClipBenchmarkEvalConfig
 from evalscope.backend.rag_eval.clip_benchmark.dataset_builder import (
@@ -65,13 +66,11 @@ def evaluate(args: ClipBenchmarkEvalConfig):
 
         # Evaluate based on the task
         if task == 'zeroshot_classification':
-            zeroshot_templates = (dataset.templates if hasattr(dataset, 'templates') else None)
+            zeroshot_templates = dataset.templates if hasattr(dataset, 'templates') else None
             if verbose:
                 logger.info(f'Zero-shot templates: {zeroshot_templates}')
             classnames = dataset.classes if hasattr(dataset, 'classes') else None
-            assert (
-                zeroshot_templates is not None and classnames is not None
-            ), 'Dataset does not support classification'
+            assert zeroshot_templates is not None and classnames is not None, 'Dataset does not support classification'
             metrics = zeroshot_classification.evaluate(
                 model,
                 dataloader,
@@ -103,7 +102,3 @@ def evaluate(args: ClipBenchmarkEvalConfig):
             logger.info(f'Dump results to: {output_file}')
         with open(output_file, 'w') as f:
             json.dump(dump, f)
-
-
-if __name__ == '__main__':
-    evaluate()

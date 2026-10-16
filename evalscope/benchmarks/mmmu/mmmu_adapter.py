@@ -6,13 +6,10 @@ from evalscope.api.benchmark import BenchmarkMeta, VisionLanguageAdapter
 from evalscope.api.dataset import Sample
 from evalscope.api.evaluator import TaskState
 from evalscope.api.messages import ChatMessageUser, Content
+from evalscope.api.metric import Score
 from evalscope.api.registry import register_benchmark
 from evalscope.constants import Tags
-from evalscope.utils.io_utils import bytes_to_base64
-from evalscope.utils.logger import get_logger
 from evalscope.utils.multi_choices import MultipleChoiceTemplate, parse_answers, prompt
-
-logger = get_logger()
 
 SUBSET_LIST = [
     'Accounting',
@@ -96,10 +93,13 @@ MMMU (Massive Multi-discipline Multimodal Understanding) is a comprehensive benc
 - Evaluates on validation split (test set requires submission)
 """,
         dataset_id='AI-ModelScope/MMMU',
+        hf_dataset_id='MMMU/MMMU',
+        hf_dataset_revision='21d1d90a93c7450d30bddb579d7b510c00b8a9ab',
         subset_list=SUBSET_LIST,
         metric_list=['acc'],
         eval_split='validation',
         prompt_template=OPEN_PROMPT,
+        evaluation_version='v1.2',
     )
 )
 class MMMUAdapter(VisionLanguageAdapter):
@@ -126,6 +126,7 @@ class MMMUAdapter(VisionLanguageAdapter):
         'question_type': 'open',
     }
     """  # noqa: E501
+
     MAX_IMAGES: int = 7
 
     def __init__(self, *args, **kwargs):
@@ -173,6 +174,16 @@ class MMMUAdapter(VisionLanguageAdapter):
         else:
             raise ValueError(f'Unsupported question type: {question_type}')
 
+    def match_score(self, original_prediction, filtered_prediction, reference, task_state) -> Score:
+        score = super().match_score(original_prediction, filtered_prediction, reference, task_state)
+        if task_state.metadata['question_type'] == OPEN_TYPE and score.main_score_name in score.value:
+            from .utils import eval_open, parse_open_response
+
+            # Official MMMU open-question scoring; a list-valued answer is stored as its string repr.
+            gold = ast.literal_eval(reference) if reference.startswith('[') else reference
+            score.value[score.main_score_name] = float(eval_open(gold, parse_open_response(filtered_prediction)))
+        return score
+
     def create_content_and_answers_list(self, record: Dict[str, Any]) -> tuple[List[Content], List[str]]:
         """
         Create a list of content elements and a list of answers from a record.
@@ -188,13 +199,7 @@ class MMMUAdapter(VisionLanguageAdapter):
         """
         question_type = record['question_type']
 
-        # Prepare image map
-        image_map: Dict[int, str] = {}
-        for i in range(MMMUAdapter.MAX_IMAGES):
-            image = record.get(f'image_{i+1}')
-            if image:
-                image_base64 = bytes_to_base64(image['bytes'], format='png', add_header=True)
-                image_map[i + 1] = image_base64
+        image_map = self._extract_media(record, 'image')
 
         if question_type == MULTI_CHOICE_TYPE:
             answers_list: List[str] = ast.literal_eval(record['options'])
@@ -203,11 +208,11 @@ class MMMUAdapter(VisionLanguageAdapter):
             full_text = prompt(question=record['question'], choices=answers_list, template=MULT_CHOICE_PROMPT)
 
             # Parse and replace image placeholders
-            content_list = self._parse_text_with_images(full_text, image_map)
+            content_list = self._parse_text_with_media(full_text, image_map=image_map)
 
         else:  # OPEN_TYPE
             answers_list: List[str] = []
             full_text = OPEN_PROMPT.format(question=record['question'])
-            content_list = self._parse_text_with_images(full_text, image_map)
+            content_list = self._parse_text_with_media(full_text, image_map=image_map)
 
         return content_list, answers_list

@@ -33,21 +33,23 @@ Tweebank-NER is an English Twitter corpus created by annotating the syntacticall
 
 @register_benchmark(
     BenchmarkMeta(
+        evaluation_version='v1.1',
         name='tweebank_ner',
         pretty_name='TweeBankNER',
         dataset_id='extraordinarylab/tweebank-ner',
+        hf_dataset_id='extraordinarylab/tweebank-ner',
         tags=[Tags.KNOWLEDGE, Tags.NER],
         description=DESCRIPTION,
         few_shot_num=5,
         train_split='train',
         eval_split='test',
         metric_list=['precision', 'recall', 'f1_score', 'accuracy'],
+        primary_metric='f1',
         prompt_template=PROMPT_TEMPLATE,
         few_shot_prompt_template=FEWSHOT_TEMPLATE,
     )
 )
 class TweeBankNERAdapter(NERAdapter):
-
     def __init__(self, **kwargs):
         # Initialize the parent class first
         super().__init__(**kwargs)
@@ -60,7 +62,7 @@ class TweeBankNERAdapter(NERAdapter):
             'PER': 'Names of persons.',
             'ORG': 'Names of organizations, including companies, institutions, and groups.',
             'LOC': 'Names of locations, such as countries, cities, and states.',
-            'MISC': 'Miscellaneous named entities, including nationalities, events, and products.'
+            'MISC': 'Miscellaneous named entities, including nationalities, events, and products.',
         }
 
         # Setup entity mappings based on the defined entity types

@@ -1,7 +1,8 @@
-import aiohttp
 import asyncio
 import time
 from typing import TYPE_CHECKING, Any
+
+import aiohttp
 
 from evalscope.perf.arguments import Arguments
 from evalscope.perf.utils.benchmark_util import BenchmarkData, is_stream_body
@@ -15,7 +16,6 @@ logger = get_logger()
 
 
 class AioHttpClient:
-
     def __init__(
         self,
         args: Arguments,
@@ -49,7 +49,7 @@ class AioHttpClient:
             connector=connector,
             trust_env=True,
             timeout=client_timeout,
-            trace_configs=[self._create_trace_config()] if args.debug else []
+            trace_configs=[self._create_trace_config()] if args.debug else [],
         )
 
     @staticmethod
@@ -78,10 +78,16 @@ class AioHttpClient:
         Returns:
             BenchmarkData: The benchmark data object containing request and response information.
         """
+        start_time = time.perf_counter()
         try:
             headers, request_id = self.api_plugin.extract_body_meta(body, self.headers)
             # Delegate the request processing to the API plugin
             output = await self.api_plugin.process_request(self.client, self.url, headers, body)
+            if not output.success:
+                if output.start_time <= 0:
+                    output.start_time = start_time
+                if output.completed_time < output.start_time:
+                    output.completed_time = time.perf_counter()
             if request_id:
                 output.request_id = request_id
             return output
@@ -89,10 +95,26 @@ class AioHttpClient:
             logger.error(
                 f'TimeoutError: total_timeout: {self.total_timeout}, connect_timeout: {self.connect_timeout}, read_timeout: {self.read_timeout}. Please set longer timeout.'  # noqa: E501
             )
-            return BenchmarkData(success=False, error=str(e), is_stream=is_stream_body(body))
+            return self._failure_record(body, str(e), start_time)
         except (aiohttp.ClientConnectorError, Exception) as e:
             logger.error(e)
-            return BenchmarkData(success=False, error=str(e), is_stream=is_stream_body(body))
+            return self._failure_record(body, str(e), start_time)
+
+    @staticmethod
+    def _failure_record(body, error: str, start_time: float) -> BenchmarkData:
+        """Build a BenchmarkData for a request that never produced a response.
+
+        The start time is captured before request preparation so failures cover
+        the same lifecycle and use the same ``perf_counter()`` clock as successful
+        requests.
+        """
+        return BenchmarkData(
+            success=False,
+            error=error,
+            is_stream=is_stream_body(body),
+            start_time=start_time,
+            completed_time=time.perf_counter(),
+        )
 
     @staticmethod
     async def on_request_start(session, context, params: aiohttp.TraceRequestStartParams):
@@ -130,12 +152,21 @@ class AioHttpClient:
 async def test_connection(args: Arguments, api_plugin: 'ApiPluginBase') -> bool:
     start_time = time.perf_counter()
 
+    # Building the request is deterministic and network-independent: a failure here
+    # is a configuration error that retrying can never fix, so it happens once,
+    # outside the retry loop, and the actionable error is allowed to propagate.
+    messages = [{'role': 'user', 'content': 'hello'}] if args.apply_chat_template else 'hello'
+    request = api_plugin.build_request(messages)
+    if request is None:
+        logger.error(
+            f'{type(api_plugin).__name__}.build_request() returned None, so the connection test '
+            'has nothing to send. Please check the request options this API plugin requires.'
+        )
+        return False
+
     async def attempt_connection():
         client = AioHttpClient(args, api_plugin)
         async with client:
-            messages = [{'role': 'user', 'content': 'hello'}] if args.apply_chat_template else 'hello'
-            request = api_plugin.build_request(messages)
-
             output = await client.post(request)
             return output
 
@@ -151,7 +182,7 @@ async def test_connection(args: Arguments, api_plugin: 'ApiPluginBase') -> bool:
             if output.status_code is not None and 400 <= output.status_code < 500:
                 logger.error(
                     f'Non-retryable error (HTTP {output.status_code}): {output.error}. '
-                    'Please check your --url and --api settings.'
+                    'Please check your --model, --url and --api settings.'
                 )
                 return False
             logger.warning(f'Retrying... <{output.error}>')

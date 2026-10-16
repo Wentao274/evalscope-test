@@ -52,12 +52,14 @@ task_config = TaskConfig(
     datasets=['deepsearchqa'],
     eval_batch_size=1,
     limit=10,
-    judge_strategy='llm',
-    judge_model_args={
-        'model_id': 'YOUR_JUDGE_MODEL',
-        'api_url': 'OPENAI_COMPATIBLE_JUDGE_URL',
-        'api_key': os.getenv('JUDGE_API_KEY'),
-        'generation_config': {'temperature': 0.0},
+    judge={
+        'strategy': 'llm',
+        'models': {
+            'model_id': 'YOUR_JUDGE_MODEL',
+            'api_url': 'OPENAI_COMPATIBLE_JUDGE_URL',
+            'api_key': os.getenv('JUDGE_API_KEY'),
+            'generation_config': {'temperature': 0.0},
+        },
     },
     agent_config=NativeAgentConfig(
         strategy='function_calling',
@@ -99,14 +101,13 @@ evalscope eval \
   --datasets deepsearchqa \
   --limit 10 \
   --eval-batch-size 1 \
-  --judge-strategy llm \
-  --judge-model-args '{"model_id":"YOUR_JUDGE_MODEL","api_url":"OPENAI_COMPATIBLE_JUDGE_URL","api_key":"'"$JUDGE_API_KEY"'","generation_config":{"temperature":0.0}}' \
+  --judge '{"strategy":"llm","models":{"model_id":"YOUR_JUDGE_MODEL","api_url":"OPENAI_COMPATIBLE_JUDGE_URL","api_key":"'"$JUDGE_API_KEY"'","generation_config":{"temperature":0.0}}}' \
   --agent-config '{"mode":"native","strategy":"function_calling","max_steps":30,"mcp_servers":[{"type":"stdio","name":"fetch","command":"python","args":["-m","mcp_server_fetch","--ignore-robots-txt"]},{"type":"http","name":"search","url":"https://mcp.api-inference.modelscope.net/<search-server-id>/mcp","headers":{"Authorization":"Bearer <MCP_TOKEN>"}}],"kwargs":{"system_prompt":"Use search and fetch tools to research the question. Cross-check important facts before answering. When finished, call submit(answer=...) with only the final answer."}}'
 ```
 
 ## 评分
 
-主指标是 `f1_score`，同时报告 `precision` 和 `recall`。EvalScope 还会按照官方 starter 逻辑输出评测流程健康度指标：
+主指标是 `f1`，同时报告 `precision` 和 `recall`。EvalScope 还会按照官方 starter 逻辑输出评测流程健康度指标：
 
 - `empty_model_response`
 - `empty_auto_rater_response`

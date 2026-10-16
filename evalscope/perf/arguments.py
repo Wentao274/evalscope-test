@@ -1,14 +1,18 @@
 import argparse
 import json
+import math
 import os
 from contextlib import contextmanager
-from pydantic import Field, SecretStr, field_validator, model_validator
 from typing import Any, Dict, List, Optional, Union
+
+from pydantic import Field, SecretStr, field_validator, model_validator
 
 from evalscope.constants import DEFAULT_WORK_DIR, VisualizerType
 from evalscope.perf.multi_turn_args import IntOrRange, MultiTurnArgs
 from evalscope.utils import BaseArgument, get_secret_value, secretize_auth_headers
 from evalscope.utils.logger import get_logger
+
+from .scenarios.agentx import AgentXScenario, parse_agentx_scenario, validate_agentx_arguments
 
 logger = get_logger()
 
@@ -84,6 +88,9 @@ class Arguments(BaseArgument):
     no_test_connection: bool = False
     """Skip the connection test before starting the benchmark."""
 
+    scenario: Optional[AgentXScenario] = None
+    """Optional external Perf scenario. Currently supports AgentX."""
+
     # Performance and parallelism
     number: Union[int, List[int]] = 1000
     """Number of requests to be made."""
@@ -102,6 +109,19 @@ class Arguments(BaseArgument):
     - 0 < value < 1 (float): ratio of ``--number``, e.g. 0.1 = 10% warmup.
       Actual count = max(1, int(warmup_num * number)). Useful for sweep mode
       where each run has a different number of requests.
+
+    Warmup requests go through the same concurrency slots as the measured ones
+    and are only excluded from the reported metrics; the closed-loop dispatcher
+    never drains in between, so use at least ``--parallel`` there.
+    """
+
+    enable_pd_metrics: bool = False
+    """Enable PD-disaggregation handoff metrics in perf summaries.
+
+    When enabled for streaming generation, EvalScope reports the first inter-output
+    chunk interval as a P-D handoff latency proxy and estimates the extra handoff
+    overhead against steady decode intervals. Disabled by default so standard
+    non-PD benchmarks keep the usual TTFT/TPOT/ITL metric set.
     """
 
     @property
@@ -168,7 +188,7 @@ class Arguments(BaseArgument):
     """Variable to tune: 'parallel' or 'rate'."""
 
     sla_params: Optional[List[Dict[str, Any]]] = None
-    """SLA constraints in JSON format."""
+    """SLA constraints in JSON format; use 's' or 'ms' for latency, or the report unit if bare."""
 
     sla_num_runs: int = 3
     """Number of runs to average for each configuration in SLA auto-tuning."""
@@ -475,12 +495,24 @@ class Arguments(BaseArgument):
     def _validate_in_flight_task_multiplier(cls, v: int) -> int:
         return _at_least_one(v)
 
+    @field_validator('log_every_n_query', mode='after')
+    @classmethod
+    def _validate_log_every_n_query(cls, v: int) -> int:
+        return _at_least_one(v)
+
     @field_validator('num_workers', mode='after')
     @classmethod
     def _validate_num_workers(cls, v: int) -> int:
         if v < 0:
             raise ValueError('--num-workers must be >= 0')
         return v
+
+    @field_validator('scenario', mode='before')
+    @classmethod
+    def _parse_scenario(cls, value: Any) -> Optional[AgentXScenario]:
+        if value is None:
+            return None
+        return parse_agentx_scenario(value)
 
     # --- Model validator (cross-field logic) ---
 
@@ -497,6 +529,7 @@ class Arguments(BaseArgument):
 
         if self.model is None:
             from evalscope.perf.plugin.registry import DatasetRegistry
+
             if not self.dataset or DatasetRegistry.get_class(self.dataset).requires_model:
                 raise ValueError('--model is required.')
 
@@ -512,6 +545,7 @@ class Arguments(BaseArgument):
 
         # Validate sweep params (number/parallel/rate consistency)
         self._validate_sweep_params()
+        self._validate_sla_settings()
 
         # Fold deprecated --multi-turn-args into --dataset-args (pure dict merge).
         # NOTE: dataset_args is kept as a raw dict here; validation against the
@@ -529,8 +563,7 @@ class Arguments(BaseArgument):
             legacy_num_workers = self.multi_turn_args.num_workers
         if legacy_num_workers is not None:
             logger.warning(
-                '`num_workers` in dataset/multi-turn args is deprecated. '
-                'Please use top-level `--num-workers` instead.'
+                '`num_workers` in dataset/multi-turn args is deprecated. Please use top-level `--num-workers` instead.'
             )
             if 'num_workers' not in self.model_fields_set:
                 try:
@@ -542,6 +575,25 @@ class Arguments(BaseArgument):
                 self.num_workers = coerced
 
         return self
+
+    def _validate_sla_settings(self) -> None:
+        """Reject SLA settings that cannot describe a meaningful search."""
+        if not self.sla_auto_tune:
+            return
+        if self.sla_variable not in ('parallel', 'rate'):
+            raise ValueError('--sla-variable must be parallel or rate')
+        if not self.sla_params:
+            raise ValueError('--sla-params requires at least one non-empty criterion group')
+        if self.sla_num_runs < 1:
+            raise ValueError('--sla-num-runs must be >= 1')
+        if self.sla_lower_bound < 1 or self.sla_upper_bound < self.sla_lower_bound:
+            raise ValueError('--sla-lower-bound and --sla-upper-bound must satisfy 1 <= lower <= upper')
+        if self.sla_fixed_parallel is not None and self.sla_fixed_parallel < 1:
+            raise ValueError('--sla-fixed-parallel must be >= 1')
+        if self.sla_number_multiplier is not None and (
+            not math.isfinite(self.sla_number_multiplier) or self.sla_number_multiplier <= 0
+        ):
+            raise ValueError('--sla-number-multiplier must be finite and > 0')
 
     def _normalize_legacy_dataset_args(self) -> None:
         """Fold the deprecated ``--multi-turn-args`` into ``--dataset-args``.
@@ -607,7 +659,7 @@ class Arguments(BaseArgument):
 
     def _redirect_responses_url(self, stripped_url: str) -> bool:
         if self.api in _OPENAI_RESPONSES_APIS and stripped_url.endswith('/chat/completions'):
-            self.url = stripped_url[:-len('chat/completions')] + 'responses'
+            self.url = stripped_url[: -len('chat/completions')] + 'responses'
             logger.warning(f'OpenAI Responses API selected: URL auto-adjusted to responses endpoint: {self.url}')
             return True
         return False
@@ -621,14 +673,22 @@ class Arguments(BaseArgument):
             raise ValueError('--tokenizer-path is required when --tokenize-prompt is set.')
         stripped_url = self.url.rstrip('/')
         if stripped_url.endswith('chat/completions'):
-            self.url = stripped_url[:-len('chat/completions')] + 'completions'
+            self.url = stripped_url[: -len('chat/completions')] + 'completions'
             logger.warning(
-                f'--tokenize-prompt is set: URL auto-adjusted from chat/completions '
-                f'to completions endpoint: {self.url}'
+                f'--tokenize-prompt is set: URL auto-adjusted from chat/completions to completions endpoint: {self.url}'
             )
 
     def _validate_sweep_params(self) -> None:
         """Validate number/parallel/rate consistency after normalization."""
+        if self.scenario is not None:
+            validate_agentx_arguments(self)
+            return
+        if self.multi_turn and self.open_loop:
+            raise ValueError(
+                '--multi-turn is not supported in open-loop mode: turn N cannot be dispatched before the '
+                'response of turn N-1 has been appended to the conversation context, which contradicts '
+                'open-loop scheduling (dispatch independent of in-flight requests).'
+            )
         if self.open_loop:
             self._validate_open_loop_sweep_params()
             return
@@ -642,6 +702,7 @@ class Arguments(BaseArgument):
             )
         if not all(r > 0 for r in self.rate):
             from evalscope.perf.plugin.registry import DatasetRegistry
+
             dataset_cls = DatasetRegistry.get_class(self.dataset)
             if not dataset_cls.provides_arrival_schedule:
                 raise ValueError(f'In open-loop mode all --rate values must be > 0, but got: {self.rate}')
@@ -659,6 +720,8 @@ class Arguments(BaseArgument):
                 f'The length of number and parallel should be the same, '
                 f'but got number: {self.number} and parallel: {self.parallel}'
             )
+        if any(p <= 0 for p in self.parallel):
+            raise ValueError(f'--parallel values must be > 0, but got: {self.parallel}')
 
     @contextmanager
     def output_context(self, path: str):
@@ -684,7 +747,6 @@ class Arguments(BaseArgument):
 
 
 class ParseKVAction(argparse.Action):
-
     def __call__(self, parser, namespace, values, option_string=None):
         if not values:
             setattr(namespace, self.dest, {})
@@ -702,7 +764,7 @@ class ParseKVAction(argparse.Action):
                 parser.error(f'Error parsing key-value pairs: {e}')
 
 
-# yapf: disable
+# fmt: off
 def _add_model_api_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--model', type=str, default=None, help='The test model name.')
     parser.add_argument('--attn-implementation', required=False, default=None, help='Attention implementation')
@@ -723,6 +785,12 @@ def _add_connection_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_performance_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        '--scenario',
+        type=str,
+        default=None,
+        help='External performance scenario: "agentx" or an AgentX JSON object.',
+    )
     parser.add_argument('-n', '--number', type=int, default=None, nargs='+', help='How many requests to be made')
     parser.add_argument('--parallel', type=int, default=1, nargs='+', help='Set number of concurrency requests, default 1')  # noqa: E501
     parser.add_argument('--rate', type=float, default=-1, nargs='+',
@@ -732,6 +800,12 @@ def _add_performance_arguments(parser: argparse.ArgumentParser) -> None:
                         help='Number or ratio of warmup requests. '
                              '>=1: absolute count. 0<value<1: ratio of --number. '
                              '0: disabled. Default: 0')
+    parser.add_argument(
+        '--enable-pd-metrics',
+        action='store_true',
+        default=False,
+        help='Enable PD-disaggregation handoff metrics based on streaming inter-output chunk latencies.',
+    )
     parser.add_argument('--open-loop', action='store_true', default=False,
                         help='Enable open-loop rate mode: dispatch requests at the scheduled rate without '
                              'semaphore backpressure. Use with --rate (list) and matching --number (list).')  # noqa: E501
@@ -749,7 +823,12 @@ def _add_performance_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_sla_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--sla-auto-tune', action='store_true', default=False, help='Enable SLA auto-tuning')
     parser.add_argument('--sla-variable', type=str, default='parallel', choices=['parallel', 'rate'], help='The variable to tune, can be parallel or rate')  # noqa: E501
-    parser.add_argument('--sla-params', type=json.loads, default=None, help='SLA constraints in JSON format')
+    parser.add_argument(
+        '--sla-params',
+        type=json.loads,
+        default=None,
+        help="SLA constraints in JSON format; use 's' or 'ms' for latency (bare values use report units)",
+    )
     parser.add_argument('--sla-num-runs', type=int, default=3, help='Number of runs to average for each configuration in SLA auto-tuning')  # noqa: E501
     parser.add_argument('--sla-upper-bound', type=int, default=65536, help='Upper bound of the tuned SLA variable search range')  # noqa: E501
     parser.add_argument('--sla-lower-bound', type=int, default=1, help='Lower bound of the tuned SLA variable search range')  # noqa: E501
@@ -931,7 +1010,7 @@ def add_argument(parser: argparse.ArgumentParser) -> None:
     _add_dataset_arguments(parser)
     _add_response_arguments(parser)
     _add_multi_turn_arguments(parser)
-# yapf: enable
+# fmt: on
 
 
 def parse_args():
