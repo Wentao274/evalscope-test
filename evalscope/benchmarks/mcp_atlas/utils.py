@@ -3,8 +3,9 @@ from __future__ import annotations
 import ast
 import json
 import re
-import requests
 from typing import Any, Dict, List, Tuple
+
+import requests
 
 from evalscope.api.tool import ToolInfo, ToolParams
 from evalscope.utils.json_schema import JSONSchema
@@ -40,9 +41,7 @@ class MCPAtlasClient:
 
     def list_tools(self) -> List[Dict[str, Any]]:
         response = requests.post(
-            f'{self.base_url}/list-tools',
-            headers={'Content-Type': 'application/json'},
-            timeout=self.list_tools_timeout
+            f'{self.base_url}/list-tools', headers={'Content-Type': 'application/json'}, timeout=self.list_tools_timeout
         )
         response.raise_for_status()
         data = response.json()
@@ -177,24 +176,6 @@ def mcp_tool_to_tool_info(raw_tool: Dict[str, Any]) -> ToolInfo:
             additionalProperties=bool(schema.get('additionalProperties', False)),
         ),
     )
-
-
-def parse_claim_judge_response(response: Any) -> Tuple[str, str, float]:
-    if not isinstance(response, str):
-        return 'not_fulfilled', 'Judge response was not text.', 0.0
-    text = strip_json_fence(response)
-    try:
-        parsed = json.loads(text)
-        outcome = str(parsed.get('coverage_outcome') or parsed.get('outcome') or 'not_fulfilled')
-        justification = str(parsed.get('justification') or parsed.get('reason') or '')
-        confidence = parse_confidence(parsed.get('confidence_level', parsed.get('confidence', 0.0)))
-        return outcome, justification, confidence
-    except Exception:
-        lowered = text.lower()
-        for outcome in ['partially_fulfilled', 'not_fulfilled', 'fulfilled']:
-            if outcome in lowered:
-                return outcome, text, 0.0
-    return 'not_fulfilled', text or 'Unable to parse judge response.', 0.0
 
 
 def strip_json_fence(text: str) -> str:
