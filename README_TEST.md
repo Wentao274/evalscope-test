@@ -173,7 +173,7 @@ evalscope eval \
 |--------------|----------------|------|------|
 | `MODEL` | `--model` | `deepseek-v4-flash` | 模型服务名 |
 | `BASE_URL` | `--api-url` | `http://10.201.149.37:8080` | 端点根 URL(流水线自动拼接 `/v1`,可带可不带尾斜杠) |
-| `API_KEY` | `--api-key` | 空 → `EMPTY` | 鉴权 |
+| `API_KEY` | `--api-key` | 空 → `EMPTY` | 鉴权;**连通性预检会携带该 key**(需认证的服务端必填,空/`EMPTY` 按无认证模式检查) |
 | `JUDGE_MODEL_ID` | `--judge-model-args model_id` | `deepseek-v4-flash` | 裁判模型名(mcp_atlas 等 LLM judge 任务用) |
 | `JUDGE_API_URL` | `--judge-model-args api_url` | `http://10.201.149.41:8080/v1` | 裁判模型端点(含 `/v1` 后缀) |
 | `JUDGE_API_KEY` | `--judge-model-args api_key` | `EMPTY` | 裁判模型 API Key |

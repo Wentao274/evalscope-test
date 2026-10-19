@@ -166,6 +166,15 @@ pipeline {
             steps {
                 sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
                     script {
+                        // Normalize the key for the connectivity check: empty or 'EMPTY' means
+                        // no-auth mode (header omitted, legacy behavior); otherwise the key from
+                        // the build parameters is sent as 'Authorization: Bearer'. Single quotes
+                        // are escaped for the remote shell; the value stays masked in the log.
+                        def keyCheck = (params.API_KEY ?: '').toString().trim()
+                        if (keyCheck == 'EMPTY') {
+                            keyCheck = ''
+                        }
+                        env.API_KEY_CHECK = keyCheck.replace("'", "'\\''")
                         try {
                             sh """
 ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} << 'ENDSSH'
@@ -174,9 +183,28 @@ set -o pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
 export no_proxy='*'
 export NO_PROXY='*'
+API_KEY='${env.API_KEY_CHECK}'
+CURL_AUTH=()
+if [ -n "\$API_KEY" ]; then
+    CURL_AUTH=(-H "Authorization: Bearer \$API_KEY")
+fi
 {
+    if [ -n "\$API_KEY" ]; then
+        echo "连通性检查模式: 认证(已携带参数 API_KEY 提供的 key)"
+    else
+        echo "连通性检查模式: 无认证(参数 API_KEY 为空或 EMPTY)"
+    fi
     echo "=== 检查 API 连通性 (/v1/models) ==="
-    HTTP_CODE=\$(curl -s --connect-timeout 10 -m 30 -o /dev/null -w "%{http_code}" ${env.BASE_URL_V1}/models)
+    HTTP_CODE=\$(curl -s --connect-timeout 10 -m 30 -o /dev/null -w "%{http_code}" "\${CURL_AUTH[@]}" ${env.BASE_URL_V1}/models)
+    if [ "\${HTTP_CODE}" = "401" ] || [ "\${HTTP_CODE}" = "403" ]; then
+        echo "ERROR: API 连通性检查失败(认证被拒), HTTP状态码: \${HTTP_CODE}, URL: ${env.BASE_URL_V1}/models"
+        if [ -z "\$API_KEY" ]; then
+            echo "提示: 服务端要求认证。请在构建参数 API_KEY 中填写有效 key 后重新构建。"
+        else
+            echo "提示: 已携带参数 API_KEY 提供的 key 但仍被拒,请检查 key 是否正确、是否过期、或是否有权访问该模型。"
+        fi
+        exit 1
+    fi
     if [ "\${HTTP_CODE}" != "200" ]; then
         echo "ERROR: API 连通性检查失败, HTTP状态码: \${HTTP_CODE}, URL: ${env.BASE_URL_V1}/models"
         exit 1
@@ -184,10 +212,20 @@ export NO_PROXY='*'
     echo "API /models 连通性检查通过, HTTP状态码: \${HTTP_CODE}"
 
     echo "=== 检查 Chat Completions 接口 ==="
-    CHAT_RESP=\$(curl -s --connect-timeout 10 -m 60 -w "\\n%{http_code}" ${env.BASE_URL_V1}/chat/completions \\
+    CHAT_RESP=\$(curl -s --connect-timeout 10 -m 60 -w "\\n%{http_code}" "\${CURL_AUTH[@]}" ${env.BASE_URL_V1}/chat/completions \\
         -H "Content-Type: application/json" \\
         -d '{"model":"${params.MODEL}","messages":[{"role":"user","content":"hello"}],"max_tokens":10}')
     CHAT_HTTP_CODE=\$(echo "\${CHAT_RESP}" | tail -1)
+    if [ "\${CHAT_HTTP_CODE}" = "401" ] || [ "\${CHAT_HTTP_CODE}" = "403" ]; then
+        echo "ERROR: Chat Completions 接口检查失败(认证被拒), HTTP状态码: \${CHAT_HTTP_CODE}"
+        if [ -z "\$API_KEY" ]; then
+            echo "提示: 服务端要求认证。请在构建参数 API_KEY 中填写有效 key 后重新构建。"
+        else
+            echo "提示: 已携带参数 API_KEY 提供的 key 但仍被拒,请检查 key 是否正确、是否过期、或是否有权访问该模型。"
+        fi
+        echo "响应内容: \$(echo "\${CHAT_RESP}" | head -n -1)"
+        exit 1
+    fi
     if [ "\${CHAT_HTTP_CODE}" != "200" ]; then
         echo "ERROR: Chat Completions 接口检查失败, HTTP状态码: \${CHAT_HTTP_CODE}"
         echo "响应内容: \$(echo "\${CHAT_RESP}" | head -n -1)"
