@@ -469,6 +469,30 @@ print(json.dumps(args, ensure_ascii=False))
 ")
     fi
 
+    # ---- videomme_v2 专属:默认注入 video_source=archive(内网安全默认值) ----
+    # videomme_v2 默认 video_source=url(模型服务需自行拉取公网视频直链,内网不可用);
+    # archive 模式从 ModelScope 下载官方 MP4 分卷并解压到本地缓存,模型收到的是
+    # base64 data URI 内联视频(openai.py:video_as_data_uri),无需模型侧联网。
+    # 视频分卷已在环境检查阶段经代理预下载,此处命中本地缓存直接复用。
+    # 用户在 DATASET_ARGS 里给 videomme_v2 显式配置了 video_source 时以用户为准。
+    if [ "$DATASET" = "videomme_v2" ]; then
+        DATASET_ARGS_EFFECTIVE=$(DATASET_ARGS="$DATASET_ARGS_EFFECTIVE" python3 -c "
+import json, os
+raw = (os.environ.get('DATASET_ARGS') or '').strip()
+try:
+    args = json.loads(raw) if raw else {}
+except Exception:
+    args = {}
+v = args.get('videomme_v2') if isinstance(args.get('videomme_v2'), dict) else {}
+ep = v.get('extra_params') if isinstance(v.get('extra_params'), dict) else {}
+if 'video_source' not in ep:
+    ep['video_source'] = 'archive'
+    v['extra_params'] = ep
+    args['videomme_v2'] = v
+print(json.dumps(args, ensure_ascii=False))
+")
+    fi
+
     # ---- tau_bench / tau2_bench / tau3_bench 专属:自动注入用户模拟模型参数 ----
     # tau_bench/tau2_bench/tau3_bench 用 LLM 模拟用户与被测模型多轮对话,需配置 user_model/api_key/api_base。
     # USER_MODEL_ID 留空时回退到被测模型(MODEL_NAME / LLM_ADDR / API_KEY)。

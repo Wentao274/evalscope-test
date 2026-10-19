@@ -6,7 +6,8 @@ set -e
 #
 # Env vars (must be set by caller):
 #   WORK_DIR, TASK_DEEP_SWE, ENABLE_SANDBOX, TASK_HUMANEVAL,
-#   TASK_HUMANEVAL_PLUS, TASK_MBPP, TASK_TAU_BENCH, TASK_TAU2_BENCH
+#   TASK_HUMANEVAL_PLUS, TASK_MBPP, TASK_TAU_BENCH, TASK_TAU2_BENCH,
+#   TASK_OCR_BENCH_V2
 
 cd "$WORK_DIR"
 echo "工作目录: $(pwd)"
@@ -86,6 +87,14 @@ if [ ! -d "${WORK_DIR}/.venv" ]; then
             EXTRAS="${EXTRAS},deep_swe"
         else
             EXTRAS="deep_swe"
+        fi
+    fi
+    # ocr_bench_v2:评分依赖 apted/zss/Levenshtein/jieba 等(adapter 构造时 check_import 强制要求)
+    if [ "${TASK_OCR_BENCH_V2}" = "true" ]; then
+        if [ -n "${EXTRAS}" ]; then
+            EXTRAS="${EXTRAS},ocr_bench"
+        else
+            EXTRAS="ocr_bench"
         fi
     fi
     EXTRAS_OK=false
@@ -172,6 +181,29 @@ else
             echo "deep_swe 依赖补装完成"
         else
             echo "deep_swe 依赖(pier)已安装"
+        fi
+    fi
+
+    # ocr_bench_v2:检查 OCRBench-v2 评分依赖是否已安装(evalscope[ocr_bench] extras)
+    if [ "${TASK_OCR_BENCH_V2}" = "true" ]; then
+        if ! python3 -c "import apted" 2>/dev/null; then
+            echo "补装 ocr_bench_v2 评分依赖(apted/zss/Levenshtein/jieba 等)..."
+            export https_proxy=http://10.201.136.68:1080
+            export http_proxy=http://10.201.136.68:1080
+            OCR_BENCH_OK=false
+            echo "从官方源 https://pypi.org/simple/ 补装 ocr_bench_v2 依赖..."
+            if UV_INDEX_URL="https://pypi.org/simple/" uv pip install -r evalscope/benchmarks/ocr_bench/requirements.txt 2>&1; then
+                OCR_BENCH_OK=true
+            fi
+            unset https_proxy
+            unset http_proxy
+            if [ "${OCR_BENCH_OK}" != "true" ]; then
+                echo "ERROR: ocr_bench_v2 依赖补装失败(官方源 pypi.org 不可用)。"
+                exit 1
+            fi
+            echo "ocr_bench_v2 依赖补装完成"
+        else
+            echo "ocr_bench_v2 评分依赖已安装"
         fi
     fi
 

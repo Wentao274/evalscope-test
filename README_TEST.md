@@ -102,6 +102,10 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `mbpp` | `google-research-datasets/mbpp` | 3-shot | 1 | Mostly Basic Python Problems,500 题,pass@1,需 sandbox(与 humaneval 相同环境),不需要裁判模型 |
 | `frames` | `iic/frames` | 0-shot | 1 | RAG 长上下文多跳推理,824 题,prompt 平均 68K 字符(最大 557K),被测模型需支持超长上下文;有裁判模型走 LLM judge,无裁判模型回退 rule(exact match) |
 | `mm_bench` | `lmms-lab/MMBench` | 0-shot | 2 | MMBench 视觉多选问答,8658 题(中 cn/英 en 各 4329),被测模型必须支持多模态(图像+文本);规则评分,不需要裁判模型 |
+| `mmmu_pro` | `AI-ModelScope/MMMU_Pro` | 0-shot | 3 | MMMU-PRO 多模态学术多选,30 学科,3 种格式(standard 4/10 options、vision,经 `DATASET_ARGS extra_params.dataset_format` 切换),单题最多 7 图,被测模型必须支持多模态(图像+文本);CoT + `ANSWER: [LETTER]`,规则评分,不需要裁判模型 |
+| `ocr_bench` | `evalscope/OCRBench` | 0-shot | 1 | OCRBench OCR 综合基准,1000 题 10 类(文本识别/VQA/关键信息抽取/手写公式识别),被测模型必须支持多模态;归一化子串包含匹配,不需要裁判模型 |
+| `ocr_bench_v2` | `evalscope/OCRBench_v2` | 0-shot | 1 | OCRBench-v2 大规模双语文本中心基准,10000 题 31 场景(中英),按题型多元评分(字母匹配/BLEU/编辑距离/树编辑距离),需 `evalscope[ocr_bench]` extras(自动安装);被测模型必须支持多模态,不需要裁判模型 |
+| `videomme_v2` | `MME-Benchmarks/Video-MME-v2` | 0-shot | 1 | Video-MME-v2 视频多选问答,800 视频 3200 题,子集 `all/level_1-3/logic/relevance`,被测模型必须支持视频输入(video_url content);默认 archive 模式(视频预下载后 base64 内联,模型侧无需联网),首次预下载为 GB 级;规则评分,不需要裁判模型 |
 
 > EvalScope 本身支持更多基准(如 gsm8k、aime24、aime25、arc 等),可按需在
 > `Jenkinsfile` 的 `parameters` 块添加 `booleanParam` 并在 `运行evalscope测试`
@@ -173,7 +177,7 @@ evalscope eval \
 | `JUDGE_MODEL_ID` | `--judge-model-args model_id` | `deepseek-v4-flash` | 裁判模型名(mcp_atlas 等 LLM judge 任务用) |
 | `JUDGE_API_URL` | `--judge-model-args api_url` | `http://10.201.149.41:8080/v1` | 裁判模型端点(含 `/v1` 后缀) |
 | `JUDGE_API_KEY` | `--judge-model-args api_key` | `EMPTY` | 裁判模型 API Key |
-| `TASK_MMLU_PRO` / `TASK_AIME26` / `TASK_GPQA_DIAMOND` / `TASK_CEVAL` / `TASK_CMMLU` / `TASK_MATH_500` / `TASK_HELLASWAG` / `TASK_HUMANEVAL` / `TASK_HUMANEVAL_PLUS` / `TASK_HMMT25` / `TASK_HMMT26` / `TASK_IMO_ANSWERBENCH` / `TASK_MCP_ATLAS` / `TASK_DEEP_SWE` | `--datasets` | 见 checkbox | 勾选后逗号拼接(默认开启见下方) |
+| `TASK_MMLU_PRO` / `TASK_AIME26` / `TASK_GPQA_DIAMOND` / `TASK_CEVAL` / `TASK_CMMLU` / `TASK_MATH_500` / `TASK_HELLASWAG` / `TASK_HUMANEVAL` / `TASK_HUMANEVAL_PLUS` / `TASK_HMMT25` / `TASK_HMMT26` / `TASK_IMO_ANSWERBENCH` / `TASK_MCP_ATLAS` / `TASK_DEEP_SWE` / `TASK_MMMU_PRO` / `TASK_OCR_BENCH` / `TASK_OCR_BENCH_V2` / `TASK_VIDEOMME_V2` | `--datasets` | 见 checkbox | 勾选后逗号拼接(默认开启见下方) |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 重复次数(k-metrics),空 = 默认 1;按任务覆盖见 `TASK_REPEATS_JSON` |
 | `EVAL_BATCH_SIZE` | `--eval-batch-size` | `1` | 并发批大小 |
@@ -186,7 +190,7 @@ evalscope eval \
 | `JUDGE_STRATEGY` | `--judge-strategy` | `auto` | auto/rule/llm/llm_recall |
 | `TASK_JUDGE_STRATEGY_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 judge_strategy,例 `{"imo_answerbench":"rule"}`;imo_answerbench 在有裁判模型时走 auto,无裁判模型时自动回退 rule |
 | `ENABLE_SANDBOX` | `--sandbox {"enabled": true}` | `true` | 仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效;启用前环境检查 stage 会预装 evalscope[sandbox] 并校验 Docker |
-| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime26":131072,"mcp_atlas":8192,"deep_swe":409600}` | 按任务覆盖 max_tokens,例 `{"mmlu_pro":32768}` |
+| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime26":131072,"mcp_atlas":8192,"deep_swe":409600,"mmmu_pro":16384,"ocr_bench":8192,"ocr_bench_v2":16384,"videomme_v2":16384}` | 按任务覆盖 max_tokens,例 `{"mmlu_pro":32768}` |
 | `TASK_TIMEOUT_JSON` | (shell 内 per-task 覆盖) | `{"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800}` | 按任务覆盖模型调用超时(秒),其余任务用内置默认 3600 |
 | `TASK_TOP_P_JSON` | (shell 内 per-task 覆盖) | `{"deep_swe":1.0}` | 按任务覆盖 top_p,deep_swe 编码 agent 用 1.0 高随机性探索 |
 | `TASK_REPEATS_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 `REPEATS`,例 `{"humaneval":5}`;未命中任务用全局 `REPEATS` |
@@ -196,7 +200,7 @@ evalscope eval \
 
 默认开启的任务(`defaultValue: true`):`mmlu_pro`、`aime25`、`aime26`、`gpqa_diamond`。
 默认关闭的任务(`defaultValue: false`):`ceval`、`cmmlu`、`math_500`、`hellaswag`、`humaneval`、
-`humaneval_plus`、`hmmt25`、`hmmt26`、`imo_answerbench`、`mcp_atlas`、`deep_swe`、`mbpp`、`frames`、`mm_bench`。
+`humaneval_plus`、`hmmt25`、`hmmt26`、`imo_answerbench`、`mcp_atlas`、`deep_swe`、`mbpp`、`frames`、`mm_bench`、`mmmu_pro`、`ocr_bench`、`ocr_bench_v2`、`videomme_v2`。
 
 evalscope 还支持但未在 Jenkins 暴露的参数(留作扩展):
 
@@ -247,7 +251,7 @@ evalscope 还支持但未在 Jenkins 暴露的参数(留作扩展):
 >
 > | 任务 | 推荐 repeats | 理由 |
 > |------|-------------|------|
-> | `mmlu_pro` / `aime26` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` / `math_500` / `hmmt25` / `hmmt26` / `imo_answerbench` / `mcp_atlas` / `deep_swe` / `frames` / `mm_bench` | `1` | 单次评测,重复多次得分不变,纯 N 倍空跑 |
+> | `mmlu_pro` / `aime26` / `gpqa_diamond` / `ceval` / `cmmlu` / `hellaswag` / `math_500` / `hmmt25` / `hmmt26` / `imo_answerbench` / `mcp_atlas` / `deep_swe` / `frames` / `mm_bench` / `mmmu_pro` / `ocr_bench` / `ocr_bench_v2` / `videomme_v2` | `1` | 单次评测,重复多次得分不变,纯 N 倍空跑 |
 > | `humaneval` / `humaneval_plus` / `mbpp` | `1`(pass@1)或 `5`(pass@k) | 带 `mean_and_pass_at_k` 聚合器;`repeats=k` 才能算 `pass@1..pass@k` |
 
 ---

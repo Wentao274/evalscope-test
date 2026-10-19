@@ -67,14 +67,45 @@ def check_cache(adapter):
     return False, valid, n_subsets, stale_dirs
 
 
+def build_task_config(name: str) -> TaskConfig:
+    """Build a TaskConfig for preloading, with per-task overrides.
+
+    videomme_v2: force video_source='archive' so the load path downloads the official
+    MP4 archives via proxy (default 'url' mode passes public links to the model and
+    downloads nothing). The download is idempotent: cached ModelScope snapshots are
+    resolved offline and already-extracted videos are skipped, so repeated builds only
+    pay an in-memory dataset rebuild.
+    """
+    if name == 'videomme_v2':
+        return TaskConfig(dataset_args={'videomme_v2': {'extra_params': {'video_source': 'archive'}}})
+    return TaskConfig()
+
+
 def main():
     tasks = [t.strip() for t in os.environ.get('PRELOAD_TASKS', '').split() if t.strip()]
     proxy_url = os.environ.get('PROXY_URL', '')
 
     for name in tasks:
         try:
-            config = TaskConfig()
+            config = build_task_config(name)
             adapter = get_benchmark(name, config=config)
+
+            # videomme_v2: custom load path, no save_to_disk cache; its real cache is
+            # the extracted video files + the ModelScope snapshot, both idempotent.
+            # Always run the load: cached snapshots resolve offline (local_files_only)
+            # and already-extracted videos are skipped, so repeat builds are cheap.
+            if name == 'videomme_v2':
+                video_dir = getattr(adapter, 'video_cache_dir', '')
+                n_videos = len(glob.glob(os.path.join(video_dir, '*.mp4'))) if video_dir else 0
+                state = 'verify' if n_videos else 'download (first run is multi-GB)'
+                print(f'[{"CACHED" if n_videos else "MISS"}] {name}: {n_videos} video(s) cached, running idempotent {state}...')
+                os.environ['http_proxy'] = proxy_url
+                os.environ['https_proxy'] = proxy_url
+                adapter.load_dataset()
+                del os.environ['http_proxy']
+                del os.environ['https_proxy']
+                print(f'[OK] {name}: dataset verified/downloaded')
+                continue
 
             # Phase 1: check cache via filesystem (no network, no proxy)
             is_cached, valid_count, expected_count, stale_dirs = check_cache(adapter)

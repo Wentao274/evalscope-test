@@ -134,6 +134,10 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `TASK_MBPP` | `--datasets mbpp` | false | 勾选后逗号拼接(Mostly Basic Python Problems,500 题,pass@1,需 ENABLE_SANDBOX=true,不需要裁判模型) |
 | `TASK_FRAMES` | `--datasets frames` | false | 勾选后逗号拼接(RAG 长上下文多跳推理,824 题,被测模型需支持超长上下文;有裁判模型走 LLM judge,无裁判模型回退 rule) |
 | `TASK_MM_BENCH` | `--datasets mm_bench` | false | 勾选后逗号拼接(MMBench 视觉多选问答,8658 题,**被测模型必须支持多模态**,不需要裁判模型) |
+| `TASK_MMMU_PRO` | `--datasets mmmu_pro` | false | 勾选后逗号拼接(MMMU-PRO 多模态学术多选,30 学科,3 种格式默认 4 选项,单题最多 7 图,**被测模型必须支持多模态**,规则评分不需要裁判模型) |
+| `TASK_OCR_BENCH` | `--datasets ocr_bench` | false | 勾选后逗号拼接(OCRBench OCR 综合基准,1000 题 10 类,**被测模型必须支持多模态**,子串包含匹配,不需要裁判模型) |
+| `TASK_OCR_BENCH_V2` | `--datasets ocr_bench_v2` | false | 勾选后逗号拼接(OCRBench-v2 双语大规模基准,10000 题 31 场景中英文,按题型多元评分,自动安装 evalscope[ocr_bench] extras,**被测模型必须支持多模态**,不需要裁判模型) |
+| `TASK_VIDEOMME_V2` | `--datasets videomme_v2` | false | 勾选后逗号拼接(Video-MME-v2 视频多选问答,800 视频 3200 题,**被测模型必须支持视频输入**,默认 archive 模式视频以 base64 内联,首次预下载为 GB 级,不需要裁判模型) |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 空 = 默认 1;全局重复次数,按任务覆盖见 `TASK_REPEATS_JSON` |
 | `EVAL_BATCH_SIZE` | `--eval-batch-size` | `1` | 并发批大小 |
@@ -146,7 +150,7 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `JUDGE_STRATEGY` | `--judge-strategy` | `auto` | auto/rule/llm/llm_recall |
 | `TASK_JUDGE_STRATEGY_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 judge_strategy,例 `{"imo_answerbench":"rule"}`;imo_answerbench 在有裁判模型时走 auto,无裁判模型时自动回退 rule |
 | `ENABLE_SANDBOX` | `--sandbox {"enabled": true}` | `true` | 仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效;启用前环境检查 stage 会预装 evalscope[sandbox] 并校验 Docker |
-| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime25":131072,"aime26":131072,"imo_answerbench":131072,"hmmt25":65536,"hmmt26":65536,"mcp_atlas":8192,"deep_swe":409600,"hellaswag":8192,"humaneval":16384,"humaneval_plus":16384,"mbpp":16384,"frames":16384}` | 例 `{"mmlu_pro":32768}`;ceval 未列出,用全局默认 32768 |
+| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime25":131072,"aime26":131072,"imo_answerbench":131072,"hmmt25":65536,"hmmt26":65536,"mcp_atlas":8192,"deep_swe":409600,"hellaswag":8192,"humaneval":16384,"humaneval_plus":16384,"mbpp":16384,"frames":16384,"mmmu_pro":16384,"ocr_bench":8192,"ocr_bench_v2":16384,"videomme_v2":16384}` | 例 `{"mmlu_pro":32768}`;ceval 未列出,用全局默认 32768;新加 mmmu_pro=16384(CoT 多选)、ocr_bench=8192(识别答案短)、ocr_bench_v2=16384(全页 OCR/表格解析输出长)、videomme_v2=16384(视频 CoT 多选) |
 | `TASK_TIMEOUT_JSON` | (shell 内 per-task 覆盖) | `{"aime25":7200,"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800}` | 按任务覆盖模型调用超时(秒),其余任务用内置默认 3600 |
 | `TASK_TOP_P_JSON` | (shell 内 per-task 覆盖) | `{"deep_swe":1.0}` | 按任务覆盖 top_p,deep_swe 编码 agent 用 1.0 |
 | `TASK_REPEATS_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 `REPEATS`,例 `{"humaneval":5}`;未命中任务用全局 `REPEATS` |
@@ -214,6 +218,10 @@ GLM-5.2/DeepSeek-V4/Kimi-K3 官方均推荐 `1.0`;R1 系用 `0.6`;非 thinking i
 | `mbpp` | `google-research-datasets/mbpp` | 3-shot | `acc` / pass@k | Mostly Basic Python Problems,500 题,代码生成后沙箱执行测试用例判 pass;需 `ENABLE_SANDBOX=true`(与 humaneval 相同环境),不需要裁判模型 |
 | `frames` | `iic/frames` | 0-shot | `acc` | RAG 长上下文多跳推理,824 题,prompt 平均 68K 字符(最大 557K),被测模型需支持超长上下文(>=128K);有裁判模型走 LLM judge(裁判模型无需长上下文),无裁判模型回退 rule(exact match) |
 | `mm_bench` | `lmms-lab/MMBench` | 0-shot | `acc` | MMBench 视觉多选问答,8658 题(中 cn/英 en 各 4329),**被测模型必须支持多模态**(图像+文本),如 qwen-vl-plus/gpt-4o 等;规则评分,不需要裁判模型 |
+| `mmmu_pro` | `AI-ModelScope/MMMU_Pro` | 0-shot | `acc` | MMMU-PRO 多模态学术多选,30 学科(文/理/工/医),3 种格式(`standard (4 options)` 默认 / `standard (10 options)` / `vision`,经 `DATASET_ARGS extra_params.dataset_format` 切换),单题最多 7 图,CoT + `ANSWER: [LETTER]`;**被测模型必须支持多模态**;多选题规则评分,不需要裁判模型 |
+| `ocr_bench` | `evalscope/OCRBench` | 0-shot | `acc` | OCRBench OCR 综合基准,1000 题人工校验 10 类(常规/不规则/艺术/手写/数字串/非语义文本识别、场景文本VQA、文档VQA、关键信息抽取、手写数学公式识别 HME100k),归一化子串包含匹配(HME100k 额外去空格);**被测模型必须支持多模态**;规则评分,不需要裁判模型 |
+| `ocr_bench_v2` | `evalscope/OCRBench_v2` | 0-shot | `acc` | OCRBench-v2 大规模双语文本中心基准,10000 题人工校验 31 场景(中英文),任务种类为 v1 的 4 倍(全页OCR/表格/图表/公式解析、文本定位、手写答案抽取、APP agent 等),按题型多元评分(字母匹配/BLEU/METEOR/编辑距离/树编辑距离),EN/CN/OVERALL 两级聚合;需 `evalscope[ocr_bench]` extras(环境检查阶段自动安装);**被测模型必须支持多模态**;规则评分,不需要裁判模型 |
+| `videomme_v2` | `MME-Benchmarks/Video-MME-v2` | 0-shot | `acc` | Video-MME-v2 视频多选问答,800 视频 3200 题,子集 `all/level_1-3/logic/relevance`(短/中/长视频分层 + 纯感知/推理分组),CoT + `ANSWER: [LETTER]`;**被测模型必须支持视频输入**(`video_url` content);本流水线默认注入 `video_source=archive`(视频经代理预下载到本地,以 base64 data URI 内联进请求,模型侧无需联网;默认 `url` 模式需模型服务能访问公网视频直链);可选 `use_subtitles=true` 附带词级字幕;视频缓存 `~/.cache/evalscope/videomme_v2/videos/`;规则评分,不需要裁判模型 |
 
 这些默认值不传任何 flag 时生效;Jenkins 任一对应参数填了非空值就覆盖默认。
 
