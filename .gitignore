@@ -154,6 +154,8 @@ output/
 /test*.*
 *.ttf
 *.zip
+# Exception: bundled NLTK corpora for ocr_bench_v2 offline scoring (installed by scripts/setup_venv.sh)
+!scripts/nltk_data/*.zip
 _build/
 swift.test*
 /cache

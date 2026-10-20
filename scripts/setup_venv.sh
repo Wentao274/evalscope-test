@@ -9,6 +9,46 @@ set -e
 #   TASK_HUMANEVAL_PLUS, TASK_MBPP, TASK_TAU_BENCH, TASK_TAU2_BENCH,
 #   TASK_OCR_BENCH_V2
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# ocr_bench_v2 的 METEOR 评分需要 NLTK wordnet 语料(pip 包不含数据,eval 阶段无代理)。
+# 优先解压仓库内置 scripts/nltk_data/*.zip(离线可靠,不依赖 raw.githubusercontent.com);
+# 内置文件缺失时回退网络下载(默认源在国内常被阻断,需代理已生效)。幂等:语料可用则直接跳过。
+install_nltk_wordnet() {
+    local check='from nltk.corpus import wordnet; wordnet.synsets("test")'
+    if python3 -c "$check" 2>/dev/null; then
+        echo "NLTK wordnet 语料已可用"
+        return 0
+    fi
+    local corpora_dir="${WORK_DIR}/.venv/nltk_data/corpora"
+    if [ -f "${SCRIPT_DIR}/nltk_data/wordnet.zip" ]; then
+        echo "解压仓库内置 NLTK wordnet 语料..."
+        mkdir -p "${corpora_dir}"
+        if ! python3 -c "import zipfile; zipfile.ZipFile('${SCRIPT_DIR}/nltk_data/wordnet.zip').extractall('${corpora_dir}')" 2>&1; then
+            echo "WARN: 解压 wordnet.zip 失败"
+        fi
+        if [ -f "${SCRIPT_DIR}/nltk_data/omw-1.4.zip" ]; then
+            python3 -c "import zipfile; zipfile.ZipFile('${SCRIPT_DIR}/nltk_data/omw-1.4.zip').extractall('${corpora_dir}')" 2>&1 \
+                || echo "WARN: 解压 omw-1.4.zip 失败"
+        fi
+    else
+        echo "仓库未内置 NLTK 语料,尝试网络下载(需代理)..."
+        export https_proxy=http://10.201.136.68:1080
+        export http_proxy=http://10.201.136.68:1080
+        if ! python3 -c "import nltk, os, sys; d = os.path.join(sys.prefix, 'nltk_data'); sys.exit(0 if nltk.download('wordnet', download_dir=d) and nltk.download('omw-1.4', download_dir=d) else 1)" 2>&1; then
+            echo "WARN: NLTK wordnet 网络下载失败"
+        fi
+        unset https_proxy
+        unset http_proxy
+    fi
+    if python3 -c "$check" 2>/dev/null; then
+        echo "NLTK wordnet 语料安装完成"
+    else
+        echo "WARN: NLTK wordnet 语料不可用,ocr_bench_v2 中依赖 METEOR 的子集评分将被跳过(不计分)"
+        return 1
+    fi
+}
+
 cd "$WORK_DIR"
 echo "工作目录: $(pwd)"
 ls -la
@@ -117,17 +157,9 @@ if [ ! -d "${WORK_DIR}/.venv" ]; then
         echo "安装 tau2_bench 依赖(git+https://github.com/sierra-research/tau2-bench@v0.2.0)..."
         uv pip install "git+https://github.com/sierra-research/tau2-bench@v0.2.0" 2>&1 || echo "WARN: tau2_bench git 依赖安装失败,稍后在补装阶段会重试"
     fi
-    # ocr_bench_v2: METEOR 评分需要 NLTK wordnet 语料(pip 包不含数据,eval 阶段无代理,必须趁代理生效时预下载)
-    # 下载到 venv 的 nltk_data(sys.prefix/nltk_data 在 NLTK 搜索路径中,且随 venv 落在共享存储上)
+    # ocr_bench_v2: METEOR 评分需要 NLTK wordnet 语料(内置 zip 优先,见 install_nltk_wordnet)
     if [ "${TASK_OCR_BENCH_V2}" = "true" ]; then
-        if ! python3 -c "import nltk; nltk.data.find('corpora/wordnet'); nltk.data.find('corpora/omw-1.4')" 2>/dev/null; then
-            echo "下载 NLTK wordnet 语料..."
-            if ! python3 -c "import nltk, os, sys; d = os.path.join(sys.prefix, 'nltk_data'); sys.exit(0 if nltk.download('wordnet', download_dir=d) and nltk.download('omw-1.4', download_dir=d) else 1)" 2>&1; then
-                echo "WARN: NLTK wordnet 语料下载失败,ocr_bench_v2 中依赖 METEOR 的子集评分将被跳过(不计分)"
-            fi
-        else
-            echo "NLTK wordnet 语料已存在"
-        fi
+        install_nltk_wordnet
     fi
     unset https_proxy
     unset http_proxy
@@ -217,19 +249,8 @@ else
         else
             echo "ocr_bench_v2 评分依赖已安装"
         fi
-        # NLTK wordnet 语料与 pip 包无关,单独检查(pip 包已装但语料缺失时仍需下载)
-        if ! python3 -c "import nltk; nltk.data.find('corpora/wordnet'); nltk.data.find('corpora/omw-1.4')" 2>/dev/null; then
-            echo "补下载 NLTK wordnet 语料..."
-            export https_proxy=http://10.201.136.68:1080
-            export http_proxy=http://10.201.136.68:1080
-            if ! python3 -c "import nltk, os, sys; d = os.path.join(sys.prefix, 'nltk_data'); sys.exit(0 if nltk.download('wordnet', download_dir=d) and nltk.download('omw-1.4', download_dir=d) else 1)" 2>&1; then
-                echo "WARN: NLTK wordnet 语料下载失败,ocr_bench_v2 中依赖 METEOR 的子集评分将被跳过(不计分)"
-            fi
-            unset https_proxy
-            unset http_proxy
-        else
-            echo "NLTK wordnet 语料已存在"
-        fi
+        # NLTK wordnet 语料与 pip 包无关,单独安装(pip 包已装但语料缺失时仍需补)
+        install_nltk_wordnet
     fi
 
     # tau_bench:检查 tau_bench 包是否已安装(git-only 依赖,无法通过 pip extras 安装)
