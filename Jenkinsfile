@@ -506,6 +506,44 @@ ENDSSH
                                 }
                             }
 
+                            // DeepSWE 诊断仅在勾选 TASK_DEEP_SWE 时输出,未选择该任务时不打印空段落
+                            def deepSweDiag = ''
+                            if (params.TASK_DEEP_SWE) {
+                                deepSweDiag = """
+echo ""
+echo "=== DeepSWE 诊断: exception.txt ==="
+for f in \$(find ${localDir}/ -name "exception.txt" -type f); do
+    echo "--- \$f ---"
+    cat "\$f" 2>/dev/null || echo "(unable to read)"
+    echo ""
+done
+
+echo ""
+echo "=== DeepSWE 诊断: mini-swe-agent.txt (最后50行) ==="
+for f in \$(find ${localDir}/ -name "mini-swe-agent.txt" -type f); do
+    echo "--- \$f ---"
+    tail -50 "\$f" 2>/dev/null || echo "(unable to read)"
+    echo ""
+done
+
+echo ""
+echo "=== DeepSWE 诊断: reward.txt ==="
+for f in \$(find ${localDir}/ -name "reward.txt" -type f); do
+    echo "--- \$f ---"
+    cat "\$f" 2>/dev/null || echo "(unable to read)"
+    echo ""
+done
+
+echo ""
+echo "=== DeepSWE 诊断: trial.log (最后30行) ==="
+for f in \$(find ${localDir}/ -name "trial.log" -type f); do
+    echo "--- \$f ---"
+    tail -30 "\$f" 2>/dev/null || echo "(unable to read)"
+    echo ""
+done
+"""
+                            }
+
                             echo "拉取测试结果目录: ${useCacheRemote ?: remoteDir}"
 
                             if (env.CONNECTIVITY_FAILED == 'true') {
@@ -525,39 +563,7 @@ cp -r ${localDir}/${env.MODEL_DIR}_use_cache_tmp/. ${localDir}/${env.MODEL_DIR}/
 rm -rf ${localDir}/${env.MODEL_DIR}_use_cache_tmp
 echo "=== 拉取结果 ==="
 find ${localDir}/ -type f
-
-echo ""
-echo "=== DeepSWE 诊断: exception.txt ==="
-for f in \$(find ${localDir}/ -name "exception.txt" -type f); do
-    echo "--- \$f ---"
-    cat "\$f" 2>/dev/null || echo "(unable to read)"
-    echo ""
-done
-
-echo ""
-echo "=== DeepSWE 诊断: mini-swe-agent.txt (最后50行) ==="
-for f in \$(find ${localDir}/ -name "mini-swe-agent.txt" -type f); do
-    echo "--- \$f ---"
-    tail -50 "\$f" 2>/dev/null || echo "(unable to read)"
-    echo ""
-done
-
-echo ""
-echo "=== DeepSWE 诊断: reward.txt ==="
-for f in \$(find ${localDir}/ -name "reward.txt" -type f); do
-    echo "--- \$f ---"
-    cat "\$f" 2>/dev/null || echo "(unable to read)"
-    echo ""
-done
-
-echo ""
-echo "=== DeepSWE 诊断: trial.log (最后30行) ==="
-for f in \$(find ${localDir}/ -name "trial.log" -type f); do
-    echo "--- \$f ---"
-    tail -30 "\$f" 2>/dev/null || echo "(unable to read)"
-    echo ""
-done
-"""
+${deepSweDiag}"""
                             } else {
                                 sh """
 mkdir -p ${localDir}
@@ -566,39 +572,7 @@ scp -o StrictHostKeyChecking=no \
     ${localDir}/
 echo "=== 拉取结果 ==="
 find ${localDir}/ -type f
-
-echo ""
-echo "=== DeepSWE 诊断: exception.txt ==="
-for f in \$(find ${localDir}/ -name "exception.txt" -type f); do
-    echo "--- \$f ---"
-    cat "\$f" 2>/dev/null || echo "(unable to read)"
-    echo ""
-done
-
-echo ""
-echo "=== DeepSWE 诊断: mini-swe-agent.txt (最后50行) ==="
-for f in \$(find ${localDir}/ -name "mini-swe-agent.txt" -type f); do
-    echo "--- \$f ---"
-    tail -50 "\$f" 2>/dev/null || echo "(unable to read)"
-    echo ""
-done
-
-echo ""
-echo "=== DeepSWE 诊断: reward.txt ==="
-for f in \$(find ${localDir}/ -name "reward.txt" -type f); do
-    echo "--- \$f ---"
-    cat "\$f" 2>/dev/null || echo "(unable to read)"
-    echo ""
-done
-
-echo ""
-echo "=== DeepSWE 诊断: trial.log (最后30行) ==="
-for f in \$(find ${localDir}/ -name "trial.log" -type f); do
-    echo "--- \$f ---"
-    tail -30 "\$f" 2>/dev/null || echo "(unable to read)"
-    echo ""
-done
-"""
+${deepSweDiag}"""
                             }
 
                             sh """
