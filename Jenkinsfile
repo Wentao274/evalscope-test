@@ -582,6 +582,14 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     ./${localBuildsDir}/evalscope_connectivity_${BUILD_NUMBER}.log 2>/dev/null \
     && echo "连通性预检日志已拉取: ${localBuildsDir}/evalscope_connectivity_${BUILD_NUMBER}.log" \
     || echo "WARN: 连通性预检日志拉取失败"
+
+# 拉取报告生成脚本到工作区(发送邮件阶段依赖;工作区每次构建后被 cleanWs 清空,需每次构建重新拉取)
+mkdir -p scripts
+scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    ${REMOTE_USER}@${REMOTE_HOST}:${params.WORK_DIR}/scripts/generate_report.py \
+    scripts/generate_report.py \
+    && echo "报告生成脚本已拉取: scripts/generate_report.py" \
+    || { echo "ERROR: 报告生成脚本拉取失败,邮件阶段将无法生成报告"; exit 1; }
 """
                         }
                     }
