@@ -100,6 +100,53 @@ def count_ignored_samples(log_content: str) -> int:
     return log_content.count('Error ignored, continuing with next sample.')
 
 
+def _identity_matches(metric_identity, primary_identity) -> bool:
+    """Compare two serialized MetricIdentity dicts (report schema v2)."""
+    if not isinstance(metric_identity, dict) or not isinstance(primary_identity, dict):
+        return False
+    return (
+        metric_identity.get('name') == primary_identity.get('name')
+        and metric_identity.get('aggregation') == primary_identity.get('aggregation')
+        and metric_identity.get('dimensions') == primary_identity.get('dimensions')
+    )
+
+
+def _extract_report_score(json_data):
+    """Extract the headline score from a report JSON.
+
+    Legacy reports serialize a top-level scalar ``score``. Report schema v2 dropped
+    that key: the headline is the score of the metric referenced by
+    ``primary_metric_identity`` (the serialized form of Report.score). Falls back to
+    the sole metric when no primary identity is declared.
+    """
+    score = norm(json_data.get('score'))
+    if score is not None:
+        return score
+    metrics = norm(json_data.get('metrics')) or []
+    primary = norm(json_data.get('primary_metric_identity'))
+    if primary is not None:
+        for m in metrics:
+            if _identity_matches(norm(m.get('identity')), primary):
+                return norm(m.get('score'))
+        return None
+    if len(metrics) == 1:
+        return norm(metrics[0].get('score'))
+    return None
+
+
+def _metric_display_name(metric) -> str:
+    """Metric label for both legacy (name) and schema v2 (legacy_name/identity) reports."""
+    legacy = norm(metric.get('legacy_name'))
+    if legacy:
+        return legacy
+    identity = norm(metric.get('identity'))
+    if isinstance(identity, dict):
+        name = norm(identity.get('name')) or 'score'
+        aggregation = norm(identity.get('aggregation'))
+        return f'{name}:{aggregation}' if aggregation else name
+    return norm(metric.get('name')) or 'score'
+
+
 def parse_reports(log_file_base: str) -> tuple:
     """Parse report JSON files and return (task_scores, task_summary_rows, task_metrics_html)."""
     task_scores = {}
@@ -107,7 +154,7 @@ def parse_reports(log_file_base: str) -> tuple:
     task_metrics_html = ''
 
     pattern = os.path.join(log_file_base, '**', 'reports', '**', '*.json')
-    report_files = glob.glob(pattern, recursive=True)
+    report_files = sorted(glob.glob(pattern, recursive=True))
 
     for rf in report_files:
         try:
@@ -117,7 +164,7 @@ def parse_reports(log_file_base: str) -> tuple:
             continue
 
         task_name = norm(json_data.get('dataset_name')) or norm(json_data.get('name')) or 'unknown'
-        score = norm(json_data.get('score'))
+        score = _extract_report_score(json_data)
         score_str = 'N/A'
         if score is not None:
             try:
@@ -131,7 +178,7 @@ def parse_reports(log_file_base: str) -> tuple:
         detail_rows = ''
         metrics = norm(json_data.get('metrics')) or []
         for m in metrics:
-            metric_name = norm(m.get('name')) or 'score'
+            metric_name = _metric_display_name(m)
             metric_score = norm(m.get('score'))
             metric_score_str = (
                 f'{float(metric_score) * 100:.2f}%' if metric_score is not None else 'N/A'
@@ -154,6 +201,9 @@ def parse_reports(log_file_base: str) -> tuple:
                 )
                 subsets = norm(c.get('subsets')) or []
                 for s in subsets:
+                    if norm(s.get('is_aggregate')):
+                        # Derived summary subsets (e.g. OVERALL) duplicate category/metric rows.
+                        continue
                     sub_name = norm(s.get('name'))
                     sub_score = norm(s.get('score'))
                     sub_score_str = (

@@ -117,6 +117,18 @@ if [ ! -d "${WORK_DIR}/.venv" ]; then
         echo "安装 tau2_bench 依赖(git+https://github.com/sierra-research/tau2-bench@v0.2.0)..."
         uv pip install "git+https://github.com/sierra-research/tau2-bench@v0.2.0" 2>&1 || echo "WARN: tau2_bench git 依赖安装失败,稍后在补装阶段会重试"
     fi
+    # ocr_bench_v2: METEOR 评分需要 NLTK wordnet 语料(pip 包不含数据,eval 阶段无代理,必须趁代理生效时预下载)
+    # 下载到 venv 的 nltk_data(sys.prefix/nltk_data 在 NLTK 搜索路径中,且随 venv 落在共享存储上)
+    if [ "${TASK_OCR_BENCH_V2}" = "true" ]; then
+        if ! python3 -c "import nltk; nltk.data.find('corpora/wordnet'); nltk.data.find('corpora/omw-1.4')" 2>/dev/null; then
+            echo "下载 NLTK wordnet 语料..."
+            if ! python3 -c "import nltk, os, sys; d = os.path.join(sys.prefix, 'nltk_data'); sys.exit(0 if nltk.download('wordnet', download_dir=d) and nltk.download('omw-1.4', download_dir=d) else 1)" 2>&1; then
+                echo "WARN: NLTK wordnet 语料下载失败,ocr_bench_v2 中依赖 METEOR 的子集评分将被跳过(不计分)"
+            fi
+        else
+            echo "NLTK wordnet 语料已存在"
+        fi
+    fi
     unset https_proxy
     unset http_proxy
     deactivate
@@ -204,6 +216,19 @@ else
             echo "ocr_bench_v2 依赖补装完成"
         else
             echo "ocr_bench_v2 评分依赖已安装"
+        fi
+        # NLTK wordnet 语料与 pip 包无关,单独检查(pip 包已装但语料缺失时仍需下载)
+        if ! python3 -c "import nltk; nltk.data.find('corpora/wordnet'); nltk.data.find('corpora/omw-1.4')" 2>/dev/null; then
+            echo "补下载 NLTK wordnet 语料..."
+            export https_proxy=http://10.201.136.68:1080
+            export http_proxy=http://10.201.136.68:1080
+            if ! python3 -c "import nltk, os, sys; d = os.path.join(sys.prefix, 'nltk_data'); sys.exit(0 if nltk.download('wordnet', download_dir=d) and nltk.download('omw-1.4', download_dir=d) else 1)" 2>&1; then
+                echo "WARN: NLTK wordnet 语料下载失败,ocr_bench_v2 中依赖 METEOR 的子集评分将被跳过(不计分)"
+            fi
+            unset https_proxy
+            unset http_proxy
+        else
+            echo "NLTK wordnet 语料已存在"
         fi
     fi
 
