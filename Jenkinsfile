@@ -48,6 +48,14 @@ pipeline {
         booleanParam(name: 'TASK_TAU_BENCH',  defaultValue: false, description: '运行 tau_bench (τ-bench 多轮对话 agent,航空/零售客服场景,被测模型通过 API 工具调用完成任务;LLM 模拟用户对话,需配 USER_MODEL_ID 等用户模拟模型参数;规则评分 task reward,不需要裁判模型;pass^k 聚合,设 REPEATS=k 启用;git-only 依赖,环境检查阶段自动从 github 安装)')
         booleanParam(name: 'TASK_TAU2_BENCH', defaultValue: false, description: '运行 tau2_bench (τ²-bench,τ-bench 增强版,新增 telecom 域;被测模型通过 API 工具调用完成任务;LLM 模拟用户对话,需配 USER_MODEL_ID 等用户模拟模型参数;规则评分 task reward,不需要裁判模型;pass^k 聚合,设 REPEATS=k 启用;git-only 依赖,环境检查阶段自动从 github 安装;注意:与 tau3_bench 共用 tau2 包名不可共存,本流水线不含 tau3_bench)')
 
+        // MCP-Atlas agent-environment 自动部署
+        string(name: 'MCP_ATLAS_IMAGE', defaultValue: 'ghcr.io/scaleapi/mcp-atlas:1.2.7', description: 'MCP-Atlas agent-environment Docker 镜像(Scale AI 官方预构建)。当 TASK_MCP_ATLAS=true 且服务未运行时,Jenkins 自动拉取并启动此镜像,监听 localhost:1984。20 个无需 API key 的 MCP server 默认启用')
+        choice(name: 'MCP_ATLAS_AUTO_DEPLOY', choices: ['true', 'false'], description: '自动部署 MCP-Atlas agent-environment(默认 true)。服务未运行时自动 pull + docker run;false 则仅检查不自动启动,需手动准备')
+        string(name: 'MCP_ATLAS_API_KEYS', defaultValue: 'MONGODB_URI=mongodb://admin:abc123@host.docker.internal:27017/?authSource=admin,GITHUB_TOKEN=ghp_REPLACE_WITH_YOUR_TOKEN', description: 'MCP server API keys,逗号分隔 KEY=VALUE 对。默认值含:1) MongoDB(宿主机已部署,使用 host.docker.internal:27017,容器内经 --add-host 映射到宿主机;authSource=admin);2) GitHub PAT 占位符(替换 ghp_REPLACE_WITH_YOUR_TOKEN 为真实 token 即可启用 github server)。格式: KEY1=VALUE1,KEY2=VALUE2。其他可选 key:BRAVE_API_KEY=xxx — Brave Search(https://brave.com/search/api/)。删除某项则对应 server 不启用')
+
+        // deep_swe 模型名 provider 前缀(litellm 协议路由)
+        string(name: 'DEEP_SWE_MODEL_PROVIDER', defaultValue: 'openai', description: 'deep_swe 模型名前缀(litellm 协议路由指令,与模型归属厂商无关)。openai=以 OpenAI 兼容协议调用 BASE_URL 端点,适用于 Z.ai/Moonshot/DeepSeek/vLLM 等任何 OpenAI 兼容部署(默认,推荐不改);其他值(如 zai/moonshot/deepseek)切换为 litellm 该厂商专属路由(其官方 base_url 及调用约定),仅特殊需求时修改。仅 TASK_DEEP_SWE 勾选时生效;密钥始终用 API_KEY 参数,无需任何厂商 key')
+
         string(name: 'EXAMPLES',        defaultValue: '',      description: '样本数限制(空 = 不限制;传给 evalscope --limit。int=数量,float=比例)')
         string(name: 'REPEATS',         defaultValue: '',      description: '重复次数(k-metrics,传给 evalscope --repeats。空 = 默认 1)')
         string(name: 'EVAL_BATCH_SIZE', defaultValue: '1',     description: '并发批大小(对应 evalscope --eval-batch-size,默认 1)')
@@ -73,14 +81,6 @@ pipeline {
         string(name: 'DESCRIPTION', defaultValue: '', description: '模型服务描述信息(仅用于邮件展示)')
         text(name: 'RECIPIENTS',    defaultValue: 'liwt@zetyun.com', description: '报告邮件接收者(逗号分隔)')
         string(name: 'WORK_DIR',    defaultValue: '/dingofs/data2/userdata/liwt/maas-image/evalscope-test', description: '远程仓库目录,请不要改动')
-
-        // MCP-Atlas agent-environment 自动部署
-        string(name: 'MCP_ATLAS_IMAGE', defaultValue: 'ghcr.io/scaleapi/mcp-atlas:1.2.7', description: 'MCP-Atlas agent-environment Docker 镜像(Scale AI 官方预构建)。当 TASK_MCP_ATLAS=true 且服务未运行时,Jenkins 自动拉取并启动此镜像,监听 localhost:1984。20 个无需 API key 的 MCP server 默认启用')
-        choice(name: 'MCP_ATLAS_AUTO_DEPLOY', choices: ['true', 'false'], description: '自动部署 MCP-Atlas agent-environment(默认 true)。服务未运行时自动 pull + docker run;false 则仅检查不自动启动,需手动准备')
-        string(name: 'MCP_ATLAS_API_KEYS', defaultValue: 'MONGODB_URI=mongodb://admin:abc123@host.docker.internal:27017/?authSource=admin,GITHUB_TOKEN=ghp_REPLACE_WITH_YOUR_TOKEN', description: 'MCP server API keys,逗号分隔 KEY=VALUE 对。默认值含:1) MongoDB(宿主机已部署,使用 host.docker.internal:27017,容器内经 --add-host 映射到宿主机;authSource=admin);2) GitHub PAT 占位符(替换 ghp_REPLACE_WITH_YOUR_TOKEN 为真实 token 即可启用 github server)。格式: KEY1=VALUE1,KEY2=VALUE2。其他可选 key:BRAVE_API_KEY=xxx — Brave Search(https://brave.com/search/api/)。删除某项则对应 server 不启用')
-
-        // deep_swe 模型名 provider 前缀(litellm 协议路由)
-        string(name: 'DEEP_SWE_MODEL_PROVIDER', defaultValue: 'openai', description: 'deep_swe 模型名前缀(litellm 协议路由指令,与模型归属厂商无关)。openai=以 OpenAI 兼容协议调用 BASE_URL 端点,适用于 Z.ai/Moonshot/DeepSeek/vLLM 等任何 OpenAI 兼容部署(默认,推荐不改);其他值(如 zai/moonshot/deepseek)切换为 litellm 该厂商专属路由(其官方 base_url 及调用约定),仅特殊需求时修改。仅 TASK_DEEP_SWE 勾选时生效;密钥始终用 API_KEY 参数,无需任何厂商 key')
     }
     environment {
         SSH_CREDENTIALS = 'HOST_SSH_KEY'
