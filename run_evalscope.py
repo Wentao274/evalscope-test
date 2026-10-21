@@ -173,6 +173,16 @@ def parse_args():
         help='按任务覆盖 top_p 的 JSON,例: {"deep_swe":1.0}。命中任务使用对应值,未命中任务用全局 TOP_P',
     )
     parser.add_argument(
+        "--task-stream-json",
+        default="",
+        help=(
+            '按任务开启流式请求的 JSON,例: {"imo_answerbench":true}。命中的任务注入 '
+            "generation_config.stream=true,长思考任务(数学/科学竞赛)单次生成可超过"
+            "网关空闲超时(tengine 约 30 分钟)时避免非流式 504;evalscope 模型层把"
+            "流式 chunk 聚合回完整响应,评分链路无感知;deep_swe 无效(Pier 旁路)"
+        ),
+    )
+    parser.add_argument(
         "--task-stop-seqs-json",
         default="",
         help=(
@@ -260,6 +270,8 @@ def main():
         env["TASK_TIMEOUT_JSON"] = args.task_timeout_json
     if args.task_top_p_json:
         env["TASK_TOP_P_JSON"] = args.task_top_p_json
+    if args.task_stream_json:
+        env["TASK_STREAM_JSON"] = args.task_stream_json
     if args.task_stop_seqs_json:
         env["TASK_STOP_SEQS_JSON"] = args.task_stop_seqs_json
     if args.judge_model_id:
@@ -312,6 +324,7 @@ def main():
         "TASK_MAX_TOKENS_JSON",
         "TASK_TIMEOUT_JSON",
         "TASK_TOP_P_JSON",
+        "TASK_STREAM_JSON",
         "TASK_STOP_SEQS_JSON",
         "JUDGE_MODEL_ID",
         "JUDGE_API_URL",

@@ -32,6 +32,13 @@
 #                          按任务覆盖 MAX_TOKENS(若设置则覆盖全局 MAX_TOKENS)
 #   TASK_TIMEOUT_JSON  可选 JSON,形如 {"mcp_atlas":3600},按任务覆盖 timeout(秒)
 #   TASK_TOP_P_JSON    可选 JSON,形如 {"deep_swe":1.0},按任务覆盖 top_p
+#   TASK_STREAM_JSON   可选 JSON,形如 {"imo_answerbench":true},命中的任务以流式请求
+#                      (generation_config.stream=true)调用模型。长思考任务(数学/科学
+#                      竞赛)单次生成可超过网关空闲超时(tengine 约 30 分钟,非流式被
+#                      504 掐断);流式下 token 边生成边下发,连接持续有数据流动。
+#                      evalscope 模型层把流式 chunk 聚合回完整响应,评分链路无感知。
+#                      注:deep_swe 推理在 Pier 容器内进行,绕过 generation_config,
+#                      此开关对其无效。
 #   TASK_TEMPERATURE_JSON  可选 JSON,形如 {"mmlu_pro":0.0,"math_500":0.6},
 #                          按任务指定采样温度(若未命中则用 TEMPERATURE_FALLBACK)
 #   DATASET_ARGS     数据集参数 JSON 字符串
@@ -113,6 +120,7 @@ USER_MODEL_API_KEY=${USER_MODEL_API_KEY:-EMPTY}
 TASK_TIMEOUT_JSON=${TASK_TIMEOUT_JSON:-}
 TASK_TOP_P_JSON=${TASK_TOP_P_JSON:-}
 TASK_STOP_SEQS_JSON=${TASK_STOP_SEQS_JSON:-}
+TASK_STREAM_JSON=${TASK_STREAM_JSON:-}
 
 # [断点续跑] USE_CACHE 非空时启用续跑;RERUN_REVIEW 控制是否重新打分
 USE_CACHE=${USE_CACHE:-}
@@ -306,6 +314,35 @@ if v is not None:
     echo ""
 }
 
+# ---------- 按任务开启 stream(流式请求)----------
+# 命中 TASK_STREAM_JSON 且值为 true 时返回 true,否则返回空(不注入 stream 字段,
+# 由服务端默认非流式)。
+# 用途:imo_answerbench/hle/aime 等长思考任务单次生成可超过网关空闲超时
+# (tengine 约 30 分钟,非流式 504);流式请求 token 边生成边下发,连接持续
+# 有数据流动,不再触发网关超时。evalscope 模型层把流式 chunk 聚合回完整
+# 响应(GenerateConfig.stream 原生字段,流消费在重试边界内),评分链路无感知。
+# 注:deep_swe 推理在 Pier 容器内进行,绕过 generation_config,此开关无效。
+_resolve_stream() {
+    local dataset="$1"
+    if [ -n "$TASK_STREAM_JSON" ]; then
+        local per_task
+        per_task=$(python3 -c "
+import json, sys
+try:
+    m = json.loads('''${TASK_STREAM_JSON}''')
+except Exception:
+    m = {}
+v = m.get('${dataset}')
+print('true' if v is True else '')
+" 2>/dev/null || echo "")
+        if [ -n "$per_task" ]; then
+            echo "$per_task"
+            return
+        fi
+    fi
+    echo ""
+}
+
 # ---------- 组装 generation-config JSON ----------
 _build_generation_config() {
     local max_tokens="$1"
@@ -313,6 +350,7 @@ _build_generation_config() {
     local timeout="${3:-3600}"
     local top_p="${4:-${TOP_P}}"
     local stop_seqs="${5:-}"
+    local stream="${6:-}"
 
     # shell 使用小写 true/false,Python 需要 True/False,在此转换避免 NameError。
     local enable_thinking_py
@@ -322,7 +360,7 @@ _build_generation_config() {
         enable_thinking_py=False
     fi
 
-    STOP_SEQS="$stop_seqs" python3 -c "
+    STREAM="$stream" STOP_SEQS="$stop_seqs" python3 -c "
 import json, os
 cfg = {
     'max_tokens': ${max_tokens:-32768},
@@ -338,6 +376,8 @@ if stop_seqs_str:
         cfg['stop_seqs'] = json.loads(stop_seqs_str)
     except Exception:
         pass
+if os.environ.get('STREAM', '') == 'true':
+    cfg['stream'] = True
 print(json.dumps(cfg, ensure_ascii=False))
 "
 }
@@ -414,9 +454,13 @@ run_task() {
     local STOP_SEQS_ARG
     STOP_SEQS_ARG=$(_resolve_stop_seqs "$DATASET")
 
+    # 按任务开启流式请求(命中 TASK_STREAM_JSON 且为 true;长思考任务防网关 504)
+    local STREAM_ARG
+    STREAM_ARG=$(_resolve_stream "$DATASET")
+
     # 组装 generation-config JSON
     local gen_config
-    gen_config=$(_build_generation_config "$MAX_TOKENS_ARG" "$TEMPERATURE_ARG" "$TIMEOUT_ARG" "$TOP_P_ARG" "$STOP_SEQS_ARG")
+    gen_config=$(_build_generation_config "$MAX_TOKENS_ARG" "$TEMPERATURE_ARG" "$TIMEOUT_ARG" "$TOP_P_ARG" "$STOP_SEQS_ARG" "$STREAM_ARG")
 
     # ---- deep_swe 专属:为模型名拼接 litellm provider 前缀 ----
     # Pier 的 mini-swe-agent 强制 provider/model_name 格式(无 "/" 直接 ValueError)。
@@ -668,6 +712,7 @@ print(json.dumps(args, ensure_ascii=False))
     echo "  TOP_P            : $TOP_P_ARG"               | tee -a "$LOG_FILE"
     echo "  TOP_K            : $TOP_K"               | tee -a "$LOG_FILE"
     echo "  STOP_SEQS        : ${STOP_SEQS_ARG:-<none>}"  | tee -a "$LOG_FILE"
+    echo "  STREAM           : ${STREAM_ARG:-<off>}"     | tee -a "$LOG_FILE"
     echo "  ENABLE_THINKING  : $ENABLE_THINKING"     | tee -a "$LOG_FILE"
     echo "  REPEATS          : ${REPEATS_ARG:-<default 1>}"  | tee -a "$LOG_FILE"
     echo "  JUDGE_STRATEGY   : $JUDGE_STRATEGY_ARG"      | tee -a "$LOG_FILE"
@@ -729,6 +774,7 @@ print(json.dumps(args, ensure_ascii=False))
     echo "  TOP_P             : $TOP_P"
     echo "  TASK_TOP_P_JSON   : ${TASK_TOP_P_JSON:-<none>}"
     echo "  TASK_STOP_SEQS_JSON: ${TASK_STOP_SEQS_JSON:-<none>}"
+    echo "  TASK_STREAM_JSON : ${TASK_STREAM_JSON:-<none>}"
     echo "  TOP_K             : $TOP_K"
     echo "  ENABLE_THINKING   : $ENABLE_THINKING"
     echo "  REPEATS           : ${REPEATS:-<default 1>}"

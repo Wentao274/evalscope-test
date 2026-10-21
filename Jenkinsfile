@@ -70,6 +70,7 @@ pipeline {
         text(name: 'TASK_MAX_TOKENS_JSON', defaultValue: '{"gpqa_diamond":131072,"aime25":131072,"aime26":131072,"imo_answerbench":131072,"hmmt25":65536,"hmmt26":65536,"mcp_atlas":8192,"deep_swe":409600,"hellaswag":8192,"humaneval":16384,"humaneval_plus":16384,"mbpp":16384,"frames":16384,"hle":131072,"mmmu_pro":16384,"ocr_bench":8192,"ocr_bench_v2":16384,"videomme_v2":16384}', description: '按任务覆盖 max_tokens 的 JSON。未列出的任务用 MAX_TOKENS 默认值(32768)。各项依据: gpqa_diamond=131072(PhD级科学MCQ+CoT,thinking推理极长),aime25=131072(AIME数学竞赛,thinking推理链最长),aime26=131072(同aime25),imo_answerbench=131072(IMO奥数最高难度,400题,解答篇幅≥AIME,32768会截断\\boxed{}前推导导致答案提取失败),hmmt25=65536(HMMT数学竞赛,难度接近AIME),hmmt26=65536(同hmmt25),mcp_atlas=8192(多轮AgentLoop,单步工具调用args/短回复够用,过大会触发长思考导致超时),deep_swe=409600(400k,编码agent需大输出窗口),hellaswag=8192(常识单选,输出仅1字母),humaneval=16384(Python代码生成),humaneval_plus=16384(同humaneval,更多测试用例),mbpp=16384(基础Python代码生成,3-shot),frames=16384(RAG短答案,target_mean=31字符),mmmu_pro=16384(多模态CoT多选,推理链+ANSWER字母,vision格式读图推理更长),ocr_bench=8192(OCR识别/抽取/VQA答案多为短语),ocr_bench_v2=16384(全页OCR/表格/图表/文档解析输出整页文本或HTML,输出长),videomme_v2=16384(视频CoT多选,推理链+ANSWER字母)。ceval 未列出,使用全局默认 32768(中文通识多选,5-shot,thinking模式下部分题目推理链较长,16384易截断导致答案丢失)。可按需追加,例: {"mmlu_pro":4096}')
         text(name: 'TASK_TIMEOUT_JSON', defaultValue: '{"aime25":7200,"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800,"hle":7200}', description: '按任务覆盖模型调用超时(秒)的 JSON,默认 aime25/aime26=7200(2 小时,AIME数学竞赛 thinking 推理链长),mcp_atlas=7200(2 小时,多轮 AgentLoop 配合 max_tokens=4096 + thinking 仍可能耗时长),deep_swe=172800(48 小时,仓库级编码 agent 串行构建+验证,低性能机器或大仓库需更长 agent_timeout),其余任务用内置默认 3600;可按需追加,例: {"mcp_atlas":7200,"humaneval":1800}')
         text(name: 'TASK_TOP_P_JSON', defaultValue: '{"deep_swe":1.0}', description: '按任务覆盖 top_p 的 JSON,默认 deep_swe=1.0(编码 agent 高随机性探索,全局默认 0.95);可按需追加,例: {"deep_swe":1.0,"humaneval":0.95}')
+        text(name: 'TASK_STREAM_JSON', defaultValue: '{"aime25":true,"aime26":true,"hmmt25":true,"hmmt26":true,"imo_answerbench":true,"math_500":true,"gpqa_diamond":true,"mmlu_pro":true,"hle":true}', description: '按任务开启流式请求(stream)的 JSON。命中的任务通过 generation_config.stream=true 以 SSE 流式调用模型,token 边生成边下发,长思考任务(数学/科学竞赛,单次生成可超 30 分钟)不再被网关空闲超时掐断(非流式 504);evalscope 在模型层把流式 chunk 聚合回完整响应,评分无感知。默认覆盖长思考任务:aime25/aime26/hmmt25/hmmt26/imo_answerbench/math_500/gpqa_diamond/mmlu_pro/hle(build 149 实证 imo_answerbench/hle 504,其余按 max_tokens 131072/65536 档位判定);边缘任务(ceval/cmmlu/mmmu_pro/mcp_atlas 等)可按需追加;deep_swe 推理在 Pier 容器内绕过 generation_config,此开关无效')
         text(name: 'TASK_STOP_SEQS_JSON', defaultValue: '{"mmlu_pro":["Question:"]}', description: '按任务指定 stop_seqs(停止序列)的 JSON。命中的任务会将对应字符串列表注入 generation_config 的 stop_seqs 字段,服务端生成时遇到任一序列立即截断,避免模型在 few-shot 模式下答完题后继续生成多余内容。默认 mmlu_pro=["Question:"] 与 lm-evaluation-harness 的 until=["Question:"] 对齐;其他任务不在此 JSON 中则不加 stop_seqs。可按需追加,例: {"mmlu_pro":["Question:"],"ceval":["Question:"]}')
         choice(name: 'TASK_TEMPERATURE_JSON', choices: ['{"mmlu_pro":1.0,"aime25":1.0,"aime26":1.0,"gpqa_diamond":1.0,"ceval":1.0,"cmmlu":1.0,"math_500":1.0,"hellaswag":1.0,"humaneval":1.0,"humaneval_plus":1.0,"hmmt25":1.0,"hmmt26":1.0,"imo_answerbench":1.0,"mcp_atlas":1.0,"deep_swe":1.0,"mbpp":1.0,"frames":1.0,"mm_bench":1.0,"hle":1.0,"tau_bench":1.0,"tau2_bench":1.0,"mmmu_pro":1.0,"ocr_bench":1.0,"ocr_bench_v2":1.0,"videomme_v2":1.0}', '{"mmlu_pro":0.0,"aime25":0.6,"aime26":0.6,"gpqa_diamond":0.0,"ceval":0.0,"cmmlu":0.0,"math_500":0.6,"hellaswag":0.0,"humaneval":0.2,"humaneval_plus":0.2,"hmmt25":0.6,"hmmt26":0.6,"imo_answerbench":0.6,"mcp_atlas":0.0,"deep_swe":1.0,"mbpp":0.2,"frames":0.0,"mm_bench":0.0,"hle":0.6,"tau_bench":0.0,"tau2_bench":0.0,"mmmu_pro":0.0,"ocr_bench":0.0,"ocr_bench_v2":0.0,"videomme_v2":0.0}'], description: '按任务指定采样温度的 JSON。选项1(thinking 模式,默认):全部任务 1.0,适配 GLM-5.2/DeepSeek-V4/Kimi-K3 推理模型(官方均推荐 1.0;Kimi-K3 强制 1.0)。选项2(R1/instruct 模式):多选题/OCR 识别 0.0,数学推理 0.6,代码 0.2,工具调用 0.0,编码 agent 1.0;适配 DeepSeek-R1 系(推荐 0.5-0.7)或非 thinking instruct 模型(greedy)。如需更细粒度控制可手动输入 JSON')
         text(name: 'TASK_REPEATS_JSON', defaultValue: '', description: '按任务覆盖 repeats 的 JSON,例: {"humaneval":5,"humaneval_plus":5}。命中任务使用对应值,未命中任务用全局 REPEATS;为空则全部用全局 REPEATS。推荐:humaneval/humaneval_plus 设 5 算 pass@1..pass@5,其余 greedy 基准(mmlu_pro/aime25/aime26/gpqa_diamond/ceval/cmmlu/hellaswag/math_500/hmmt25/hmmt26/imo_answerbench)保持 1 避免 N 倍空跑')
@@ -147,6 +148,7 @@ pipeline {
                     println("per-task max_tokens JSON: ${params.TASK_MAX_TOKENS_JSON ?: 'N/A'}")
                     println("per-task timeout JSON: ${params.TASK_TIMEOUT_JSON ?: 'N/A'}")
                     println("per-task top_p JSON: ${params.TASK_TOP_P_JSON ?: 'N/A'}")
+                    println("per-task stream JSON: ${params.TASK_STREAM_JSON ?: 'N/A'}")
                     println("per-task stop_seqs JSON: ${params.TASK_STOP_SEQS_JSON ?: 'N/A'}")
                     println("per-task temperature JSON: ${params.TASK_TEMPERATURE_JSON ?: 'N/A'}")
                     println("per-task repeats JSON:   ${params.TASK_REPEATS_JSON ?: 'N/A'}")
@@ -457,6 +459,7 @@ python3 run_evalscope.py \\
     --task-max-tokens-json '${params.TASK_MAX_TOKENS_JSON}' \\
     --task-timeout-json '${params.TASK_TIMEOUT_JSON}' \\
     --task-top-p-json '${params.TASK_TOP_P_JSON}' \\
+    --task-stream-json '${params.TASK_STREAM_JSON}' \\
     --task-stop-seqs-json '${params.TASK_STOP_SEQS_JSON}' \\
     --dataset-args '${params.DATASET_ARGS}' \\
     --deep-swe-model-provider "${params.DEEP_SWE_MODEL_PROVIDER}" \\
@@ -641,6 +644,7 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                         env.TASK_MAX_TOKENS_JSON = params.TASK_MAX_TOKENS_JSON
                         env.TASK_TIMEOUT_JSON = params.TASK_TIMEOUT_JSON
                         env.TASK_TOP_P_JSON = params.TASK_TOP_P_JSON
+                        env.TASK_STREAM_JSON = params.TASK_STREAM_JSON
                         env.DATASET_ARGS = params.DATASET_ARGS
                         env.USE_CACHE = params.USE_CACHE
                         env.RERUN_REVIEW = params.RERUN_REVIEW

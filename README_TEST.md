@@ -193,6 +193,7 @@ evalscope eval \
 | `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime26":131072,"mcp_atlas":8192,"deep_swe":409600,"mmmu_pro":16384,"ocr_bench":8192,"ocr_bench_v2":16384,"videomme_v2":16384}` | 按任务覆盖 max_tokens,例 `{"mmlu_pro":32768}` |
 | `TASK_TIMEOUT_JSON` | (shell 内 per-task 覆盖) | `{"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800}` | 按任务覆盖模型调用超时(秒),其余任务用内置默认 3600 |
 | `TASK_TOP_P_JSON` | (shell 内 per-task 覆盖) | `{"deep_swe":1.0}` | 按任务覆盖 top_p,deep_swe 编码 agent 用 1.0 高随机性探索 |
+| `TASK_STREAM_JSON` | (shell 内 per-task 覆盖) | `{"aime25":true,...,"hle":true}` | 按任务开启流式请求,长思考任务(数学/科学竞赛)单次生成超网关空闲超时(~30min)时避免非流式 504;评分无感知;deep_swe 无效(Pier 旁路) |
 | `TASK_REPEATS_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 `REPEATS`,例 `{"humaneval":5}`;未命中任务用全局 `REPEATS` |
 | `DATASET_ARGS` | `--dataset-args` | 空 | 数据集参数 JSON,例 `{"mmlu_pro":{"subset_list":["math","physics"]}}` |
 | `DEEP_SWE_MODEL_PROVIDER` | (deep_swe 模型名前缀) | `openai` | litellm 协议路由指令,与模型归属厂商无关;`openai`=以 OpenAI 兼容协议调用 BASE_URL 端点(适用 Z.ai/Moonshot/DeepSeek/vLLM 等任何兼容部署),`zai`/`moonshot`/`deepseek` 等切换 litellm 厂商专属路由;仅 deep_swe 任务生效,其他任务不受影响 |

@@ -14,7 +14,7 @@ Environment variables (all passed from Jenkins):
   TASK_TEMPERATURE_JSON, TASK_REPEATS_JSON, MAX_TOKENS, TOP_P, TOP_K,
   ENABLE_THINKING, JUDGE_STRATEGY, TASK_JUDGE_STRATEGY_JSON, JUDGE_MODEL_ID,
   JUDGE_API_URL, USER_MODEL_ID, USER_MODEL_API_URL, TASK_MAX_TOKENS_JSON,
-  TASK_TIMEOUT_JSON, TASK_TOP_P_JSON, DATASET_ARGS, USE_CACHE, RERUN_REVIEW,
+  TASK_TIMEOUT_JSON, TASK_TOP_P_JSON, TASK_STREAM_JSON, DATASET_ARGS, USE_CACHE, RERUN_REVIEW,
   MCP_ATLAS_IMAGE, MCP_ATLAS_AUTO_DEPLOY, MCP_ATLAS_API_KEYS,
   CONNECTIVITY_FAILED, RESULT_DIR, BUILD_RESULT, DURATION_STRING
 """
@@ -347,6 +347,7 @@ def generate_email_body(log_file_base: str) -> tuple:
                 <tr><th>per-task max_tokens JSON</th><td>{html.escape(env('TASK_MAX_TOKENS_JSON') or 'N/A')}</td></tr>
                 <tr><th>per-task timeout JSON</th><td>{html.escape(env('TASK_TIMEOUT_JSON') or 'N/A')}</td></tr>
                 <tr><th>per-task top_p JSON</th><td>{html.escape(env('TASK_TOP_P_JSON') or 'N/A')}</td></tr>
+                <tr><th>per-task stream JSON</th><td>{html.escape(env('TASK_STREAM_JSON') or 'N/A')}</td></tr>
                 <tr><th>dataset_args</th><td>{html.escape(env('DATASET_ARGS') or 'N/A')}</td></tr>
                 <tr><th>use_cache</th><td>{html.escape(env('USE_CACHE') or 'N/A (全新跑)')}</td></tr>
                 <tr><th>rerun_review</th><td>{html.escape(env('RERUN_REVIEW'))}</td></tr>
