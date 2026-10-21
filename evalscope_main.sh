@@ -56,6 +56,10 @@
 #   Pier。temperature/top_p/max_tokens/timeout/base_url/api_key 通过
 #   pier_agent_kwargs.config_yaml 注入(因 AgentConfig.env={} 不继承父进程环境,
 #   litellm 在 Docker 容器内需从 config_yaml 读取端点信息)。
+#   mini-swe-agent 2.4.6 的 LitellmModelConfig 仅接受 model_name/model_kwargs
+#   等自有字段,config 里 model: 下的顶层键会被 pydantic 静默忽略(build 150
+#   "Missing credentials" 的根因):生成参数与 base_url/api_key 必须全部嵌套在
+#   model.model_kwargs 之下,经该字典展开传入 litellm.completion。
 #   Pier 的 mini-swe-agent 强制要求 provider/model_name 格式(无 "/" 直接 ValueError)。
 #   前缀是 litellm 的"协议路由指令",与模型归属厂商无关:openai/ 表示"以 OpenAI 兼容
 #   协议调用 config_yaml 指定的 base_url 端点",模型名去前缀后原样传输(实测
@@ -69,7 +73,9 @@
 #   密钥方面:Pier 启动 agent 前会按前缀推导厂商 key 环境变量(如 OPENAI_API_KEY);
 #   MSWEA_API_KEY 是其官方提供的通用密钥入口,优先级最高,命中即跳过厂商推导。
 #   本脚本仅对该条 evalscope 命令注入 MSWEA_API_KEY=$API_KEY(被测模型密钥,
-#   即 Jenkins 的 API_KEY 参数),容器内实际生效的 key 仍来自 config_yaml(同值)。
+#   即 Jenkins 的 API_KEY 参数);注意 mini-swe-agent 2.4.6 本身并不读取该变量
+#   (仅用于通过 Pier 预检),容器内 litellm 实际生效的 key 来自 config_yaml
+#   的 model_kwargs.api_key(同值)。
 #
 #   USE_CACHE        [断点续跑] 上次运行的输出目录(绝对路径),非空时启用续跑:
 #                    已完成的题目直接复用其 prediction / review 缓存,只跑未完成的题目。
@@ -633,6 +639,8 @@ print(json.dumps(args, ensure_ascii=False))
     # 对齐官方 GLM-5.2 配置:temperature=1.0, top_p=1.0, 400K context, 24h timeout(低性能机器可调大)。
     # litellm 在 Docker 容器内运行,AgentConfig.env={} 不继承父进程环境变量,
     # 因此 base_url/api_key 需写入 config_yaml 供 litellm 读取。
+    # mini-swe-agent 2.4.6 的 LitellmModelConfig 只认 model_kwargs 透传 API
+    # 参数,顶层键一律被 pydantic 忽略 → 所有参数必须嵌套在 model.model_kwargs 下。
     if [ "$DATASET" = "deep_swe" ] && [ -z "$DATASET_ARGS" ]; then
         local deep_swe_args
         deep_swe_args=$(TEMPERATURE="$TEMPERATURE_ARG" \
@@ -646,12 +654,13 @@ print(json.dumps(args, ensure_ascii=False))
 import json, os
 config_yaml = (
     f'model:\n'
-    f'  temperature: {os.environ.get(\"TEMPERATURE\", \"1.0\")}\n'
-    f'  top_p: {os.environ.get(\"TOP_P\", \"1.0\")}\n'
-    f'  max_tokens: {os.environ.get(\"MAX_TOKENS\", \"409600\")}\n'
-    f'  timeout: {os.environ.get(\"TIMEOUT\", \"86400\")}\n'
-    f'  base_url: \"{os.environ.get(\"BASE_URL\", \"\")}\"\n'
-    f'  api_key: \"{os.environ.get(\"API_KEY\", \"EMPTY\")}\"\n'
+    f'  model_kwargs:\n'
+    f'    temperature: {os.environ.get(\"TEMPERATURE\", \"1.0\")}\n'
+    f'    top_p: {os.environ.get(\"TOP_P\", \"1.0\")}\n'
+    f'    max_tokens: {os.environ.get(\"MAX_TOKENS\", \"409600\")}\n'
+    f'    timeout: {os.environ.get(\"TIMEOUT\", \"86400\")}\n'
+    f'    base_url: \"{os.environ.get(\"BASE_URL\", \"\")}\"\n'
+    f'    api_key: \"{os.environ.get(\"API_KEY\", \"EMPTY\")}\"\n'
 )
 args = {
     'deep_swe': {
@@ -742,8 +751,9 @@ print(json.dumps(args, ensure_ascii=False))
     # deep_swe 专属:Pier 启动 agent 前按模型前缀推导厂商 key 环境变量并校验;
     # MSWEA_API_KEY 是其官方通用密钥入口,优先级最高,命中即跳过厂商推导
     # (pier mini_swe_agent.py:849-850),因此无需提供 OPENAI_API_KEY 等任何
-    # 厂商密钥。注入值为 Jenkins 的 API_KEY(被测模型密钥);容器内 litellm
-    # 实际生效的 key 仍来自 config_yaml(两者同值)。
+    # 厂商密钥。注入值为 Jenkins 的 API_KEY(被测模型密钥);mini-swe-agent
+    # 2.4.6 不读取该变量,容器内 litellm 实际生效的 key 来自 config_yaml 的
+    # model_kwargs.api_key(两者同值)。
     # 用 env 前缀仅注入本条命令,不影响后续任务循环。
     local deep_swe_run_env=()
     if [ "$DATASET" = "deep_swe" ]; then
