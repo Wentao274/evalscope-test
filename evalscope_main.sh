@@ -49,6 +49,20 @@
 #   Pier。temperature/top_p/max_tokens/timeout/base_url/api_key 通过
 #   pier_agent_kwargs.config_yaml 注入(因 AgentConfig.env={} 不继承父进程环境,
 #   litellm 在 Docker 容器内需从 config_yaml 读取端点信息)。
+#   Pier 的 mini-swe-agent 强制要求 provider/model_name 格式(无 "/" 直接 ValueError)。
+#   前缀是 litellm 的"协议路由指令",与模型归属厂商无关:openai/ 表示"以 OpenAI 兼容
+#   协议调用 config_yaml 指定的 base_url 端点",模型名去前缀后原样传输(实测
+#   litellm 1.106:线上 model 字段=原始名,鉴权/端点均取自 config_yaml)。
+#   对任何 OpenAI 兼容端点(Z.ai / Moonshot / DeepSeek / vLLM 本地部署等)统一适用。
+#   DEEP_SWE_MODEL_PROVIDER [可选] provider 前缀,默认 openai(litellm 自定义
+#   OpenAI 兼容端点的标准前缀)。仅当需要切换 litellm 特定厂商路由(其官方
+#   base_url 及调用约定)时才需要覆盖,如 zai / moonshot / deepseek。
+#   本脚本在 deep_swe 分支为不含 "/" 的模型名自动拼接该前缀(见 run_task 内
+#   PIER_MODEL);evalscope 的 model_id 自动取 basename,输出目录仍为原始模型名。
+#   密钥方面:Pier 启动 agent 前会按前缀推导厂商 key 环境变量(如 OPENAI_API_KEY);
+#   MSWEA_API_KEY 是其官方提供的通用密钥入口,优先级最高,命中即跳过厂商推导。
+#   本脚本仅对该条 evalscope 命令注入 MSWEA_API_KEY=$API_KEY(被测模型密钥,
+#   即 Jenkins 的 API_KEY 参数),容器内实际生效的 key 仍来自 config_yaml(同值)。
 #
 #   USE_CACHE        [断点续跑] 上次运行的输出目录(绝对路径),非空时启用续跑:
 #                    已完成的题目直接复用其 prediction / review 缓存,只跑未完成的题目。
@@ -404,12 +418,29 @@ run_task() {
     local gen_config
     gen_config=$(_build_generation_config "$MAX_TOKENS_ARG" "$TEMPERATURE_ARG" "$TIMEOUT_ARG" "$TOP_P_ARG" "$STOP_SEQS_ARG")
 
+    # ---- deep_swe 专属:为模型名拼接 litellm provider 前缀 ----
+    # Pier 的 mini-swe-agent 强制 provider/model_name 格式(无 "/" 直接 ValueError)。
+    # 前缀与模型归属厂商无关,仅指示 litellm 的调用协议:默认 openai/ 即"以 OpenAI
+    # 兼容协议调用 config_yaml 的 base_url",模型名去前缀后原样传输,对 Z.ai /
+    # Moonshot / DeepSeek 等任何 OpenAI 兼容端点统一适用,无需按厂商区分。
+    # 需切换 litellm 特定厂商路由时,通过 DEEP_SWE_MODEL_PROVIDER 覆盖。
+    # 已含 "/" 的模型名原样透传,不重复拼接。
+    # evalscope 侧 model_id 自动取 basename,报告/预测目录仍为原始模型名,不受影响。
+    local pier_provider="${DEEP_SWE_MODEL_PROVIDER:-openai}"
+    local PIER_MODEL="$MODEL"
+    if [ "$DATASET" = "deep_swe" ]; then
+        case "$MODEL" in
+            */*) PIER_MODEL="$MODEL" ;;
+            *)   PIER_MODEL="$pier_provider/$MODEL" ;;
+        esac
+    fi
+
     # 组装 evalscope eval 命令的参数数组
     # --ignore-errors: 单样本失败(如 deep_swe 容器构建/agent 异常)时跳过该样本,
     #                   其余样本继续评估并产出报告,避免一个坏样本终结整个评估。
     local cmd_args=(
         eval
-        --model "$MODEL"
+        --model "$PIER_MODEL"
         --api-url "$BASE_URL"
         --api-key "$API_KEY"
         --eval-type "$EVAL_TYPE"
@@ -650,6 +681,10 @@ print(json.dumps(args, ensure_ascii=False))
     if [ "$DATASET" = "deep_swe" ] && [ -z "$DATASET_ARGS" ]; then
         echo "  deep_swe_args    : ${deep_swe_args}"          | tee -a "$LOG_FILE"
     fi
+    if [ "$DATASET" = "deep_swe" ]; then
+        echo "  PIER_MODEL       : ${PIER_MODEL}"               | tee -a "$LOG_FILE"
+        echo "  PIER_PROVIDER    : ${pier_provider}"            | tee -a "$LOG_FILE"
+    fi
     echo "  WORK_DIR         : ${OUTPUT_BASE}"       | tee -a "$LOG_FILE"
     echo "  USE_CACHE        : ${USE_CACHE:-<none>}"  | tee -a "$LOG_FILE"
     echo "  RERUN_REVIEW     : ${RERUN_REVIEW}"       | tee -a "$LOG_FILE"
@@ -659,7 +694,17 @@ print(json.dumps(args, ensure_ascii=False))
     echo ""                                          | tee -a "$LOG_FILE"
 
     # ---- 失败不中断后续任务(catchError 风格)----
-    if ! evalscope "${cmd_args[@]}" 2>&1 | tee -a "$LOG_FILE"; then
+    # deep_swe 专属:Pier 启动 agent 前按模型前缀推导厂商 key 环境变量并校验;
+    # MSWEA_API_KEY 是其官方通用密钥入口,优先级最高,命中即跳过厂商推导
+    # (pier mini_swe_agent.py:849-850),因此无需提供 OPENAI_API_KEY 等任何
+    # 厂商密钥。注入值为 Jenkins 的 API_KEY(被测模型密钥);容器内 litellm
+    # 实际生效的 key 仍来自 config_yaml(两者同值)。
+    # 用 env 前缀仅注入本条命令,不影响后续任务循环。
+    local deep_swe_run_env=()
+    if [ "$DATASET" = "deep_swe" ]; then
+        deep_swe_run_env+=(env "MSWEA_API_KEY=${API_KEY}")
+    fi
+    if ! "${deep_swe_run_env[@]}" evalscope "${cmd_args[@]}" 2>&1 | tee -a "$LOG_FILE"; then
         echo "[WARN] task $DATASET failed (exit $?), continuing..." | tee -a "$LOG_FILE"
     fi
 }

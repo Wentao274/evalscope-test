@@ -195,6 +195,7 @@ evalscope eval \
 | `TASK_TOP_P_JSON` | (shell 内 per-task 覆盖) | `{"deep_swe":1.0}` | 按任务覆盖 top_p,deep_swe 编码 agent 用 1.0 高随机性探索 |
 | `TASK_REPEATS_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 `REPEATS`,例 `{"humaneval":5}`;未命中任务用全局 `REPEATS` |
 | `DATASET_ARGS` | `--dataset-args` | 空 | 数据集参数 JSON,例 `{"mmlu_pro":{"subset_list":["math","physics"]}}` |
+| `DEEP_SWE_MODEL_PROVIDER` | (deep_swe 模型名前缀) | `openai` | litellm 协议路由指令,与模型归属厂商无关;`openai`=以 OpenAI 兼容协议调用 BASE_URL 端点(适用 Z.ai/Moonshot/DeepSeek/vLLM 等任何兼容部署),`zai`/`moonshot`/`deepseek` 等切换 litellm 厂商专属路由;仅 deep_swe 任务生效,其他任务不受影响 |
 | `USE_CACHE` | `--use-cache` | 空 | 断点续跑:填上次输出目录则复用缓存只跑未完成题 |
 | `RERUN_REVIEW` | `--rerun-review` | `false` | 仅 USE_CACHE 启用时生效;强制重算评分,predictions 缓存仍复用 |
 

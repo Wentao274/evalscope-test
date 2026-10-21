@@ -118,6 +118,15 @@ def parse_args():
         "--dataset-args", default="", help="数据集参数 JSON 字符串(空 = 不指定)"
     )
     parser.add_argument(
+        "--deep-swe-model-provider",
+        default="openai",
+        help=(
+            "deep_swe 模型名前缀(litellm 协议路由指令,与模型归属厂商无关;"
+            "openai=以 OpenAI 兼容协议调用 --base-url,适用任何 OpenAI 兼容端点;"
+            "其他值如 zai/moonshot/deepseek 切换为 litellm 该厂商专属路由)"
+        ),
+    )
+    parser.add_argument(
         "--judge-model-id",
         default="",
         help="裁判模型名称(用于 mcp_atlas 等 LLM judge 任务,对应 judge_model_args.model_id)",
@@ -243,6 +252,8 @@ def main():
     env["ENABLE_SANDBOX"] = args.enable_sandbox
     if args.dataset_args:
         env["DATASET_ARGS"] = args.dataset_args
+    if args.deep_swe_model_provider:
+        env["DEEP_SWE_MODEL_PROVIDER"] = args.deep_swe_model_provider
     if args.task_max_tokens_json:
         env["TASK_MAX_TOKENS_JSON"] = args.task_max_tokens_json
     if args.task_timeout_json:
@@ -297,6 +308,7 @@ def main():
         "TASK_JUDGE_STRATEGY_JSON",
         "ENABLE_SANDBOX",
         "DATASET_ARGS",
+        "DEEP_SWE_MODEL_PROVIDER",
         "TASK_MAX_TOKENS_JSON",
         "TASK_TIMEOUT_JSON",
         "TASK_TOP_P_JSON",

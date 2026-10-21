@@ -78,6 +78,9 @@ pipeline {
         string(name: 'MCP_ATLAS_IMAGE', defaultValue: 'ghcr.io/scaleapi/mcp-atlas:1.2.7', description: 'MCP-Atlas agent-environment Docker 镜像(Scale AI 官方预构建)。当 TASK_MCP_ATLAS=true 且服务未运行时,Jenkins 自动拉取并启动此镜像,监听 localhost:1984。20 个无需 API key 的 MCP server 默认启用')
         choice(name: 'MCP_ATLAS_AUTO_DEPLOY', choices: ['true', 'false'], description: '自动部署 MCP-Atlas agent-environment(默认 true)。服务未运行时自动 pull + docker run;false 则仅检查不自动启动,需手动准备')
         string(name: 'MCP_ATLAS_API_KEYS', defaultValue: 'MONGODB_URI=mongodb://admin:abc123@host.docker.internal:27017/?authSource=admin,GITHUB_TOKEN=ghp_REPLACE_WITH_YOUR_TOKEN', description: 'MCP server API keys,逗号分隔 KEY=VALUE 对。默认值含:1) MongoDB(宿主机已部署,使用 host.docker.internal:27017,容器内经 --add-host 映射到宿主机;authSource=admin);2) GitHub PAT 占位符(替换 ghp_REPLACE_WITH_YOUR_TOKEN 为真实 token 即可启用 github server)。格式: KEY1=VALUE1,KEY2=VALUE2。其他可选 key:BRAVE_API_KEY=xxx — Brave Search(https://brave.com/search/api/)。删除某项则对应 server 不启用')
+
+        // deep_swe 模型名 provider 前缀(litellm 协议路由)
+        string(name: 'DEEP_SWE_MODEL_PROVIDER', defaultValue: 'openai', description: 'deep_swe 模型名前缀(litellm 协议路由指令,与模型归属厂商无关)。openai=以 OpenAI 兼容协议调用 BASE_URL 端点,适用于 Z.ai/Moonshot/DeepSeek/vLLM 等任何 OpenAI 兼容部署(默认,推荐不改);其他值(如 zai/moonshot/deepseek)切换为 litellm 该厂商专属路由(其官方 base_url 及调用约定),仅特殊需求时修改。仅 TASK_DEEP_SWE 勾选时生效;密钥始终用 API_KEY 参数,无需任何厂商 key')
     }
     environment {
         SSH_CREDENTIALS = 'HOST_SSH_KEY'
@@ -156,6 +159,9 @@ pipeline {
                     println("MCP-Atlas 镜像:  ${params.MCP_ATLAS_IMAGE}")
                     println("MCP-Atlas 自动部署: ${params.MCP_ATLAS_AUTO_DEPLOY}")
                     println("MCP-Atlas API Keys: ${params.MCP_ATLAS_API_KEYS ?: 'N/A(仅启用 20 个无 key server)'}")
+                    if (params.TASK_DEEP_SWE) {
+                        println("deep_swe provider 前缀: ${params.DEEP_SWE_MODEL_PROVIDER}(litellm 协议路由,openai=任意 OpenAI 兼容端点)")
+                    }
                     println("构建编号:        #${BUILD_NUMBER}")
                     println("========================================")
                 }
@@ -453,6 +459,7 @@ python3 run_evalscope.py \\
     --task-top-p-json '${params.TASK_TOP_P_JSON}' \\
     --task-stop-seqs-json '${params.TASK_STOP_SEQS_JSON}' \\
     --dataset-args '${params.DATASET_ARGS}' \\
+    --deep-swe-model-provider "${params.DEEP_SWE_MODEL_PROVIDER}" \\
     --judge-model-id "${params.JUDGE_MODEL_ID}" \\
     --judge-api-url "${params.JUDGE_API_URL}" \\
     --judge-api-key "${env.JUDGE_API_KEY_STR ?: 'EMPTY'}" \\
