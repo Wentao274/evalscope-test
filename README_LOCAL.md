@@ -138,6 +138,8 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `TASK_OCR_BENCH` | `--datasets ocr_bench` | false | 勾选后逗号拼接(OCRBench OCR 综合基准,1000 题 10 类,**被测模型必须支持多模态**,子串包含匹配,不需要裁判模型) |
 | `TASK_OCR_BENCH_V2` | `--datasets ocr_bench_v2` | false | 勾选后逗号拼接(OCRBench-v2 双语大规模基准,10000 题 31 场景中英文,按题型多元评分,自动安装 evalscope[ocr_bench] extras,**被测模型必须支持多模态**,不需要裁判模型) |
 | `TASK_VIDEOMME_V2` | `--datasets videomme_v2` | false | 勾选后逗号拼接(Video-MME-v2 视频多选问答,800 视频 3200 题,**被测模型必须支持视频输入**,默认 archive 模式视频以 base64 内联,首次预下载为 GB 级,不需要裁判模型) |
+| `TASK_HALLUSION_BENCH` | `--datasets hallusion_bench` | false | 勾选后逗号拼接(HallusionBench 视觉幻觉诊断,951 道图像+是/否问答,**被测模型必须支持多模态**,YES/NO 短答案规则评分,不需要裁判模型) |
+| `TASK_MATH_VISION` | `--datasets math_vision` | false | 勾选后逗号拼接(MATH-Vision 竞赛数学多模态,3040 题 5 个难度等级,**被测模型必须支持多模态**,`\boxed{}` 数值题+选择题混合,math-verify 规则评分,不需要裁判模型) |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
 | `REPEATS` | `--repeats` | 空 | 空 = 默认 1;全局重复次数,按任务覆盖见 `TASK_REPEATS_JSON` |
 | `EVAL_BATCH_SIZE` | `--eval-batch-size` | `1` | 并发批大小 |
@@ -150,10 +152,10 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `JUDGE_STRATEGY` | `--judge-strategy` | `auto` | auto/rule/llm/llm_recall |
 | `TASK_JUDGE_STRATEGY_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 judge_strategy,例 `{"imo_answerbench":"rule"}`;imo_answerbench 在有裁判模型时走 auto,无裁判模型时自动回退 rule |
 | `ENABLE_SANDBOX` | `--sandbox {"enabled": true}` | `true` | 仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效;启用前环境检查 stage 会预装 evalscope[sandbox] 并校验 Docker |
-| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime25":131072,"aime26":131072,"imo_answerbench":131072,"hmmt25":65536,"hmmt26":65536,"mcp_atlas":8192,"deep_swe":409600,"hellaswag":8192,"humaneval":16384,"humaneval_plus":16384,"mbpp":16384,"frames":16384,"mmmu_pro":65536,"videomme_v2":16384}` | 例 `{"mmlu_pro":32768}`;ceval 未列出,用全局默认 32768;新加 mmmu_pro=65536(CoT 多选,thinking 难题思考超 16k 预算被 abort,部分可达 40k+)、videomme_v2=16384(视频 CoT 多选);ocr_bench/ocr_bench_v2 未列出,用全局默认 32768(v1 答案短但 thinking 难题可超 8k,v2 整页 OCR/文档表格 HTML 解析输出长且高比例困难样本,16384 及以下易截断/abort,TEDS/BLEU 类指标截断即 0 分) |
+| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime25":131072,"aime26":131072,"imo_answerbench":131072,"hmmt25":65536,"hmmt26":65536,"mcp_atlas":8192,"deep_swe":409600,"hellaswag":8192,"humaneval":16384,"humaneval_plus":16384,"mbpp":16384,"frames":16384,"mmmu_pro":65536,"videomme_v2":16384,"hallusion_bench":16384,"math_vision":65536}` | 例 `{"mmlu_pro":32768}`;ceval 未列出,用全局默认 32768;新加 mmmu_pro=65536(CoT 多选,thinking 难题思考超 16k 预算被 abort,部分可达 40k+)、videomme_v2=16384(视频 CoT 多选);hallusion_bench=16384(是/否二分题,答案仅 YES/NO 几 token,预算几乎全给 thinking,16384 与 humaneval/frames 同档且已覆盖服务端思考预算上限)、math_vision=65536(竞赛数学 thinking 推理链长,与 hmmt25/26 同档);ocr_bench/ocr_bench_v2 未列出,用全局默认 32768(v1 答案短但 thinking 难题可超 8k,v2 整页 OCR/文档表格 HTML 解析输出长且高比例困难样本,16384 及以下易截断/abort,TEDS/BLEU 类指标截断即 0 分) |
 | `TASK_TIMEOUT_JSON` | (shell 内 per-task 覆盖) | `{"aime25":7200,"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800}` | 按任务覆盖模型调用超时(秒),其余任务用内置默认 3600 |
 | `TASK_TOP_P_JSON` | (shell 内 per-task 覆盖) | `{"deep_swe":1.0}` | 按任务覆盖 top_p,deep_swe 编码 agent 用 1.0 |
-| `TASK_STREAM_JSON` | (shell 内 per-task 覆盖) | `{"aime25":true,"aime26":true,"hmmt25":true,"hmmt26":true,"imo_answerbench":true,"math_500":true,"gpqa_diamond":true,"mmlu_pro":true,"hle":true}` | 按任务开启流式请求;长思考任务(数学/科学竞赛)单次生成可超网关空闲超时(~30min),非流式被 504 掐断,流式下 token 持续下发不再触发;evalscope 聚合 chunk,评分无感知;deep_swe 无效(Pier 旁路) |
+| `TASK_STREAM_JSON` | (shell 内 per-task 覆盖) | `{"aime25":true,"aime26":true,"hmmt25":true,"hmmt26":true,"imo_answerbench":true,"math_500":true,"gpqa_diamond":true,"mmlu_pro":true,"hle":true,"math_vision":true}` | 按任务开启流式请求;长思考任务(数学/科学竞赛)单次生成可超网关空闲超时(~30min),非流式被 504 掐断,流式下 token 持续下发不再触发;evalscope 聚合 chunk,评分无感知;deep_swe 无效(Pier 旁路) |
 | `TASK_REPEATS_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 `REPEATS`,例 `{"humaneval":5}`;未命中任务用全局 `REPEATS` |
 | `DATASET_ARGS` | `--dataset-args` | 空 | 数据集参数 JSON |
 | `DEEP_SWE_MODEL_PROVIDER` | (deep_swe 模型名前缀) | `openai` | litellm 协议路由指令,与模型归属厂商无关;`openai`=以 OpenAI 兼容协议调用 BASE_URL(适用任何兼容端点),`zai`/`moonshot`/`deepseek` 等切换 litellm 厂商专属路由;仅 deep_swe 任务生效 |
@@ -224,6 +226,8 @@ GLM-5.2/DeepSeek-V4/Kimi-K3 官方均推荐 `1.0`;R1 系用 `0.6`;非 thinking i
 | `ocr_bench` | `evalscope/OCRBench` | 0-shot | `acc` | OCRBench OCR 综合基准,1000 题人工校验 10 类(常规/不规则/艺术/手写/数字串/非语义文本识别、场景文本VQA、文档VQA、关键信息抽取、手写数学公式识别 HME100k),归一化子串包含匹配(HME100k 额外去空格);**被测模型必须支持多模态**;规则评分,不需要裁判模型 |
 | `ocr_bench_v2` | `evalscope/OCRBench_v2` | 0-shot | `acc` | OCRBench-v2 大规模双语文本中心基准,10000 题人工校验 31 场景(中英文),任务种类为 v1 的 4 倍(全页OCR/表格/图表/公式解析、文本定位、手写答案抽取、APP agent 等),按题型多元评分(字母匹配/BLEU/METEOR/编辑距离/树编辑距离),EN/CN/OVERALL 两级聚合;需 `evalscope[ocr_bench]` extras(环境检查阶段自动安装);**被测模型必须支持多模态**;规则评分,不需要裁判模型 |
 | `videomme_v2` | `MME-Benchmarks/Video-MME-v2` | 0-shot | `acc` | Video-MME-v2 视频多选问答,800 视频 3200 题,子集 `all/level_1-3/logic/relevance`(短/中/长视频分层 + 纯感知/推理分组),CoT + `ANSWER: [LETTER]`;**被测模型必须支持视频输入**(`video_url` content);本流水线默认注入 `video_source=archive`(视频经代理预下载到本地,以 base64 data URI 内联进请求,模型侧无需联网;默认 `url` 模式需模型服务能访问公网视频直链);可选 `use_subtitles=true` 附带词级字幕;视频缓存 `~/.cache/evalscope/videomme_v2/videos/`;规则评分,不需要裁判模型 |
+| `hallusion_bench` | `lmms-lab/HallusionBench` | 0-shot | `aAcc`/`qAcc`/`fAcc` | HallusionBench 视觉幻觉诊断基准,951 道图像+是/否问答(对抗性语言幻觉/视觉错觉陷阱题),image split;prompt 要求无解释直接答 YES/NO;分层准确率:aAcc(题级)/qAcc(问题组级)/fAcc(图级,同图全对才算对);**被测模型必须支持多模态**(图像+文本);规则评分(yes/no 判定),不需要裁判模型 |
+| `math_vision` | `evalscope/MathVision` | 0-shot | `acc` (numeric) | MATH-Vision 竞赛数学多模态基准,3040 道真实数学竞赛题配图(几何/函数图像/图表等),5 个难度等级子集 `level 1`-`level 5`;自由数值题 `\boxed{}`(无单位)与选择题 CoT 混合;**被测模型必须支持多模态**(图像+文本);规则评分(math-verify 数值比对),不需要裁判模型 |
 
 这些默认值不传任何 flag 时生效;Jenkins 任一对应参数填了非空值就覆盖默认。
 
