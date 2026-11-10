@@ -1,11 +1,102 @@
 from copy import deepcopy
-from typing import Dict
+from dataclasses import InitVar, dataclass, field
+from typing import ClassVar, Dict, Literal, TypedDict
+from unittest import mock
 
 import pytest
 from pydantic import BaseModel
 
+from evalscope.api.tool import ToolCall, ToolFunction, validate_tool_arguments
 from evalscope.api.tool.tool_info import parse_tool_info
-from evalscope.utils.json_schema import JSONSchema
+from evalscope.models.utils.openai import openai_chat_tool_param
+from evalscope.utils.json_schema import JSONSchema, json_schema
+
+
+@dataclass
+class DataclassPayload:
+    count: 'int'
+    tags: 'list[str]' = field(default_factory=list)
+    enabled: bool = True
+
+
+def test_tool_schema_resolves_dataclass_string_annotations() -> None:
+    def tool(payload: DataclassPayload) -> str:
+        """Accept a dataclass payload."""
+        return str(payload.count)
+
+    schema = parse_tool_info(tool).parameters.properties['payload']
+
+    assert schema.properties['count'].type == 'integer'
+    assert schema.properties['tags'].type == 'array'
+    assert schema.properties['tags'].items.type == 'string'
+    assert schema.properties['enabled'].type == 'boolean'
+    assert schema.required == ['count']
+
+
+def test_dataclass_schema_preserves_unresolved_annotation_behavior() -> None:
+    class LocalValue:
+        pass
+
+    @dataclass
+    class UnresolvedPayload:
+        count: int
+        value: 'LocalValue'
+
+    schema = json_schema(UnresolvedPayload)
+
+    assert schema.properties['count'].type == 'integer'
+    assert schema.properties['value'].type is None
+    assert schema.required == ['count', 'value']
+
+
+def test_dataclass_schema_excludes_pseudo_fields() -> None:
+    @dataclass
+    class WithPseudoFields:
+        count: int
+        tmp: InitVar[int]
+        version: ClassVar[int] = 3
+
+    schema = json_schema(WithPseudoFields)
+
+    assert set(schema.properties) == {'count'}
+    assert schema.properties['count'].type == 'integer'
+    assert schema.required == ['count']
+
+
+def test_typed_dict_schema_degrades_on_unresolvable_annotation() -> None:
+    class LocalValue:
+        pass
+
+    class UnresolvedDict(TypedDict):
+        count: int
+        value: 'LocalValue'
+
+    with mock.patch('evalscope.utils.json_schema.logger') as mock_logger:
+        schema = json_schema(UnresolvedDict)
+
+    mock_logger.warning.assert_called_once()
+    assert schema.properties['count'].type == 'integer'
+    assert schema.properties['value'].type is None
+    assert schema.required == ['count', 'value']
+
+
+def test_parse_tool_info_degrades_on_unresolvable_annotation() -> None:
+    def tool(count: int, payload: 'NotDefinedAnywhere') -> str:  # noqa: F821
+        """Accept a payload.
+
+        Args:
+            count: how many
+            payload: the payload
+        """
+        return str(count)
+
+    info = parse_tool_info(tool)
+
+    assert set(info.parameters.properties) == {'count', 'payload'}
+    assert info.parameters.properties['count'].type is None
+    assert info.parameters.properties['payload'].type is None
+    assert info.parameters.properties['count'].description == 'how many'
+    assert info.parameters.required == ['count', 'payload']
 
 
 @pytest.mark.parametrize('keyword', ['default', 'enum'])
@@ -55,3 +146,74 @@ def test_tool_schema_preserves_pydantic_field_defaults() -> None:
     info = parse_tool_info(tool)
 
     assert info.parameters.properties['payload'].properties['options'].default == {'type': 'str'}
+
+
+@pytest.mark.parametrize('value', ['read', 0, False, None, {'type': 'str'}, ['read']])
+def test_schema_preserves_single_value_constraints(value: object) -> None:
+    raw = {'const': value}
+    original = deepcopy(raw)
+
+    schema = JSONSchema.model_validate(raw).model_dump(exclude_none=True)
+
+    assert schema['enum'] == [value]
+    assert raw == original
+
+
+@pytest.mark.parametrize(
+    'nested',
+    [
+        {'properties': {'mode': {'const': 'read'}}},
+        {'items': {'const': 'read'}},
+        {'additionalProperties': {'const': 'read'}},
+        {'anyOf': [{'const': 'read'}, {'type': 'null'}]},
+    ],
+)
+def test_nested_schema_preserves_single_value_constraints(nested: dict) -> None:
+    schema = JSONSchema.model_validate(nested).model_dump(exclude_none=True)
+    child = next(iter(schema.values()))
+    if 'properties' in schema:
+        child = child['mode']
+    elif 'anyOf' in schema:
+        child = child[0]
+
+    assert child == {'enum': ['read']}
+
+
+class LiteralPayload(BaseModel):
+    mode: Literal['read']
+    count: Literal[0]
+    enabled: Literal[False]
+    empty: Literal[None]
+    modes: list[Literal['read']]
+
+
+class NestedLiteralPayload(BaseModel):
+    payload: LiteralPayload
+
+
+@pytest.mark.parametrize(
+    'field, invalid',
+    [('mode', 'write'), ('count', 1), ('enabled', True), ('empty', 'value'), ('modes', ['write'])],
+)
+def test_tool_schema_preserves_pydantic_literal_constraints(field: str, invalid: object) -> None:
+    def tool(value: NestedLiteralPayload) -> str:
+        """Accept a payload with single-value fields."""
+        return value.payload.mode
+
+    info = parse_tool_info(tool)
+    valid = {'mode': 'read', 'count': 0, 'enabled': False, 'empty': None, 'modes': ['read']}
+    arguments = {'value': {'payload': valid}}
+    call = ToolCall(id='call', function=ToolFunction(name=info.name, arguments=arguments))
+
+    assert validate_tool_arguments(call, info) is None
+
+    invalid_arguments = deepcopy(arguments)
+    invalid_arguments['value']['payload'][field] = invalid
+    invalid_call = ToolCall(id='call', function=ToolFunction(name=info.name, arguments=invalid_arguments))
+    assert validate_tool_arguments(invalid_call, info) is not None
+
+    parameters = openai_chat_tool_param(info)['function']['parameters']
+    properties = parameters['properties']['value']['properties']['payload']['properties']
+    for name in ['mode', 'count', 'enabled', 'empty']:
+        assert properties[name]['enum'] == [valid[name]]
+    assert properties['modes']['items']['enum'] == ['read']

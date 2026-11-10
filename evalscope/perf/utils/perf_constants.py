@@ -53,6 +53,8 @@ class Metrics:
     # Multi-turn specific
     AVERAGE_INPUT_TURNS_PER_REQUEST = 'Avg Turns/Request'
     AVERAGE_CACHED_PERCENT = 'KV Cache Hit Rate (%)'
+    CACHE_REQUEST_COVERAGE_PERCENT = 'KV Cache Reporting Coverage - Requests (%)'
+    CACHE_TOKEN_COVERAGE_PERCENT = 'KV Cache Reporting Coverage - Input Tokens (%)'
     AVERAGE_FIRST_TURN_TTFT = 'Avg First-Turn TTFT (ms)'
     AVERAGE_SUBSEQUENT_TURN_TTFT = 'Avg Subsequent-Turn TTFT (ms)'
 
@@ -67,6 +69,11 @@ class Metrics:
             return False
         api_lower = api_name.lower()
         return 'embedding' in api_lower or 'rerank' in api_lower or 'embed' in api_lower
+
+    @staticmethod
+    def is_input_only(api_name: str) -> bool:
+        """Use request and input metrics for APIs without generated token streams."""
+        return Metrics.is_embedding_or_rerank(api_name) or api_name in ('systemone', 'autotrust')
 
 
 # ---------------------------------------------------------------------------

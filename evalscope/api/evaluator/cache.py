@@ -92,8 +92,8 @@ class CacheManager:
             # No cache file exists, return empty cache and full dataset
             return [], dataset
 
-        cached_task_states = []
-        cached_sample_ids = set()
+        cached_by_sample_id = {}
+        duplicate_rows = 0
         cache_items = jsonl_to_list(cache_file, skip_invalid=True)
 
         # Process each cached item
@@ -113,10 +113,16 @@ class CacheManager:
 
             if cached_state is None:
                 continue
-            cached_task_states.append(cached_state)
-            cached_sample_ids.add(cached_state.sample_id)
+            if cached_state.sample_id in cached_by_sample_id:
+                duplicate_rows += 1
+            cached_by_sample_id[cached_state.sample_id] = cached_state
+
+        cached_task_states = list(cached_by_sample_id.values())
+        if duplicate_rows:
+            logger.warning(f'Dropped {duplicate_rows} duplicate rows from prediction cache: {cache_file}')
 
         # Remove cached samples from the dataset to avoid reprocessing
+        cached_sample_ids = set(cached_by_sample_id)
         filtered_dataset = dataset.filter(lambda sample: sample.id not in cached_sample_ids)
 
         logger.info(
@@ -236,6 +242,9 @@ class CacheManager:
         """Start a transactional review rerun without touching the previous review file."""
         file_path = self.get_review_cache_path(subset)
         temporary = f'{file_path}.rerun-{uuid.uuid4().hex}'
+        # A tolerated scoring failure must publish an empty cache, not retain old scores.
+        with open(temporary, 'x', encoding='utf-8'):
+            pass
         self._review_reruns[file_path] = temporary
         logger.debug(f'Rescoring reviews into temporary cache: {temporary}')
 
@@ -245,8 +254,6 @@ class CacheManager:
             writer = self._writers.pop(temporary, None)
             if writer is not None:
                 writer.close()
-            if not os.path.exists(temporary):
-                continue
             os.replace(temporary, file_path)
             del self._review_reruns[file_path]
 

@@ -42,6 +42,7 @@ from evalscope.api.messages import (
 )
 from evalscope.api.model import ChatCompletionChoice, GenerateConfig, ModelOutput, ModelUsage, StopReason
 from evalscope.api.tool import ToolCall, ToolChoice, ToolFunction, ToolInfo, parse_tool_call
+from evalscope.utils import get_secret_value
 from evalscope.utils.uri_utils import data_uri_mime_type, data_uri_to_base64, file_as_data_uri, is_http_url
 
 BASE_64_DATA_REMOVED = '<base64-data-removed>'
@@ -196,7 +197,7 @@ def anthropic_message_param(message: ChatMessage) -> MessageParam:
             is_error=tool_message.error is not None,
         )
         _preserve_cache_control(cast(Dict[str, Any], tool_result_block), tool_message.internal)
-        return MessageParam(role='user', content=[tool_result_block])
+        return {'role': 'user', 'content': [tool_result_block]}
 
     elif message.role == 'assistant':
         assistant_message = cast(ChatMessageAssistant, message)
@@ -224,7 +225,7 @@ def anthropic_message_param(message: ChatMessage) -> MessageParam:
                 _preserve_cache_control(cast(Dict[str, Any], tool_use_block), tool_call.internal)
                 block_params.append(tool_use_block)
 
-        return MessageParam(role='assistant', content=block_params or [TextBlockParam(type='text', text=NO_CONTENT)])
+        return {'role': 'assistant', 'content': block_params or [TextBlockParam(type='text', text=NO_CONTENT)]}
 
     else:  # user message
         user_message = cast(ChatMessageUser, message)
@@ -241,7 +242,7 @@ def anthropic_message_param(message: ChatMessage) -> MessageParam:
             if not content:
                 content = [TextBlockParam(type='text', text=NO_CONTENT)]
 
-        return MessageParam(role='user', content=content)
+        return {'role': 'user', 'content': content}
 
 
 def _sanitize_tool_call_ids(messages: List[ChatMessage]) -> List[ChatMessage]:
@@ -470,13 +471,13 @@ def _combine_messages(a: MessageParam, b: MessageParam) -> MessageParam:
     b_content = b['content']
 
     if isinstance(a_content, str) and isinstance(b_content, str):
-        return MessageParam(role=role, content=f'{a_content}\n{b_content}')
+        return {'role': role, 'content': f'{a_content}\n{b_content}'}
     elif isinstance(a_content, list) and isinstance(b_content, list):
-        return MessageParam(role=role, content=a_content + b_content)
+        return {'role': role, 'content': a_content + b_content}
     elif isinstance(a_content, str) and isinstance(b_content, list):
-        return MessageParam(role=role, content=[TextBlockParam(type='text', text=a_content)] + b_content)
+        return {'role': role, 'content': [TextBlockParam(type='text', text=a_content)] + b_content}
     elif isinstance(a_content, list) and isinstance(b_content, str):
-        return MessageParam(role=role, content=a_content + [TextBlockParam(type='text', text=b_content)])
+        return {'role': role, 'content': a_content + [TextBlockParam(type='text', text=b_content)]}
     else:
         raise ValueError(f'Unexpected content types for messages: {a}, {b}')
 
@@ -491,16 +492,19 @@ def anthropic_completion_params(model: str, config: GenerateConfig) -> Dict[str,
         max_tokens=max_tokens,
     )
 
+    # Extended thinking rejects temperature != 1 and top_k, so both are left out when it is enabled.
+    thinking_enabled = config.reasoning_tokens is not None
+
     # Temperature (not compatible with extended thinking)
-    if config.temperature is not None:
+    if config.temperature is not None and not thinking_enabled:
         params['temperature'] = config.temperature
 
     # Top P
     if config.top_p is not None:
         params['top_p'] = config.top_p
 
-    # Top K
-    if config.top_k is not None:
+    # Top K (not compatible with extended thinking)
+    if config.top_k is not None and not thinking_enabled:
         params['top_k'] = config.top_k
 
     # Stop sequences
@@ -512,12 +516,18 @@ def anthropic_completion_params(model: str, config: GenerateConfig) -> Dict[str,
         params['timeout'] = config.timeout
 
     # Extended thinking / reasoning
-    if config.reasoning_tokens is not None:
+    if thinking_enabled:
         params['thinking'] = dict(type='enabled', budget_tokens=config.reasoning_tokens)
 
     # Anthropic top-level automatic prompt caching.
     if config.anthropic_cache_control and config.anthropic_cache_strategy == 'recent_messages':
         params['cache_control'] = config.anthropic_cache_control.model_dump(exclude_none=True)
+
+    # Extra request options (same as the OpenAI path)
+    if config.extra_query:
+        params['extra_query'] = config.extra_query
+    if config.extra_headers:
+        params['extra_headers'] = get_secret_value(config.extra_headers)
 
     # Extra body parameters
     if config.extra_body:
@@ -581,6 +591,8 @@ def message_stop_reason(message: Message) -> StopReason:
         case 'tool_use':
             return 'tool_calls'
         case 'max_tokens':
+            return 'max_tokens'
+        case 'model_context_window_exceeded':
             return 'model_length'
         case 'refusal':
             return 'content_filter'
@@ -702,6 +714,9 @@ def collect_stream_response(
           from function entry when ``request_start`` is ``None``) until the first chunk
           carrying non-empty content or tool-call data arrives.
           ``None`` if no content chunk was observed.
+
+    Raises:
+        RuntimeError: If the stream ends without a stop reason, so the reply may be partial.
     """
     from anthropic.types import (
         ContentBlockDeltaEvent,
@@ -806,6 +821,9 @@ def collect_stream_response(
                     event.usage,
                     'cache_read_input_tokens',
                 )
+
+    if stop_reason is None:
+        raise RuntimeError('Stream ended without a stop reason')
 
     # Append the last block
     if current_block_index >= 0:
@@ -995,6 +1013,9 @@ async def async_collect_stream_response(
                     event.usage,
                     'cache_read_input_tokens',
                 )
+
+    if stop_reason is None:
+        raise RuntimeError('Stream ended without a stop reason')
 
     # Append the last block
     if current_block_index >= 0:

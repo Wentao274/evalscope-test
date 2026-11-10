@@ -40,12 +40,15 @@ class ReportSubset(ApiResponseModel):
     name: str
     score: float
     num: int
+    num_correct: Optional[int] = None
     is_aggregate: bool = False
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class ReportCategory(ApiResponseModel):
     name: List[str]
     num: int
+    num_correct: Optional[int] = None
     score: float
     macro_score: float = 0.0
     subsets: List[ReportSubset]
@@ -55,6 +58,7 @@ class ReportMetric(ApiResponseModel):
     identity: MetricIdentity
     legacy_name: Optional[str] = None
     num: int
+    num_correct: Optional[int] = None
     score: float
     macro_score: float = 0.0
     categories: List[ReportCategory]
@@ -143,6 +147,10 @@ class ReportSummary(ApiResponseModel):
     num_samples: int
     timestamp: str
     primary_metrics: List[PrimaryMetricRef]
+    # Service-launched runs only: display alias and sanitized endpoint host[:port]
+    # recovered from the task manifest; absent for CLI runs.
+    alias: Optional[str] = None
+    api_host: Optional[str] = None
 
 
 class ReportFilters(ApiResponseModel):

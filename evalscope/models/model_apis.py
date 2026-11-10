@@ -1,3 +1,7 @@
+import importlib.metadata
+
+from packaging.version import Version
+
 from evalscope.api.model import ModelAPI
 from evalscope.api.registry import register_model_api
 from evalscope.utils.deprecation_utils import deprecated
@@ -26,6 +30,14 @@ def systemone_api() -> type[ModelAPI]:
     return SystemOneAPI
 
 
+@register_model_api(name='autotrust_api')
+def autotrust_api() -> type[ModelAPI]:
+    """Register AutoTrust's native typed-decision endpoint."""
+    from .systemone import AutoTrustAPI
+
+    return AutoTrustAPI
+
+
 @register_model_api(name='openai_responses_api')
 def openai_responses_api() -> type[ModelAPI]:
     from .openai_responses import OpenAIResponsesAPI
@@ -36,6 +48,14 @@ def openai_responses_api() -> type[ModelAPI]:
 @register_model_api(name='anthropic_api')
 def anthropic_api() -> type[ModelAPI]:
     check_import('anthropic', package='anthropic', raise_error=True, feature_name='anthropic_api')
+
+    minimum_version = '0.119.0'
+    installed_version = importlib.metadata.version('anthropic')
+    if Version(installed_version) < Version(minimum_version):
+        raise ImportError(
+            f'anthropic_api requires anthropic>={minimum_version}, found {installed_version}. '
+            f'Please run `pip install "anthropic>={minimum_version}"`.'
+        )
 
     from .anthropic_compatible import AnthropicCompatibleAPI
 
@@ -80,10 +100,6 @@ def checkpoint() -> type[ModelAPI]:
 
 @register_model_api(name='text2image')
 def text2image() -> type[ModelAPI]:
-    check_import(
-        ['torch', 'torchvision', 'diffusers'], package='evalscope[aigc]', raise_error=True, feature_name='text2image'
-    )
-
     from .text2image_model import Text2ImageAPI
 
     return Text2ImageAPI

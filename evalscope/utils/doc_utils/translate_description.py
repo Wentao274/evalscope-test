@@ -13,8 +13,10 @@ Usage via CLI:
     evalscope benchmark-info gsm8k --translate     # Translate specific benchmark
 """
 
+import io
 import os
 import re
+import tokenize
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -73,6 +75,32 @@ def _restore_code_blocks(text: str, blocks: List[str]) -> str:
     return text
 
 
+def _localize_usage_comments(block: str) -> str:
+    """Localize fixed usage hints without changing executable code or string literals."""
+    lines = block.splitlines(keepends=True)
+    if lines[0].strip() not in ('```python', '```bash'):
+        return block
+    source = ''.join(lines[1:-1])
+    replacements = {
+        '# Remove this line for formal evaluation': '# 正式评估时请删除此行',
+        '# optional, evaluate specific subsets': '# 可选，用于评估特定子集',
+    }
+    try:
+        comments = [
+            item for item in tokenize.generate_tokens(io.StringIO(source).readline) if item.type == tokenize.COMMENT
+        ]
+    except (tokenize.TokenError, IndentationError):
+        return block
+    for item in comments:
+        for english, chinese in replacements.items():
+            if item.string.endswith(english):
+                row, column = item.start
+                translated = item.string[: -len(english)] + chinese
+                lines[row] = lines[row][:column] + translated + lines[row][item.end[1] :]
+                break
+    return ''.join(lines)
+
+
 def translate_readme(readme_content: str, benchmark_name: str, client=None) -> str:
     """
     Translate English README content to Chinese.
@@ -93,16 +121,21 @@ Translate the following English benchmark documentation to Chinese.
 
 Guidelines:
 1. Keep all markdown formatting unchanged (headers, tables, code blocks, links)
-2. Keep technical terms, benchmark names, and code identifiers in English
+2. Keep technical terms, benchmark names, and code identifiers (in `backticks`) in English, but translate every sentence around them; never leave a whole heading, bullet, or section untranslated
 3. Translate naturally and fluently, not word-by-word
 4. Keep the same structure and sections
 5. For code blocks, only translate comments if any
 6. Keep URLs unchanged
 7. Return ONLY the translated markdown content, no explanations
 8. Do not translate the first level header
+9. Keep placeholder tokens such as [CODE_BLOCK_0] exactly unchanged; each must appear verbatim in the output
 
 Example translations:
 - "Overview" -> "概述"
+- "Task Description" -> "任务描述"
+- "Key Features" -> "主要特点"
+- "Evaluation Notes" -> "评估说明"
+- "Properties" -> "属性"
 - "Data Statistics" -> "数据统计"
 - "Subsets" -> "子集"
 - "Sample Example" -> "样例示例"
@@ -117,7 +150,7 @@ Example translations:
     try:
         protected, code_blocks = _protect_code_blocks(readme_content)
         completion = client.chat.completions.create(
-            model='qwen-max',
+            model='qwen3.8-flash',
             messages=[
                 {'role': 'system', 'content': system_prompt},
                 {
@@ -126,9 +159,10 @@ Example translations:
                 },
             ],
             temperature=0.3,
+            extra_body={'enable_thinking': False},
         )
         translated = completion.choices[0].message.content.strip()
-        translated = _restore_code_blocks(translated, code_blocks)
+        translated = _restore_code_blocks(translated, [_localize_usage_comments(block) for block in code_blocks])
 
         # Convert documentation links from English to Chinese
         translated = convert_doc_links(translated)

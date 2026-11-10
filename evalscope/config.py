@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import tempfile
 from argparse import Namespace
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
@@ -10,7 +11,7 @@ from pydantic import ConfigDict, Field, SecretStr, field_validator, model_valida
 
 from evalscope.agent.external.config import ExternalAgentConfig
 from evalscope.api.agent import NativeAgentConfig
-from evalscope.api.dataset.dataset import validate_dataset_limit
+from evalscope.api.dataset.dataset import validate_dataset_limit, validate_dataset_repeats
 from evalscope.api.model import GenerateConfig, Model, ModelAPI
 from evalscope.constants import (
     DEFAULT_DATASET_CACHE_DIR,
@@ -85,6 +86,7 @@ REMOTE_API_EVAL_TYPES = frozenset(
     {
         EvalType.OPENAI_API,
         EvalType.SYSTEMONE_API,
+        EvalType.AUTOTRUST_API,
         EvalType.OPENAI_RESPONSES_API,
         EvalType.ANTHROPIC_API,
         EvalType.LITELLM,
@@ -312,6 +314,9 @@ class TaskConfig(BaseArgument):
     debug: bool = False
     """Enable debug mode for detailed logging and error reporting."""
 
+    dry_run: bool = False
+    """Parse and print the task config, then return without executing inference."""
+
     seed: Optional[int] = 42
     """Random seed for reproducible results."""
 
@@ -381,6 +386,11 @@ class TaskConfig(BaseArgument):
     """EvalScope version used for the evaluation."""
 
     # --- Field validators (single-field logic) ---
+
+    @field_validator('repeats', mode='before')
+    @classmethod
+    def _validate_repeats(cls, v: Any) -> int:
+        return validate_dataset_repeats(v)
 
     @field_validator('limit', mode='before')
     @classmethod
@@ -536,10 +546,24 @@ class TaskConfig(BaseArgument):
             self.model = self.model_task
             self.eval_type = EvalType.MOCK_LLM
 
-        # Set eval_type to openai_api if api_url is provided
+        # Select the matching service API when api_url is provided
         if self.api_url is not None and self.eval_type is None:
-            logger.info("api_url is provided, setting eval_type to 'openai_api'.")
-            self.eval_type = EvalType.OPENAI_API
+            self.eval_type = (
+                EvalType.TEXT2IMAGE if self.model_task == ModelTask.IMAGE_GENERATION else EvalType.OPENAI_API
+            )
+            logger.info(f"api_url is provided, setting eval_type to '{self.eval_type}'.")
+        elif (
+            self.api_url is not None
+            and self.eval_type == EvalType.OPENAI_API
+            and self.model_task == ModelTask.IMAGE_GENERATION
+        ):
+            # openai_api targets Chat Completions, which cannot generate images: the request would
+            # reach /chat/completions on an image endpoint and fail.
+            logger.warning(
+                f"eval_type '{EvalType.OPENAI_API}' cannot serve image generation; "
+                f"using '{EvalType.TEXT2IMAGE}' for the image generation service instead."
+            )
+            self.eval_type = EvalType.TEXT2IMAGE
 
         # Set eval_type to CHECKPOINT if model is a string path and eval_type is not set
         if self.model and self.eval_type is None:
@@ -575,6 +599,10 @@ class TaskConfig(BaseArgument):
 
     def _get_default_generation_config(self) -> Dict:
         if self.model_task == ModelTask.IMAGE_GENERATION:
+            if self.eval_type == EvalType.TEXT2IMAGE and self.api_url is not None:
+                # Diffusion-only knobs are not OpenAI Images API fields; services opt in explicitly.
+                # Other image eval types keep the local pipeline defaults, since they ignore api_url.
+                return {key: DEFAULT_IMAGE_GEN_CONFIG[key] for key in ('height', 'width')}
             return DEFAULT_IMAGE_GEN_CONFIG.copy()
 
         elif self.model_task == ModelTask.TEXT_GENERATION:
@@ -752,16 +780,28 @@ class TaskConfig(BaseArgument):
             kwargs['mode'] = mode
         return self.agent_config.model_dump(**kwargs)
 
-    def dump_yaml(self, output_dir: str, generated_metadata: Optional[Dict[str, Any]] = None) -> None:
-        """Dump the task configuration and optional generated runtime metadata to YAML."""
+    def dump_yaml(
+        self,
+        output_dir: str,
+        generated_metadata: Optional[Dict[str, Any]] = None,
+        *,
+        strict: bool = False,
+    ) -> None:
+        """Atomically publish the configuration; strict writes propagate persistence errors."""
         task_cfg_file = os.path.join(output_dir, 'task_config.yaml')
         try:
             logger.info(f'Dump task config to {task_cfg_file}')
             payload = self.to_dict()
             if generated_metadata:
                 payload.update(generated_metadata)
-            dict_to_yaml(payload, task_cfg_file)
+            os.makedirs(output_dir, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix='.task-config-', dir=output_dir) as temporary_dir:
+                temporary_file = os.path.join(temporary_dir, 'task_config.yaml')
+                dict_to_yaml(payload, temporary_file)
+                os.replace(temporary_file, task_cfg_file)
         except Exception as e:
+            if strict:
+                raise
             logger.warning(f'Failed to dump overall task config: {e}')
 
     def to_dict(self) -> dict:

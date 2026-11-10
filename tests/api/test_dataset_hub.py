@@ -658,9 +658,13 @@ def test_local_path_override_clears_hf_mapping(tmp_path) -> None:
 
 @pytest.mark.parametrize(
     ('benchmark_name', 'hf_dataset_id'),
-    [('msvd', 'VLM2Vec/MSVD'), ('msr_vtt', 'VLM2Vec/MSR-VTT')],
+    [
+        ('msvd', 'VLM2Vec/MSVD'),
+        ('msr_vtt', 'VLM2Vec/MSR-VTT'),
+        ('stsb', 'sentence-transformers/stsb'),
+    ],
 )
-def test_video_caption_adapters_use_shared_hf_dataset_mapping(
+def test_adapters_use_shared_hf_dataset_mapping(
     benchmark_name: str,
     hf_dataset_id: str,
 ) -> None:
@@ -673,7 +677,8 @@ def test_video_caption_adapters_use_shared_hf_dataset_mapping(
     )
 
     assert adapter.dataset_id == hf_dataset_id
-    assert adapter.source_dataset.data_id_or_path == hf_dataset_id
+    if benchmark_name in ('msvd', 'msr_vtt'):
+        assert adapter.source_dataset.data_id_or_path == hf_dataset_id
     if benchmark_name == 'msr_vtt':
         assert adapter.source_eval_split == 'test'
         assert adapter.source_subset == 'test_1k'
@@ -901,6 +906,22 @@ def test_download_file_modelscope_uses_single_file_api(tmp_path: Path, monkeypat
 
     assert result == str(image_path)
     assert calls == [
-        ('remote-dataset', 'images/page_[1].png', {'revision': 'v1', 'local_files_only': True}),
         ('remote-dataset', 'images/page_[1].png', {'revision': 'v1'}),
     ]
+
+
+def test_modelscope_pinned_file_does_not_reuse_another_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    old = tmp_path / 'old.json'
+    new = tmp_path / 'new.json'
+    old.write_text('old manifest')
+    new.write_text('new manifest')
+    fake_modelscope = types.ModuleType('modelscope')
+
+    def download(dataset_id: str, file_path: str, **kwargs: Any) -> str:
+        assert kwargs['revision'] == 'new-revision'
+        return str(old if kwargs.get('local_files_only') else new)
+
+    fake_modelscope.dataset_file_download = download
+    monkeypatch.setitem(sys.modules, 'modelscope', fake_modelscope)
+    path = download_dataset_file('owner/data', 'tasks.json', revision='new-revision')
+    assert Path(path).read_text() == 'new manifest'

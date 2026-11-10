@@ -198,6 +198,11 @@ class DefaultApiPlugin(ApiPluginBase):
 
                                 timestamp = time.perf_counter()
 
+                                # A server that fails after sending HTTP 200 (vLLM, SGLang) reports the error
+                                # in-band as `{"error": {...}}` or `{"object": "error", ...}`.
+                                if data.get('error') is not None or data.get('object') == 'error':
+                                    output.error = json.dumps(data, ensure_ascii=False)
+
                                 if choices := data.get('choices'):
                                     if data.get('object') == 'text_completion':
                                         content = choices[0].get('text') or ''
@@ -235,7 +240,7 @@ class DefaultApiPlugin(ApiPluginBase):
                                 most_recent_timestamp = timestamp
 
                         output.generated_text = generated_text
-                        output.success = True
+                        output.success = output.error is None
                         output.completed_time = most_recent_timestamp
                         output.query_latency = most_recent_timestamp - st
 
@@ -284,7 +289,15 @@ class DefaultApiPlugin(ApiPluginBase):
                             generated_text = str(payload)
 
                         output.generated_text = generated_text
-                        output.success = True
+                        # A server that fails after sending HTTP 200 (vLLM, SGLang) reports
+                        # the error in-band as `{"error": {...}}` or `{"object": "error", ...}`.
+                        # The streaming branch already guards this (see #1906/#1918); the non-stream
+                        # JSON branch must not unconditionally count such a body as success.
+                        if isinstance(payload, dict) and (
+                            payload.get('error') is not None or payload.get('object') == 'error'
+                        ):
+                            output.error = json.dumps(payload, ensure_ascii=False)
+                        output.success = output.error is None
 
                     else:
                         # Unknown successful content-type: read as text

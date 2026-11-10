@@ -307,6 +307,17 @@ class TestNativeBenchmark(TestBenchmark):
         """Test Arena Hard dataset."""
         self._run_dataset_test('arena_hard')
 
+    def test_salad_bench(self):
+        """Test SALAD-Bench open-ended safety sets."""
+        dataset_args = {
+            'subset_list': ['small_attack_subset']
+        }
+        self._run_dataset_test('salad_bench', dataset_args, limit=5, ignore_errors=True)
+
+    def test_salad_bench_mcq(self):
+        """Test SALAD-Bench multiple-choice set."""
+        self._run_dataset_test('salad_bench_mcq', limit=5)
+
     def test_frames(self):
         """Test Frames dataset."""
         dataset_args = {
@@ -392,7 +403,7 @@ class TestNativeBenchmark(TestBenchmark):
             'subset_list': ['normal'],
             'few_shot_num': 0,
         }
-        self._run_dataset_test('acebench', dataset_args=dataset_args, model='qwen-plus', limit=5)
+        self._run_dataset_test('acebench', dataset_args=dataset_args, model='qwen3.8-flash', limit=5)
 
     def test_bfcl_v3(self):
         """Test BFCL dataset."""
@@ -410,7 +421,7 @@ class TestNativeBenchmark(TestBenchmark):
                 'underscore_to_dot': True
             }
         }
-        self._run_dataset_test('bfcl_v3', dataset_args=dataset_args, model='qwen-plus', limit=5)
+        self._run_dataset_test('bfcl_v3', dataset_args=dataset_args, model='qwen3.8-flash', limit=5)
 
     def test_bfcl_v4(self):
         """Test BFCL v4 dataset."""
@@ -445,7 +456,7 @@ class TestNativeBenchmark(TestBenchmark):
                 'SERPAPI_API_KEY':env.get('SERPAPI_API_KEY'),
             }
         }
-        self._run_dataset_test('bfcl_v4', dataset_args=dataset_args, model='qwen-plus', limit=5, rerun_review=True, debug=False)
+        self._run_dataset_test('bfcl_v4', dataset_args=dataset_args, model='qwen3.8-flash', limit=5, rerun_review=True, debug=False)
 
     def test_tau_bench(self):
         dataset_args = {
@@ -454,7 +465,7 @@ class TestNativeBenchmark(TestBenchmark):
                 'retail'
             ],
             'extra_params': {
-                'user_model': 'qwen-plus',
+                'user_model': 'qwen3.8-flash',
                 'api_key': env.get('DASHSCOPE_API_KEY'),
                 'api_base': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
                 'generation_config': {
@@ -473,7 +484,7 @@ class TestNativeBenchmark(TestBenchmark):
                 'telecom'
             ],
             'extra_params': {
-                'user_model': 'qwen-plus',
+                'user_model': 'qwen3.8-flash',
                 'api_key': env.get('DASHSCOPE_API_KEY'),
                 'api_base': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
                 'generation_config': {
@@ -482,7 +493,7 @@ class TestNativeBenchmark(TestBenchmark):
                 }
             }
         }
-        self._run_dataset_test('tau2_bench', dataset_args, limit=None, repeats=1, model='qwen-plus', stream=True)
+        self._run_dataset_test('tau2_bench', dataset_args, limit=None, repeats=1, model='qwen3.8-flash', stream=True)
 
     def test_tau3_bench(self):
         dataset_args = {
@@ -493,7 +504,7 @@ class TestNativeBenchmark(TestBenchmark):
                 'banking_knowledge'
             ],
             'extra_params': {
-                'user_model': 'qwen-plus',
+                'user_model': 'qwen3.8-flash',
                 'api_key': env.get('DASHSCOPE_API_KEY'),
                 'api_base': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
                 'generation_config': {
@@ -503,7 +514,7 @@ class TestNativeBenchmark(TestBenchmark):
                 'retrieval_config': 'bm25',
             }
         }
-        self._run_dataset_test('tau3_bench', dataset_args, limit=1, repeats=1, model='qwen-plus', stream=True)
+        self._run_dataset_test('tau3_bench', dataset_args, limit=1, repeats=1, model='qwen3.8-flash', stream=True)
 
     def test_r1_collection(self):
         dataset_args = {
@@ -567,6 +578,19 @@ class TestNativeBenchmark(TestBenchmark):
             'text_dir': 'data/aa_lcr',
         }
         self._run_dataset_test('aa_lcr', dataset_args)
+
+    def test_xstest_mock(self):
+        """Test XSTest with a mock model and a mock judge."""
+        judge_response = json.dumps(
+            {'reasoning': 'Mock verdict.', 'verdict': '1_full_compliance'}, ensure_ascii=False
+        )
+        with patch.object(MockLLM, 'default_output', judge_response):
+            self._run_dataset_test(
+                'xstest',
+                limit=5,
+                use_mock=True,
+                judge={'models': {'model_id': 'mock-judge', 'eval_type': EvalType.MOCK_LLM}},
+            )
 
     def test_conll2003_ner(self):
         """Test CoNLL2003 NER dataset."""
@@ -721,7 +745,7 @@ class TestNativeBenchmark(TestBenchmark):
             # 'subset_list': ['example']
             # 'force_redownload': True,
         }
-        self._run_dataset_test('general_fc', dataset_args, limit=10, model='qwen-plus', stream=True)
+        self._run_dataset_test('general_fc', dataset_args, limit=10, model='qwen3.8-flash', stream=True)
 
     def test_general_fc_load(self):
         """Test General Function Calling dataset loading."""
@@ -738,7 +762,7 @@ class TestNativeBenchmark(TestBenchmark):
             'local_path': 'custom_eval/text/fc',
             'subset_list': ['example']
         }
-        self._run_dataset_test('general_fc', dataset_args, limit=10, model='qwen-plus', stream=True)
+        self._run_dataset_test('general_fc', dataset_args, limit=10, model='qwen3.8-flash', stream=True)
 
     def test_ifbench(self):
         """Test IFBench dataset."""
@@ -928,6 +952,14 @@ class TestNativeBenchmark(TestBenchmark):
         """Test KINA knowledge benchmark with mock."""
         self._run_dataset_test('kina', limit=5, use_mock=True)
 
+    def test_mask(self):
+        """Test MASK honesty benchmark (limit is per archetype)."""
+        self._run_dataset_test('mask', limit=2, generation_config={'max_tokens': 1000, 'temperature': 1.0})
+
+    def test_mask_mock(self):
+        """Test MASK honesty benchmark with a mock model and the configured judge."""
+        self._run_dataset_test('mask', limit=1, use_mock=True)
+
     def test_perspective_gap_mock(self):
         """Test PerspectiveGap benchmarks with mock."""
         pytest.importorskip('perspective_gap.scoring')
@@ -939,10 +971,10 @@ class TestNativeBenchmark(TestBenchmark):
         pytest.importorskip('perspective_gap.scoring')
         generation_config = {'max_tokens': 4096, 'temperature': 0.0, 'retries': 3}
         self._run_dataset_test(
-            'perspective_gap_role_assignment', limit=5, model='qwen-plus', generation_config=generation_config
+            'perspective_gap_role_assignment', limit=5, model='qwen3.8-flash', generation_config=generation_config
         )
         self._run_dataset_test(
-            'perspective_gap_prompt_writing', limit=5, model='qwen-plus', generation_config=generation_config
+            'perspective_gap_prompt_writing', limit=5, model='qwen3.8-flash', generation_config=generation_config
         )
 
     def test_prbench(self):
@@ -1144,6 +1176,26 @@ class TestNativeBenchmark(TestBenchmark):
             use_mock=True,
             dataset_hub='huggingface'
         )
+
+    def test_tablebench_mock(self):
+        """Test TableBench table QA benchmark with mock."""
+        self._run_dataset_test('tablebench', limit=5, use_mock=True)
+
+    def test_finqa_mock(self):
+        """Test FinQA financial numerical reasoning benchmark with mock."""
+        self._run_dataset_test('finqa', limit=5, use_mock=True)
+
+    def test_tat_qa_mock(self):
+        """Test TAT-QA table + text financial QA benchmark with mock."""
+        self._run_dataset_test('tat_qa', limit=5, use_mock=True)
+
+    def test_longpi_bench_mock(self):
+        """Test LongPIBench prompt injection benchmark with mock."""
+        self._run_dataset_test('longpi_bench', limit=5, use_mock=True)
+
+    def test_sleight_bench_mock(self):
+        """Test SLEIGHT-Bench transcript monitoring benchmark with mock."""
+        self._run_dataset_test('sleight_bench', limit=2, use_mock=True)
 
 
 if __name__ == '__main__':

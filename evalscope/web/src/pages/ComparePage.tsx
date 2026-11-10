@@ -46,7 +46,7 @@ const EMPTY_MERGED: MergedPrediction[] = []
 export default function ComparePage() {
   const { t } = useLocale()
   const qp = useQueryParams()
-  const { rootPath: ctxRootPath, setRootPath } = useScan()
+  const { rootPath: ctxRootPath, scanToken, setRootPath } = useScan()
   const { loadMultiReports, loading, reportCache } = useReportCache()
 
   // Score comparison consumes the complete URL selection. Prediction comparison
@@ -86,11 +86,16 @@ export default function ComparePage() {
 
   // Load score data and per-report cache (datasets/subsets) in one cache-aware pass
   const scores = useAsyncResource(
-    (signal) => loadMultiReports(reportNames, signal),
-    [reportNames, loadMultiReports],
+    (signal) => loadMultiReports(reportNames, rootPath, scanToken, signal),
+    [reportNames, loadMultiReports, rootPath, scanToken],
     { enabled: reportNames.length >= 2, fallbackMessage: t('common.loadError') },
   )
   const reports = scores.data ?? EMPTY_REPORT_LIST
+  const predictionMetricsByReport = useMemo(() => Object.fromEntries(
+    reports.filter(r => r.dataset_name === selectedDs).map(r => [
+      (r as ReportData & { _reportRef?: string })._reportRef ?? r.model_name, r.metrics,
+    ]),
+  ), [reports, selectedDs])
   // Resolved either way: a failure is still an answer, and the view stops waiting.
   const dataLoaded = !scores.loading && (scores.data !== undefined || Boolean(scores.error))
   const scoreLoadError = scores.error
@@ -474,6 +479,7 @@ export default function ComparePage() {
               ) : (
                 <PredictionCompareTab
                   reportNames={predictionReportNames}
+                  metricsByReport={predictionMetricsByReport}
                   displayNames={displayNames}
                   displayLabels={displayLabels}
                   predCommonDatasets={predCommonDatasets}

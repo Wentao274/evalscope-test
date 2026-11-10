@@ -33,7 +33,7 @@ class TestVLMBenchmark(TestBenchmark):
             'judge': {
                 'strategy': JudgeStrategy.AUTO,
                 'models': {
-                'model_id': 'qwen-plus',
+                'model_id': 'qwen3.8-flash',
                 'api_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
                 'api_key': env.get('DASHSCOPE_API_KEY'),
                 'generation_config': {
@@ -543,6 +543,19 @@ class TestVLMBenchmark(TestBenchmark):
         """Test PerceptionBench with mock LLM."""
         dataset_args = {'subset_list': ['ocr_error']}
         self._run_dataset_test('perception_bench', dataset_args=dataset_args, limit=5, use_mock=True)
+
+    def test_mm_safetybench_plus_plus(self):
+        """Test MM-SafetyBench++ contextual safety (LLM-judged RQ-5 quality score)."""
+        self._run_dataset_test('mm_safetybench_plus_plus', limit=4)
+
+    def test_mm_safetybench_plus_plus_mock(self):
+        """Test MM-SafetyBench++ with a mock model and a mock judge."""
+        self._run_dataset_test(
+            'mm_safetybench_plus_plus',
+            limit=3,
+            use_mock=True,
+            judge={'models': {'model_id': 'mock-judge', 'eval_type': EvalType.MOCK_LLM}},
+        )
 
     def test_hipho(self):
         """Test HiPhO physics Olympiad benchmark (step-level + answer-level subsets)."""

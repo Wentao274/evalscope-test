@@ -28,7 +28,15 @@ from evalscope.utils.io_utils import (
     undecode_media,
 )
 
-from .dataset import Dataset, FieldSpec, MemoryDataset, Sample, resolve_dataset_limit, validate_dataset_limit
+from .dataset import (
+    Dataset,
+    FieldSpec,
+    MemoryDataset,
+    Sample,
+    resolve_dataset_limit,
+    validate_dataset_limit,
+    validate_dataset_repeats,
+)
 from .hub import DatasetHub, _resolve_data_source
 from .utils import data_to_samples, shuffle_choices_if_requested
 
@@ -124,6 +132,11 @@ def _publish_dataset_cache(dataset: 'HFDataset', cache_dir: str) -> None:
         _remove_dataset_cache(prepared)
 
 
+def repeat_samples(samples: list, repeats: int) -> list:
+    """Repeat each converted sample, so one record that yields several samples keeps each repeat group to one question."""
+    return [copy.deepcopy(sample) for sample in samples for _ in range(repeats)] if repeats > 1 else samples
+
+
 def _shuffle_in_place(data: list, seed: Optional[int]) -> None:
     """Shuffle a list in place with an optional seed.
 
@@ -195,7 +208,7 @@ class DataLoader(ABC):
         self.shuffle_choices = shuffle_choices
         self.seed = seed
         self.auto_id = auto_id
-        self.repeats = repeats
+        self.repeats = validate_dataset_repeats(repeats)
         self.trust_remote = trust_remote
         self.force_redownload = force_redownload
         self.dataset_dir = dataset_dir
@@ -326,13 +339,9 @@ class RemoteDataLoader(DataLoader):
         # convert to list
         dataset_list = list(dataset)
 
-        # repeat k times
-        if self.repeats > 1:
-            dataset_list = [copy.deepcopy(item) for item in dataset_list for _ in range(self.repeats)]
-
         # return the dataset
         memory_dataset = MemoryDataset(
-            samples=data_to_samples(data=dataset_list, data_to_sample=data_to_sample),
+            samples=repeat_samples(data_to_samples(data=dataset_list, data_to_sample=data_to_sample), self.repeats),
             name=Path(path).stem if Path(path).exists() else path,
             location=path,
         )
@@ -425,13 +434,9 @@ class LocalDataLoader(DataLoader):
             resolved_limit = resolve_dataset_limit(self.limit, len(dataset))
             dataset = dataset[:resolved_limit]
 
-        # repeat k times
-        if self.repeats > 1:
-            dataset = [copy.deepcopy(item) for item in dataset for _ in range(self.repeats)]
-
         # return the dataset
         memory_dataset = MemoryDataset(
-            samples=data_to_samples(data=dataset, data_to_sample=data_to_sample),
+            samples=repeat_samples(data_to_samples(data=dataset, data_to_sample=data_to_sample), self.repeats),
             name=Path(path).stem if Path(path).exists() else path,
             location=path,
         )
@@ -458,7 +463,7 @@ class DictDataLoader(DataLoader):
 
     def load(self) -> Dataset:
         data_to_sample = record_to_sample_fn(self.sample_fields)
-        dataset = self.dict_list
+        dataset = list(self.dict_list)
 
         # shuffle if requested
         if self.shuffle:
@@ -469,13 +474,9 @@ class DictDataLoader(DataLoader):
             resolved_limit = resolve_dataset_limit(self.limit, len(dataset))
             dataset = dataset[:resolved_limit]
 
-        # repeat k times
-        if self.repeats > 1:
-            dataset = [copy.deepcopy(item) for item in dataset for _ in range(self.repeats)]
-
         # return the dataset
         memory_dataset = MemoryDataset(
-            samples=data_to_samples(data=dataset, data_to_sample=data_to_sample),
+            samples=repeat_samples(data_to_samples(data=dataset, data_to_sample=data_to_sample), self.repeats),
         )
 
         # Apply filtering if a filter function is provided

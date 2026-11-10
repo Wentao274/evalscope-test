@@ -14,7 +14,7 @@ current one (``error_rate``).
 
 from typing import Dict, Tuple
 
-from evalscope.api.metric.semantics import MetricDirection
+from evalscope.api.metric.semantics import MetricDirection, ValueRange
 from evalscope.metrics.semantics.aliases import read_old_baselines
 from evalscope.metrics.semantics.baselines import SEMANTIC_BASELINES
 from evalscope.metrics.semantics.entry import BASELINE_TABLE_LOCATION, MetricEntry
@@ -27,6 +27,12 @@ LEGACY_MIGRATION_TABLE_LOCATION = 'evalscope/metrics/semantics/catalog.py::LEGAC
 
 #: Where to declare a benchmark level collision override, used in validation messages.
 BENCHMARK_OVERRIDE_TABLE_LOCATION = 'evalscope/metrics/semantics/catalog.py::BENCHMARK_METRIC_OVERRIDES'
+
+# The v2 formula is (10 - 0.7477 * tally) / 10, with tally at most 40 for valid ratings.
+_EQ_BENCH_SCORE_ENTRY = MetricEntry(
+    baseline='quality.score.ratio',
+    value_range=ValueRange(min=-1.9908, max=1.0),
+)
 
 LEGACY_METRIC_MIGRATIONS: Dict[str, MetricEntry] = {
     # --- quality ratios: one line each, reused by every benchmark ------------------------
@@ -118,8 +124,7 @@ LEGACY_METRIC_MIGRATIONS: Dict[str, MetricEntry] = {
     'mean_submission_ready': MetricEntry(baseline='quality.score.ratio'),
     'mean_required_coverage': MetricEntry(baseline='quality.coverage.ratio'),
     'mean_coverage_score': MetricEntry(baseline='quality.coverage.ratio'),
-    # --- official 0-100 scales -----------------------------------------------------------
-    'mean_eq_bench_score': MetricEntry(baseline='quality.score.points_100'),
+    'mean_eq_bench_score': _EQ_BENCH_SCORE_ENTRY,
     # --- win rates -----------------------------------------------------------------------
     'mean_winrate': MetricEntry(baseline='quality.win_rate.ratio'),
     # --- judge scores (unbounded) --------------------------------------------------------
@@ -302,6 +307,8 @@ _CANONICAL_NAMES_BY_BASELINE = {
         'pass_at_k',
         'pass_hat_k',
         'pass_rate',
+        'resolve_rate',
+        'rubric_pass_rate',
         'simple_pass_rate',
         'strict_pass',
         'subproblem_pass_rate',
@@ -309,7 +316,7 @@ _CANONICAL_NAMES_BY_BASELINE = {
     'quality.precision.ratio': ('boundary_precision', 'official_mean_precision', 'precision'),
     'quality.recall.ratio': ('official_mean_recall', 'recall'),
     'quality.rouge.ratio': ('rouge', 'rouge_l'),
-    'quality.score.points_100': ('eq_bench_score', 'weighted_score_percent'),
+    'quality.score.points_100': ('weighted_score_percent',),
     'quality.score.ratio': (
         'clipped_score',
         'compliance_score',
@@ -347,6 +354,7 @@ METRIC_DEFINITIONS: Dict[str, MetricEntry] = {
 }
 METRIC_DEFINITIONS.update(
     {
+        'eq_bench_score': _EQ_BENCH_SCORE_ENTRY,
         # Three-way answer grading exposes these distribution shares as diagnostics. They remain
         # non-primary and directionless, but deserve report labels rather than internal identities,
         # which is why they are declared here instead of in the table above.
@@ -359,8 +367,26 @@ METRIC_DEFINITIONS.update(
         ),
         # $OneMillion-Bench reports this normalized rubric-weighted score as its primary metric.
         'expert_score': MetricEntry(baseline='quality.score.ratio', metric_name='Expert Score'),
+        # SLEIGHT-Bench: share of attacks scored above the 1% FPR threshold calibrated on paired benign transcripts.
+        'catch_rate': MetricEntry(baseline='quality.recall.ratio', metric_name='Catch Rate @ 1% FPR'),
+        # TableBench's primary metric is the official Mix_Metric (EM / EM±10% / ROUGE-L mix).
+        'mix_metric': MetricEntry(baseline='quality.score.ratio', metric_name='Mix Metric'),
+        # FinQA: the predicted program's result equals the gold answer / the program equals the gold program.
+        'execution_accuracy': MetricEntry(baseline='quality.accuracy.ratio', metric_name='Execution Accuracy'),
+        'program_accuracy': MetricEntry(baseline='quality.accuracy.ratio', metric_name='Program Accuracy'),
         # SPaRC: share of answers that are not a valid line from start to end (paper Table 7).
         'invalid_path_rate': MetricEntry(baseline='quality.error_rate.ratio', metric_name='Invalid Path Rate'),
+        # MM-SafetyBench++: share of responses whose RQ-5 rating is above 0 (the official refusal rate on
+        # unsafe queries and answer rate on safe ones), and the mean RQ-5 rating on its 0-5 scale.
+        'ccr': MetricEntry(baseline='quality.accuracy.ratio', metric_name='CCR'),
+        'quality_score': MetricEntry(
+            baseline='quality.judge_score.unbounded',
+            metric_name='Quality Score',
+            value_range=ValueRange(min=0, max=5),
+        ),
+        # MASK: 1 - P(lie) under pressure, and the share of pressured statements that match the belief.
+        'honesty_score': MetricEntry(baseline='quality.score.ratio', metric_name='Honesty Score'),
+        'honest_rate': MetricEntry(baseline='quality.score.ratio', metric_name='Honest Rate'),
         'total_model_time': MetricEntry(baseline='diagnostic.unspecified', raw_unit='s', display_precision=2),
         'total_other_time': MetricEntry(baseline='diagnostic.unspecified', raw_unit='s', display_precision=2),
         'total_tool_time': MetricEntry(baseline='diagnostic.unspecified', raw_unit='s', display_precision=2),
@@ -385,6 +411,67 @@ METRIC_DEFINITIONS.update(
     }
 )
 
+METRIC_DEFINITIONS.update(
+    {
+        name: MetricEntry(baseline='quality.loss.unbounded', metric_name=name.upper())
+        for name in ('nll', 'brier', 'ece', 'mae', 'nrps', 'aurc')
+    }
+)
+METRIC_DEFINITIONS.update(
+    {
+        name: MetricEntry(
+            baseline='quality.correlation.coefficient', metric_name=name.title(), value_range=ValueRange(min=-1, max=1)
+        )
+        for name in ('pearson', 'spearman')
+    }
+)
+METRIC_DEFINITIONS.update(
+    {
+        name: MetricEntry(baseline='quality.score.ratio', metric_name=name.replace('_', ' ').title())
+        for name in ('intelligence', 'calibration', 'capability', 'family_macro')
+    }
+)
+METRIC_DEFINITIONS['auroc'] = MetricEntry(baseline='quality.score.ratio', metric_name='AUROC')
+METRIC_DEFINITIONS['auprc'] = MetricEntry(baseline='quality.score.ratio', metric_name='AUPRC')
+METRIC_DEFINITIONS['public_accuracy'] = MetricEntry(baseline='quality.accuracy.ratio', metric_name='Public Accuracy')
+# Safety benchmarks (salad_bench): `safety` is the share of judged-safe replies and
+# `attack_success_rate` is its complement (the share of judged-unsafe replies).
+METRIC_DEFINITIONS['safety'] = MetricEntry(baseline='quality.accuracy.ratio')
+METRIC_DEFINITIONS['attack_success_rate'] = MetricEntry(
+    baseline='quality.error_rate.ratio', metric_name='Attack Success Rate'
+)
+# Agent safety benchmarks (agentdojo): `utility` is the share of user tasks completed and
+# `targeted_asr` is the share of samples where the injected attacker goal was achieved.
+METRIC_DEFINITIONS['utility'] = MetricEntry(baseline='quality.accuracy.ratio', metric_name='Utility')
+METRIC_DEFINITIONS['targeted_asr'] = MetricEntry(baseline='quality.error_rate.ratio', metric_name='Targeted ASR')
+METRIC_DEFINITIONS['flag_found'] = MetricEntry(baseline='quality.accuracy.ratio', metric_name='Flag Found')
+METRIC_DEFINITIONS['correct_submission'] = MetricEntry(
+    baseline='quality.accuracy.ratio', metric_name='Correct Submission'
+)
+METRIC_DEFINITIONS['full_flag_found'] = MetricEntry(baseline='quality.accuracy.ratio', metric_name='Full Flag Found')
+
+# AgentHarm measures completion independently of refusal. Direction depends on whether the
+# requested task is harmful or benign; benchmark overrides below express that distinction.
+METRIC_DEFINITIONS['task_completion_score'] = MetricEntry(
+    baseline='quality.score.ratio', metric_name='Task Completion Score'
+)
+METRIC_DEFINITIONS['full_completion_rate'] = MetricEntry(
+    baseline='quality.accuracy.ratio', metric_name='Full Completion Rate'
+)
+METRIC_DEFINITIONS['refusal_rate'] = MetricEntry(baseline='quality.accuracy.ratio', metric_name='Refusal Rate')
+METRIC_DEFINITIONS['non_refusal_completion_score'] = MetricEntry(
+    baseline='quality.score.ratio', metric_name='Non-refusal Completion Score'
+)
+METRIC_DEFINITIONS['macro_f1'] = MetricEntry(baseline='quality.f1.ratio', metric_name='Macro F1')
+for _registered, _reported in {
+    'decision_nll': 'nll',
+    'decision_brier': 'brier',
+    'decision_binary_brier': 'brier',
+    'decision_rps': 'nrps',
+    'decision_mae': 'mae',
+}.items():
+    METRIC_DEFINITIONS[_registered] = METRIC_DEFINITIONS[_reported]
+
 AGGREGATION_SEMANTICS: Dict[Tuple[str, str], MetricEntry] = {
     # An `accuracy` aggregated by pass@k / pass^k measures a pass ratio, not accuracy, so the
     # display name and semantics follow the aggregation rather than the base metric. Any `k` is
@@ -393,11 +480,33 @@ AGGREGATION_SEMANTICS: Dict[Tuple[str, str], MetricEntry] = {
     # Only genuine meaning changes belong here. `pass_rate` / `pass_at_k` already resolve to
     # `quality.pass_at_k.ratio` through METRIC_DEFINITIONS, and `vote_at_k` does not change what
     # any of these metrics measures, so neither is restated.
+    ('accuracy', 'bayes_at_n'): MetricEntry(baseline='quality.posterior_mean.ratio'),
+    ('accuracy', 'bayes_at_n_sd'): MetricEntry(
+        baseline='diagnostic.posterior_sd.ratio', display_name='Bayes@N posterior SD'
+    ),
+    ('exact_match', 'bayes_at_n'): MetricEntry(baseline='quality.posterior_mean.ratio'),
+    ('exact_match', 'bayes_at_n_sd'): MetricEntry(
+        baseline='diagnostic.posterior_sd.ratio', display_name='Bayes@N posterior SD'
+    ),
     ('accuracy', 'pass_at_k'): MetricEntry(baseline='quality.pass_at_k.ratio'),
     ('accuracy', 'pass_hat_k'): MetricEntry(baseline='quality.pass_at_k.ratio', metric_name='Pass^k'),
 }
 
 BENCHMARK_METRIC_OVERRIDES: Dict[Tuple[str, str], MetricEntry] = {
+    # Completing an explicitly harmful task is undesirable; refusing a benign task is also
+    # undesirable. Keep these directions separate instead of changing the shared baselines.
+    ('agentharm', 'task_completion_score'): METRIC_DEFINITIONS['task_completion_score'].model_copy(
+        update={'direction': MetricDirection.LOWER_IS_BETTER}
+    ),
+    ('agentharm', 'full_completion_rate'): METRIC_DEFINITIONS['full_completion_rate'].model_copy(
+        update={'direction': MetricDirection.LOWER_IS_BETTER}
+    ),
+    ('agentharm', 'non_refusal_completion_score'): METRIC_DEFINITIONS['non_refusal_completion_score'].model_copy(
+        update={'direction': MetricDirection.LOWER_IS_BETTER}
+    ),
+    ('agentharm_benign', 'refusal_rate'): METRIC_DEFINITIONS['refusal_rate'].model_copy(
+        update={'direction': MetricDirection.LOWER_IS_BETTER}
+    ),
     # `total_score` is a judge score in mia_bench but the raw sum of passed rubric weights in
     # job_bench, i.e. an intermediate judge value: reassign the collision to a diagnostic.
     ('job_bench', 'judge_score'): MetricEntry(baseline='diagnostic.unspecified'),

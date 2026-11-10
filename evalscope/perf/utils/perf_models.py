@@ -51,6 +51,7 @@ class BenchmarkSummary(BaseModel):
     request_throughput: float = Field(0.0, alias=Metrics.REQUEST_THROUGHPUT)
     avg_latency: float = Field(0.0, alias=Metrics.AVERAGE_LATENCY)
     avg_input_tokens: float = Field(0.0, alias=Metrics.AVERAGE_INPUT_TOKENS_PER_REQUEST)
+    not_applicable_metrics: Optional[List[str]] = Field(None, alias='Not Applicable Metrics')
 
     # --- LLM-specific ---
     output_token_throughput: float = Field(0.0, alias=Metrics.OUTPUT_TOKEN_THROUGHPUT)
@@ -69,6 +70,8 @@ class BenchmarkSummary(BaseModel):
     # --- Multi-turn (optional) ---
     avg_turns: Optional[float] = Field(None, alias=Metrics.AVERAGE_INPUT_TURNS_PER_REQUEST)
     avg_cached_percent: Optional[float] = Field(None, alias=Metrics.AVERAGE_CACHED_PERCENT)
+    cache_request_coverage_percent: Optional[float] = Field(None, alias=Metrics.CACHE_REQUEST_COVERAGE_PERCENT)
+    cache_token_coverage_percent: Optional[float] = Field(None, alias=Metrics.CACHE_TOKEN_COVERAGE_PERCENT)
     avg_first_turn_ttft: Optional[float] = Field(None, alias=Metrics.AVERAGE_FIRST_TURN_TTFT)
     avg_subsequent_turn_ttft: Optional[float] = Field(None, alias=Metrics.AVERAGE_SUBSEQUENT_TURN_TTFT)
 
@@ -222,6 +225,20 @@ class BenchmarkSummary(BaseModel):
             if self.avg_cached_percent is not None:
                 rows.append(
                     (Metrics.AVERAGE_CACHED_PERCENT, _fmt(Metrics.AVERAGE_CACHED_PERCENT, self.avg_cached_percent))
+                )
+            if self.cache_request_coverage_percent is not None:
+                rows.append(
+                    (
+                        Metrics.CACHE_REQUEST_COVERAGE_PERCENT,
+                        _fmt(Metrics.CACHE_REQUEST_COVERAGE_PERCENT, self.cache_request_coverage_percent),
+                    )
+                )
+            if self.cache_token_coverage_percent is not None:
+                rows.append(
+                    (
+                        Metrics.CACHE_TOKEN_COVERAGE_PERCENT,
+                        _fmt(Metrics.CACHE_TOKEN_COVERAGE_PERCENT, self.cache_token_coverage_percent),
+                    )
                 )
             if self.avg_first_turn_ttft is not None:
                 rows.append(

@@ -26,6 +26,8 @@ from evalscope.utils.function_utils import async_retry_call, retry_call
 
 from .utils.async_client import LoopBoundAsyncClientPool
 from .utils.openai import (
+    EmptyCompletionError,
+    _NonRetryableEmptyCompletionError,
     async_collect_stream_response,
     chat_choices_from_openai,
     collect_stream_response,
@@ -35,6 +37,7 @@ from .utils.openai import (
     openai_chat_tools,
     openai_completion_params,
     openai_handle_bad_request,
+    raise_if_error_payload,
 )
 
 logger = get_logger()
@@ -42,7 +45,8 @@ logger = get_logger()
 # Client errors (context length exceeded, invalid parameters, bad credentials, ...) are not
 # recoverable by retrying. generate()/generate_async() degrade them gracefully via
 # handle_bad_request(), so retry_call must let them through immediately instead of burning
-# retries * retry_interval on every failing sample.
+# the backoff ladder on every failing sample. Retryable failures use exponential backoff,
+# honoring Retry-After from the final SDK exception before starting another outer attempt.
 NON_RETRYABLE_OPENAI_ERRORS: Tuple[Type[Exception], ...] = (
     BadRequestError,
     AuthenticationError,
@@ -52,30 +56,7 @@ NON_RETRYABLE_OPENAI_ERRORS: Tuple[Type[Exception], ...] = (
 )
 
 
-class EmptyCompletionError(ValueError):
-    """A 200 response whose body carried no choices."""
-
-
-class _NonRetryableEmptyCompletionError(EmptyCompletionError):
-    pass
-
-
 _NON_RETRYABLE_COMPLETION_ERRORS = (*NON_RETRYABLE_OPENAI_ERRORS, _NonRetryableEmptyCompletionError)
-_NON_RETRYABLE_GATEWAY_CODES = {'400', '401', '402', '403', '404', '422'}
-
-
-def raise_if_error_payload(completion: ChatCompletion) -> None:
-    """Reject an error payload that the SDK deserialized as a completion."""
-    if completion.choices is not None:
-        return
-    error = (completion.model_extra or {}).get('error')
-    detail = f': {error}' if error else ' (no error detail in body)'
-    error_type = (
-        _NonRetryableEmptyCompletionError
-        if isinstance(error, dict) and str(error.get('code')) in _NON_RETRYABLE_GATEWAY_CODES
-        else EmptyCompletionError
-    )
-    raise error_type(f'Gateway returned a response with no choices{detail}')
 
 
 class OpenAICompatibleAPI(ModelAPI):
@@ -185,6 +166,8 @@ class OpenAICompatibleAPI(ModelAPI):
                 retries=config.retries,
                 sleep_interval=config.retry_interval,
                 no_retry_exceptions=_NON_RETRYABLE_COMPLETION_ERRORS,
+                backoff='exponential',
+                max_total_wait=300,
             )
 
             total_time = time.monotonic() - t_start
@@ -269,6 +252,8 @@ class OpenAICompatibleAPI(ModelAPI):
                 retries=config.retries,
                 sleep_interval=config.retry_interval,
                 no_retry_exceptions=_NON_RETRYABLE_COMPLETION_ERRORS,
+                backoff='exponential',
+                max_total_wait=300,
             )
 
             total_time = time.monotonic() - t_start

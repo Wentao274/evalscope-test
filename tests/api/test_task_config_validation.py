@@ -131,6 +131,33 @@ def test_cli_omitting_the_flag_keeps_the_api_default() -> None:
     assert config.eval_batch_size == DEFAULT_API_EVAL_BATCH_SIZE
 
 
+def test_cli_accepts_systemone_decision_evaluation() -> None:
+    config = _cli_config(
+        '--model',
+        'decision-model-preview',
+        '--eval-type',
+        'systemone_api',
+        '--api-url',
+        'http://localhost:8000/v1',
+        '--datasets',
+        'open_decisions',
+        'general_decision',
+        '--dataset-args',
+        '{"general_decision": {"local_path": "comments", "subset_list": ["zh_noul"]}}',
+        '--generation-config',
+        '{"timeout": 90, "retries": 1}',
+        '--eval-batch-size',
+        '2',
+    )
+
+    assert config.eval_type == 'systemone_api'
+    assert config.datasets == ['open_decisions', 'general_decision']
+    assert config.dataset_args['general_decision']['subset_list'] == ['zh_noul']
+    assert config.generation_config.timeout == 90
+    assert config.generation_config.retries == 1
+    assert config.eval_batch_size == 2
+
+
 def test_cli_explicit_flag_wins_over_the_api_default() -> None:
     config = _cli_config(
         '--model', 'x', '--api-url', 'http://localhost:8000/v1', '--datasets', 'gsm8k', '--eval-batch-size', '3'
@@ -225,6 +252,12 @@ def test_update_merges_generation_config_and_recoerces() -> None:
 def test_invalid_limits_are_rejected(limit: float | int) -> None:
     with pytest.raises(ValueError, match='limit'):
         TaskConfig.from_dict({'model': 'x', 'limit': limit})
+
+
+@pytest.mark.parametrize('repeats', [0, -1, 1.5, True, '1'])
+def test_invalid_repeats_are_rejected(repeats: object) -> None:
+    with pytest.raises(ValueError, match='Repeats must be a positive integer'):
+        TaskConfig.from_dict({'model': 'x', 'repeats': repeats})
 
 
 @pytest.mark.parametrize(

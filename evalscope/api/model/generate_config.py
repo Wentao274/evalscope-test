@@ -46,10 +46,13 @@ class GenerateConfig(BaseModel):
     """Request timeout (in seconds)."""
 
     retries: Optional[int] = Field(default=5)
-    """Number of retries for the request. Only supported by OpenAI compatible models."""
+    """Number of attempts (including the first) for the request. Only supported by OpenAI compatible models."""
 
     retry_interval: Optional[int] = Field(default=10)
-    """Retry interval between retries (in seconds). Only supported by OpenAI compatible models."""
+    """Base retry interval in seconds. OpenAI-compatible chat requests use exponential backoff
+    capped at 60 seconds, with numeric Retry-After headers as a minimum wait even when this
+    interval is zero. Total outer-retry sleeping time is limited to 300 seconds.
+    """
 
     batch_size: Optional[int] = Field(default=None)
     """Maximum number of concurrent connections to the Model API, or batch size for generation.
@@ -159,10 +162,10 @@ class GenerateConfig(BaseModel):
     """Extra body to be sent with requests to OpenAI compatible servers. OpenAI, vLLM, and SGLang only."""
 
     extra_query: Optional[Dict[str, Any]] = Field(default=None)
-    """Extra query parameters to be sent with requests to OpenAI compatible servers. OpenAI, vLLM, and SGLang only."""
+    """Extra query parameters to be sent with requests to OpenAI- or Anthropic-compatible servers."""
 
     extra_headers: Optional[Dict[str, Any]] = Field(default=None)
-    """Extra headers to be sent with requests to OpenAI compatible servers. OpenAI, vLLM, and SGLang only."""
+    """Extra headers to be sent with requests to OpenAI- or Anthropic-compatible servers."""
 
     height: Optional[int] = Field(default=None)
     """Image height for image generation model only"""
@@ -201,9 +204,10 @@ class GenerateConfig(BaseModel):
         Returns:
            Merged configuration.
         """
-        config_keys = [field for field in self.__class__.model_fields.keys()]
         config = deepcopy(self)
-        for key in config_keys:
+        # Only fields the caller actually set: a per-call config's defaults (e.g. retries=5) must not
+        # overwrite the user's generation_config.
+        for key in other.model_fields_set & set(self.__class__.model_fields):
             value = getattr(other, key, None)
             if value is not None:
                 setattr(config, key, value)

@@ -13,8 +13,10 @@ flask = pytest.importorskip('flask')
 
 from evalscope.api.metric import JudgeSummary
 from evalscope.constants import ScoreStatus
+from evalscope.perf.arguments import Arguments as PerfArguments
 from evalscope.report import Report
 from evalscope.service.api_models import (
+    ActiveTaskInfo,
     AnalysisResponse,
     BenchmarksResponse,
     ConfigResponse,
@@ -22,6 +24,7 @@ from evalscope.service.api_models import (
     DeletePerfRunResponse,
     DeleteReportResponse,
     EvalInvokeResponse,
+    ListActiveTasksResponse,
     ListPerfRunsResponse,
     ListReportsGroupedResponse,
     ListReportsResponse,
@@ -35,6 +38,7 @@ from evalscope.service.api_models import (
     TaskStatusResponse,
     WebApiContracts,
 )
+from evalscope.service.api_models.reports import ReportSubset
 from evalscope.service.responses import json_response
 from evalscope.version import __version__
 
@@ -65,6 +69,8 @@ CONTRACT_REGISTRY = (
     ('PerfDetailResponse', 'evalscope/web/src/api/perf.ts', 'evalscope/service/blueprints/perf.py'),
     ('PerfRunsListResponse', 'evalscope/web/src/api/perf.ts', 'evalscope/service/blueprints/perf.py'),
     ('PerfRequestsResponse', 'evalscope/web/src/api/perf.ts', 'evalscope/service/blueprints/perf.py'),
+    ('ListActiveTasksResponse', 'evalscope/web/src/api/tasks.ts', 'evalscope/service/blueprints/tasks.py'),
+    ('ActiveTaskInfo', 'evalscope/web/src/api/tasks.ts', 'evalscope/service/blueprints/tasks.py'),
 )
 
 NON_JSON_ENDPOINTS = {
@@ -102,6 +108,8 @@ RESPONSE_MODELS = (
     PerfDetailResponse,
     PerfRunsListResponse,
     PerfRequestsResponse,
+    ListActiveTasksResponse,
+    ActiveTaskInfo,
 )
 
 
@@ -142,9 +150,10 @@ def test_config_and_idle_task_endpoints_use_response_contracts(client, tmp_path)
 
 
 def test_eval_and_perf_invoke_success_responses_are_validated(client) -> None:
-    task_config = SimpleNamespace(model='model', datasets=['demo'], work_dir='')
+    task_config = SimpleNamespace(model='model', datasets=['demo'], work_dir='', api_url='http://example.test')
     with mock.patch('evalscope.service.blueprints.eval._build_task_config', return_value=task_config), \
             mock.patch('evalscope.service.blueprints.eval.create_log_file'), \
+            mock.patch('evalscope.service.utils.log.write_task_manifest'), \
             mock.patch('evalscope.service.blueprints.eval.run_in_subprocess', return_value={'demo': {'score': 1}}), \
             mock.patch('evalscope.service.blueprints.eval._build_result_table', return_value='table'):
         response = client.post(
@@ -155,7 +164,7 @@ def test_eval_and_perf_invoke_success_responses_are_validated(client) -> None:
     assert response.status_code == 200
     assert response.get_json()['status'] == 'completed'
 
-    perf_args = SimpleNamespace(model='model', url='http://example.test', api='openai')
+    perf_args = PerfArguments(model='model', url='http://example.test', api='openai')
     with mock.patch('evalscope.service.blueprints.perf.PerfArguments.from_dict', return_value=perf_args), \
             mock.patch('evalscope.service.blueprints.perf.create_log_file'), \
             mock.patch('evalscope.service.blueprints.perf.run_in_subprocess', return_value={'rps': 1}), \
@@ -236,6 +245,35 @@ def test_json_response_validates_and_serializes_aliases() -> None:
     assert body['predictions'][0]['Index'] == '0'
     assert body['predictions'][0]['NScore'] is None
     assert body['predictions'][0]['Metadata']['nullable'] is None
+
+
+def test_prediction_transport_preserves_small_probability_diagnostics() -> None:
+    import pandas as pd
+
+    from evalscope.service.blueprints.reports import _df_to_records
+
+    rows = _df_to_records(pd.DataFrame([{'Score': {'metadata': {
+        'nll_epsilon': 1e-12, 'raw_probabilities': {'A': 1e-20, 'B': 1.0},
+    }}, 'NScore': float('nan')}]))
+    assert rows[0]['Score']['metadata']['nll_epsilon'] == 1e-12
+    assert rows[0]['Score']['metadata']['raw_probabilities']['A'] == 1e-20
+    assert rows[0]['NScore'] is None
+
+
+def test_report_subset_omits_unused_diagnostics() -> None:
+    regular = ReportSubset(name='test', score=1.0, num=1).model_dump(mode='json', exclude_unset=True)
+    assert 'metadata' not in regular
+    assert 'is_aggregate' not in regular
+
+    diagnostic = ReportSubset(
+        name='test',
+        score=1.0,
+        num=1,
+        metadata={'risk_coverage': []},
+        is_aggregate=True,
+    ).model_dump(mode='json', exclude_unset=True)
+    assert diagnostic['metadata'] == {'risk_coverage': []}
+    assert diagnostic['is_aggregate'] is True
 
 
 def test_json_response_rejects_invalid_success_shape() -> None:
@@ -457,3 +495,32 @@ def test_non_json_endpoints_are_explicitly_excluded() -> None:
         source = (ROOT / source_path).read_text(encoding='utf-8')
         for marker in route_markers:
             assert marker in source
+
+
+@pytest.mark.parametrize('value', [float('nan'), float('inf'), -float('inf')])
+def test_perf_summary_unmeasured_values_are_valid_json(value: float) -> None:
+    from evalscope.service.api_models.perf import PerfSummaryRow
+
+    app = flask.Flask(__name__)
+    with app.app_context():
+        response = json_response(PerfSummaryRow, {
+            'values': {'p99_tpot': value, 'avg_latency': 1.5},
+            'sample_counts': {'p99_tpot': 0, 'avg_latency': 2},
+        })
+    def reject_constant(constant: str) -> None:
+        pytest.fail(f'Invalid JSON constant: {constant}')
+    body = json.loads(response.get_data(as_text=True), parse_constant=reject_constant)
+    assert body['values'] == {'p99_tpot': None, 'avg_latency': 1.5}
+
+
+def test_perf_percentiles_unmeasured_values_are_valid_json() -> None:
+    from evalscope.service.api_models.perf import PerfRunItem
+
+    app = flask.Flask(__name__)
+    with app.app_context():
+        response = json_response(PerfRunItem, {
+            'dir_name': 'parallel_1_number_1', 'name': 'one-token', 'parallel': 1, 'number': 1, 'rate': None,
+            'total_requests': 1, 'succeed_requests': 1, 'success_rate': 100, 'num_requests': 1, 'has_requests': True,
+            'percentile_columns': ['Percentile', 'TPOT'], 'percentile_rows': [['99%', float('nan')]],
+        })
+    assert json.loads(response.get_data(as_text=True))['percentile_rows'] == [['99%', None]]
