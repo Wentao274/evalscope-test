@@ -113,13 +113,13 @@ Jenkins 通过 ssh 远程到 `REMOTE_HOST`(默认 `10.201.132.50`)在 `WORK_DIR`
 | `MODEL` | `--model` | `deepseek-v4-flash` | 模型服务名 |
 | `BASE_URL` | `--api-url` | `http://10.201.149.37:8080` | 端点根 URL(流水线自动拼接 `/v1`) |
 | `API_KEY` | `--api-key` | 空 → `EMPTY` | 鉴权;**连通性预检会携带该 key**(需认证的服务端必填,空/`EMPTY` 按无认证模式检查) |
-| `JUDGE_MODEL_ID` | `--judge-model-args model_id` | `deepseek-v4-flash` | 裁判模型名(mcp_atlas 等 LLM judge 任务用) |
-| `JUDGE_API_URL` | `--judge-model-args api_url` | `http://10.201.149.41:8080/v1` | 裁判模型端点(含 `/v1` 后缀) |
+| `JUDGE_MODEL_ID` | `--judge-model-args model_id` | 空 | 裁判模型名(mcp_atlas 等 LLM judge 任务用;留空 = 不启用 LLM judge,imo_answerbench/frames/hle 自动回退 rule 评分) |
+| `JUDGE_API_URL` | `--judge-model-args api_url` | 空 | 裁判模型端点(含 `/v1` 后缀;与 `JUDGE_MODEL_ID` 配套填写) |
 | `JUDGE_API_KEY` | `--judge-model-args api_key` | `EMPTY` | 裁判模型 API Key |
-| `TASK_MMLU_PRO` | `--datasets mmlu_pro` | true | 勾选后逗号拼接 |
-| `TASK_AIME25` | `--datasets aime25` | true | 勾选后逗号拼接(AIME 2025 数学竞赛,30 题) |
-| `TASK_AIME26` | `--datasets aime26` | true | 勾选后逗号拼接(AIME 2026 数学竞赛,30 题) |
-| `TASK_GPQA_DIAMOND` | `--datasets gpqa_diamond` | true | 勾选后逗号拼接 |
+| `TASK_MMLU_PRO` | `--datasets mmlu_pro` | false | 勾选后逗号拼接 |
+| `TASK_AIME25` | `--datasets aime25` | false | 勾选后逗号拼接(AIME 2025 数学竞赛,30 题) |
+| `TASK_AIME26` | `--datasets aime26` | false | 勾选后逗号拼接(AIME 2026 数学竞赛,30 题) |
+| `TASK_GPQA_DIAMOND` | `--datasets gpqa_diamond` | false | 勾选后逗号拼接(至少勾选一个任务,否则构建报错退出) |
 | `TASK_CEVAL` | `--datasets ceval` | false | 勾选后逗号拼接 |
 | `TASK_CMMLU` | `--datasets cmmlu` | false | 勾选后逗号拼接 |
 | `TASK_MATH_500` | `--datasets math_500` | false | 勾选后逗号拼接 |

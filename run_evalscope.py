@@ -221,6 +221,13 @@ def parse_args():
 def main():
     args = parse_args()
 
+    # 空任务守卫:Jenkinsfile 已在 taskList.isEmpty() 时提前 error,
+    # 此处兜底覆盖直接调用本脚本的场景,避免空 --tasks 被 evalscope_main.sh
+    # 的 DATASETS=${DATASETS:-mmlu_pro} 静默回退成跑 mmlu_pro。
+    if not [t.strip() for t in args.tasks.split(",") if t.strip()]:
+        print("ERROR: --tasks 为空,未选择任何评测任务,请至少勾选一个任务后重试")
+        sys.exit(1)
+
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     model_dir = args.model.split("/")[-1]
     output_dir = os.path.abspath(

@@ -176,8 +176,8 @@ evalscope eval \
 | `MODEL` | `--model` | `deepseek-v4-flash` | 模型服务名 |
 | `BASE_URL` | `--api-url` | `http://10.201.149.37:8080` | 端点根 URL(流水线自动拼接 `/v1`,可带可不带尾斜杠) |
 | `API_KEY` | `--api-key` | 空 → `EMPTY` | 鉴权;**连通性预检会携带该 key**(需认证的服务端必填,空/`EMPTY` 按无认证模式检查) |
-| `JUDGE_MODEL_ID` | `--judge-model-args model_id` | `deepseek-v4-flash` | 裁判模型名(mcp_atlas 等 LLM judge 任务用) |
-| `JUDGE_API_URL` | `--judge-model-args api_url` | `http://10.201.149.41:8080/v1` | 裁判模型端点(含 `/v1` 后缀) |
+| `JUDGE_MODEL_ID` | `--judge-model-args model_id` | 空 | 裁判模型名(mcp_atlas 等 LLM judge 任务用;留空 = 不启用 LLM judge,imo_answerbench/frames/hle 自动回退 rule 评分) |
+| `JUDGE_API_URL` | `--judge-model-args api_url` | 空 | 裁判模型端点(含 `/v1` 后缀;与 `JUDGE_MODEL_ID` 配套填写) |
 | `JUDGE_API_KEY` | `--judge-model-args api_key` | `EMPTY` | 裁判模型 API Key |
 | `TASK_MMLU_PRO` / `TASK_AIME26` / `TASK_GPQA_DIAMOND` / `TASK_CEVAL` / `TASK_CMMLU` / `TASK_MATH_500` / `TASK_HELLASWAG` / `TASK_HUMANEVAL` / `TASK_HUMANEVAL_PLUS` / `TASK_HMMT25` / `TASK_HMMT26` / `TASK_IMO_ANSWERBENCH` / `TASK_MCP_ATLAS` / `TASK_DEEP_SWE` / `TASK_MMMU_PRO` / `TASK_OCR_BENCH` / `TASK_OCR_BENCH_V2` / `TASK_VIDEOMME_V2` / `TASK_HALLUSION_BENCH` / `TASK_MATH_VISION` | `--datasets` | 见 checkbox | 勾选后逗号拼接(默认开启见下方) |
 | `EXAMPLES` | `--limit` | 空 | 空 = 跑全集;int=数量,float=比例 |
@@ -202,9 +202,9 @@ evalscope eval \
 | `USE_CACHE` | `--use-cache` | 空 | 断点续跑:填上次输出目录则复用缓存只跑未完成题 |
 | `RERUN_REVIEW` | `--rerun-review` | `false` | 仅 USE_CACHE 启用时生效;强制重算评分,predictions 缓存仍复用 |
 
-默认开启的任务(`defaultValue: true`):`mmlu_pro`、`aime25`、`aime26`、`gpqa_diamond`。
-默认关闭的任务(`defaultValue: false`):`ceval`、`cmmlu`、`math_500`、`hellaswag`、`humaneval`、
+所有任务默认关闭(`defaultValue: false`):`mmlu_pro`、`aime25`、`aime26`、`gpqa_diamond`、`ceval`、`cmmlu`、`math_500`、`hellaswag`、`humaneval`、
 `humaneval_plus`、`hmmt25`、`hmmt26`、`imo_answerbench`、`mcp_atlas`、`deep_swe`、`mbpp`、`frames`、`mm_bench`、`mmmu_pro`、`ocr_bench`、`ocr_bench_v2`、`videomme_v2`、`hallusion_bench`、`math_vision`。
+**注意:至少需要勾选一个任务,否则构建在"运行evalscope测试"阶段以 `至少需要选择一个测试任务` 报错退出(FAILURE)。**
 
 evalscope 还支持但未在 Jenkins 暴露的参数(留作扩展):
 

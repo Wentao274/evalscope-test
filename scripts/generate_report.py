@@ -340,8 +340,8 @@ def generate_email_body(log_file_base: str) -> tuple:
                 <tr><th>enable_thinking</th><td>{html.escape(env('ENABLE_THINKING'))}</td></tr>
                 <tr><th>judge_strategy</th><td>{html.escape(env('JUDGE_STRATEGY'))}</td></tr>
                 <tr><th>per-task judge_strategy JSON</th><td>{html.escape(env('TASK_JUDGE_STRATEGY_JSON') or 'N/A')}</td></tr>
-                <tr><th>裁判模型</th><td>{html.escape(env('JUDGE_MODEL_ID'))}</td></tr>
-                <tr><th>裁判模型API</th><td>{html.escape(env('JUDGE_API_URL'))}</td></tr>
+                <tr><th>裁判模型</th><td>{html.escape(env('JUDGE_MODEL_ID') or 'N/A(未配置,LLM judge 关闭)')}</td></tr>
+                <tr><th>裁判模型API</th><td>{html.escape(env('JUDGE_API_URL') or 'N/A')}</td></tr>
                 <tr><th>用户模拟模型</th><td>{html.escape(env('USER_MODEL_ID') or '<复用被测模型>')}</td></tr>
                 <tr><th>用户模拟模型API</th><td>{html.escape(env('USER_MODEL_API_URL') or '<复用被测模型API>')}</td></tr>
                 <tr><th>per-task max_tokens JSON</th><td>{html.escape(env('TASK_MAX_TOKENS_JSON') or 'N/A')}</td></tr>
