@@ -192,7 +192,7 @@ evalscope eval \
 | `JUDGE_STRATEGY` | `--judge-strategy` | `auto` | auto/rule/llm/llm_recall |
 | `TASK_JUDGE_STRATEGY_JSON` | (shell 内 per-task 覆盖) | 空 | 按任务覆盖 judge_strategy,例 `{"imo_answerbench":"rule"}`;imo_answerbench 在有裁判模型时走 auto,无裁判模型时自动回退 rule |
 | `ENABLE_SANDBOX` | `--sandbox {"enabled": true}` | `true` | 仅对 humaneval 等 CodeExecutionSandboxMixin 任务生效;启用前环境检查 stage 会预装 evalscope[sandbox] 并校验 Docker |
-| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime26":131072,"mcp_atlas":8192,"deep_swe":409600,"mmmu_pro":65536,"videomme_v2":16384,"hallusion_bench":16384,"math_vision":65536}` | 按任务覆盖 max_tokens,例 `{"mmlu_pro":32768}`;hallusion_bench=16384(YES/NO 短答案,预算几乎全给 thinking,已覆盖服务端思考预算上限)、math_vision=65536(竞赛数学 thinking 推理链长,与 hmmt 同档);ocr_bench/ocr_bench_v2 未列出,用全局默认 32768 |
+| `TASK_MAX_TOKENS_JSON` | (shell 内 per-task 覆盖) | `{"gpqa_diamond":131072,"aime26":131072,"mcp_atlas":8192,"deep_swe":409600,"mmmu_pro":98304,"videomme_v2":16384,"hallusion_bench":16384,"math_vision":65536}` | 按任务覆盖 max_tokens,例 `{"mmlu_pro":32768}`;hallusion_bench=16384(YES/NO 短答案,预算几乎全给 thinking,已覆盖服务端思考预算上限)、math_vision=65536(竞赛数学 thinking 推理链长,与 hmmt 同档);ocr_bench/ocr_bench_v2 未列出,用全局默认 32768 |
 | `TASK_TIMEOUT_JSON` | (shell 内 per-task 覆盖) | `{"aime26":7200,"gpqa_diamond":7200,"mcp_atlas":7200,"deep_swe":172800}` | 按任务覆盖模型调用超时(秒),其余任务用内置默认 3600 |
 | `TASK_TOP_P_JSON` | (shell 内 per-task 覆盖) | `{"deep_swe":1.0}` | 按任务覆盖 top_p,deep_swe 编码 agent 用 1.0 高随机性探索 |
 | `TASK_STREAM_JSON` | (shell 内 per-task 覆盖) | `{"aime25":true,...,"hle":true,"math_vision":true}` | 按任务开启流式请求,长思考任务(数学/科学竞赛)单次生成超网关空闲超时(~30min)时避免非流式 504;评分无感知;deep_swe 无效(Pier 旁路) |
